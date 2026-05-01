@@ -113,7 +113,7 @@ export type IssueSortField = "status" | "priority" | "title" | "created" | "upda
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
   sortDir: "asc" | "desc";
-  groupBy: "status" | "priority" | "assignee" | "workspace" | "parent" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "workspace" | "parent" | "none";
   viewMode: "list" | "board";
   nestingEnabled: boolean;
   collapsedGroups: string[];
@@ -995,6 +995,22 @@ export function IssuesList({
           items: groups[key]!,
         }));
     }
+    if (viewState.groupBy === "project") {
+      const groups = groupBy(filtered, (issue) => issue.projectId ?? "__no_project");
+      return Object.keys(groups)
+        .sort((a, b) => {
+          if (a === "__no_project") return 1;
+          if (b === "__no_project") return -1;
+          const labelA = projectById.get(a)?.name ?? a;
+          const labelB = projectById.get(b)?.name ?? b;
+          return labelA.localeCompare(labelB);
+        })
+        .map((key) => ({
+          key,
+          label: key === "__no_project" ? "No Project" : (projectById.get(key)?.name ?? key.slice(0, 8)),
+          items: groups[key]!,
+        }));
+    }
     if (viewState.groupBy === "parent") {
       const groups = groupBy(filtered, (i) => i.parentId ?? "__no_parent");
       return Object.keys(groups)
@@ -1035,6 +1051,7 @@ export function IssuesList({
     workspaceNameMap,
     issueTitleMap,
     companyUserLabelMap,
+    projectById,
   ]);
 
   useEffect(() => {
@@ -1130,6 +1147,7 @@ export function IssuesList({
         if (groupKey.startsWith("__user:")) defaults.assigneeUserId = groupKey.slice("__user:".length);
         else defaults.assigneeAgentId = groupKey;
       }
+      else if (viewState.groupBy === "project" && groupKey !== "__no_project") defaults.projectId = groupKey;
       else if (viewState.groupBy === "parent" && groupKey !== "__no_parent") {
         const parentIssue = issueById.get(groupKey);
         if (parentIssue) Object.assign(defaults, buildSubIssueDefaultsForViewer(parentIssue, currentUserId));
@@ -1306,6 +1324,7 @@ export function IssuesList({
                     ["status", "Status"],
                     ["priority", "Priority"],
                     ["assignee", "Assignee"],
+                    ["project", "Project"],
                     ["workspace", "Workspace"],
                     ["parent", "Parent Issue"],
                     ["none", "None"],
