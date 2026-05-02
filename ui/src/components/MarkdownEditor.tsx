@@ -37,7 +37,6 @@ import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
-import { fencedCodeShortcutPlugin } from "../lib/fenced-code-shortcut";
 import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
@@ -746,7 +745,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         codeBlockEditorDescriptors: [FALLBACK_CODE_BLOCK_DESCRIPTOR],
       }),
       codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
-      fencedCodeShortcutPlugin(),
       markdownShortcutPlugin(),
     ];
     if (imageHandler) {
