@@ -1,4 +1,4 @@
-import type { AdapterModelProfileDefinition, ServerAdapterModule } from "./types.js";
+import type { AdapterModel, AdapterModelProfileDefinition, ServerAdapterModule } from "./types.js";
 import { getAdapterSessionManagement } from "@paperclipai/adapter-utils";
 import {
   execute as acpxExecute,
@@ -8,7 +8,10 @@ import {
   listAcpxSkills,
   syncAcpxSkills,
 } from "@paperclipai/adapter-acpx-local/server";
-import { agentConfigurationDoc as acpxAgentConfigurationDoc } from "@paperclipai/adapter-acpx-local";
+import {
+  agentConfigurationDoc as acpxAgentConfigurationDoc,
+  models as acpxModels,
+} from "@paperclipai/adapter-acpx-local";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -144,6 +147,36 @@ function normalizeHermesConfig<T extends { config?: unknown; agent?: unknown }>(
   return ctx;
 }
 
+function dedupeAdapterModels(models: AdapterModel[]): AdapterModel[] {
+  const seen = new Set<string>();
+  const result: AdapterModel[] = [];
+  for (const model of models) {
+    const id = model.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({ ...model, id });
+  }
+  return result;
+}
+
+async function listAcpxModels(): Promise<AdapterModel[]> {
+  const [claude, codex] = await Promise.all([
+    listClaudeModels().catch(() => claudeModels),
+    listCodexModels().catch(() => codexModels),
+  ]);
+  return dedupeAdapterModels([
+    ...acpxModels,
+    ...claude.map((model) => ({
+      ...model,
+      label: model.label.startsWith("Claude: ") ? model.label : `Claude: ${model.label}`,
+    })),
+    ...codex.map((model) => ({
+      ...model,
+      label: model.label.startsWith("Codex: ") ? model.label : `Codex: ${model.label}`,
+    })),
+  ]);
+}
+
 const claudeLocalAdapter: ServerAdapterModule = {
   type: "claude_local",
   execute: claudeExecute,
@@ -171,6 +204,8 @@ const acpxLocalAdapter: ServerAdapterModule = {
   syncSkills: syncAcpxSkills,
   sessionCodec: acpxSessionCodec,
   sessionManagement: getAdapterSessionManagement("acpx_local") ?? undefined,
+  models: dedupeAdapterModels([...claudeModels, ...codexModels]),
+  listModels: listAcpxModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
   instructionsPathKey: "instructionsFilePath",
