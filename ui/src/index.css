@@ -747,7 +747,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   margin-bottom: 0;
 }
 
-.paperclip-markdown :where(p, ul, ol, blockquote, pre, table) {
+.paperclip-markdown :where(p, ul, ol, blockquote, pre, .paperclip-markdown-table-scroll) {
   margin-top: 0.7rem;
   margin-bottom: 0.7rem;
 }
@@ -855,8 +855,28 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent);
 }
 
-.paperclip-markdown table {
-  width: 100%;
+.paperclip-markdown-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.paperclip-markdown-table-scroll:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.paperclip-markdown-table-scroll table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+}
+
+.paperclip-markdown-table-scroll :where(th, td) {
+  min-width: 8rem;
+  max-width: 18rem;
+  vertical-align: top;
 }
 
 .paperclip-markdown th {
