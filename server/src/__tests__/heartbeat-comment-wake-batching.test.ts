@@ -1566,7 +1566,8 @@ describe("heartbeat comment wake batching", () => {
           .select()
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.agentId, agentId));
-        return runs.length === 1 && runs[0]?.status === "succeeded" && runs[0]?.issueCommentStatus === "satisfied";
+        const sourceRun = runs.find((run) => run.id === firstRun?.id);
+        return sourceRun?.status === "succeeded" && sourceRun.issueCommentStatus === "satisfied";
       });
 
       const runs = await db
@@ -1574,9 +1575,9 @@ describe("heartbeat comment wake batching", () => {
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.agentId, agentId));
 
-      expect(runs).toHaveLength(1);
-      expect(runs[0]?.issueCommentStatus).toBe("satisfied");
-      expect(runs[0]?.issueCommentSatisfiedByCommentId).not.toBeNull();
+      const sourceRun = runs.find((run) => run.id === firstRun?.id);
+      expect(sourceRun?.issueCommentStatus).toBe("satisfied");
+      expect(sourceRun?.issueCommentSatisfiedByCommentId).not.toBeNull();
 
       const comments = await db
         .select()
@@ -1584,16 +1585,17 @@ describe("heartbeat comment wake batching", () => {
         .where(eq(issueComments.issueId, issueId))
         .orderBy(asc(issueComments.createdAt));
 
-      expect(comments).toHaveLength(1);
-      expect(comments[0]?.body).toBe("Manual completion comment from the run.");
-      expect(comments[0]?.createdByRunId).toBe(firstRun?.id);
+      expect(comments.some((comment) => comment.body === "Manual completion comment from the run.")).toBe(true);
+      expect(comments.some((comment) => comment.body.startsWith("## This issue still needs a next step"))).toBe(true);
+      expect(comments.every((comment) => !comment.body.startsWith("## Run summary"))).toBe(true);
 
       const wakeups = await db
         .select()
         .from(agentWakeupRequests)
         .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
 
-      expect(wakeups).toHaveLength(1);
+      expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
+      expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

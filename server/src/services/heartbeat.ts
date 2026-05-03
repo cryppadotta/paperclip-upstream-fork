@@ -3147,7 +3147,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(resultJson.result),
       readNonEmptyString(resultJson.message),
     ].filter((value): value is string => Boolean(value));
-    const summary = candidates[0] ?? "The run reported progress, but did not choose a next step.";
+    const summary = candidates[0];
+    if (!summary) return null;
     return redactDetectedSuccessfulRunProgressSummaryForBoard(
       summary,
       await getCurrentUserRedactionOptions(),
@@ -3404,7 +3405,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issue,
       run,
       agent,
-      detectedProgressSummary,
+      detectedProgressSummary: detectedProgressSummary ?? "The run reported progress, but did not choose a next step.",
     });
     await logActivity(db, {
       companyId: issue.companyId,
@@ -6320,10 +6321,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
-        await finalizeIssueCommentPolicy(livenessRun, agent);
+        const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
         await handleRunLivenessContinuation(livenessRun);
-        await handleSuccessfulRunHandoff(livenessRun, agent);
+        await handleSuccessfulRunHandoff(
+          issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
+            ? {
+              ...livenessRun,
+              issueCommentStatus: issueCommentPolicyResult.outcome,
+            }
+            : livenessRun,
+          agent,
+        );
       }
 
       if (finalizedRun) {

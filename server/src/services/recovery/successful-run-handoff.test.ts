@@ -94,6 +94,20 @@ describe("successful run handoff decision", () => {
     });
   });
 
+  it("does not queue when a successful run has no progress signal", () => {
+    expect(decide({ livenessState: null, detectedProgressSummary: null })).toEqual({
+      kind: "skip",
+      reason: "successful run did not produce handoff-relevant progress",
+    });
+  });
+
+  it("does not queue on missing-comment retry bookkeeping runs", () => {
+    expect(decide({ run: { ...run, issueCommentStatus: "retry_exhausted" } as any })).toEqual({
+      kind: "skip",
+      reason: "missing issue comment retry owns the next action",
+    });
+  });
+
   it("does not loop from a corrective handoff run", () => {
     expect(decide({
       run: {

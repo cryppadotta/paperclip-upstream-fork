@@ -154,6 +154,9 @@ export function decideSuccessfulRunHandoff(input: {
 
   if (run.status !== "succeeded") return { kind: "skip", reason: "source run did not succeed" };
   if (isCorrectiveHandoffRun(run)) return { kind: "skip", reason: "source run is already a corrective handoff run" };
+  if (run.issueCommentStatus === "retry_queued" || run.issueCommentStatus === "retry_exhausted") {
+    return { kind: "skip", reason: "missing issue comment retry owns the next action" };
+  }
   if (!issue) return { kind: "skip", reason: "issue not found" };
   if (!agent) return { kind: "skip", reason: "agent not found" };
   if (issue.companyId !== run.companyId || agent.companyId !== run.companyId) {
