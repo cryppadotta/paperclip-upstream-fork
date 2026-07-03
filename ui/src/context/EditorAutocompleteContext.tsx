@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
+import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { routinesApi } from "../api/routines";
 import { useCompany } from "./CompanyContext";
@@ -28,7 +29,24 @@ export interface RoutineCommandOption {
   aliases: string[];
 }
 
-export type SlashCommandOption = SkillCommandOption | RoutineCommandOption;
+/**
+ * A chat/slash command advertised by the issue assignee's adapter (Codex
+ * `/goal`, etc.). Unlike skills/routines these insert as literal `/name` text
+ * so the server's leading-slash command router recognizes them — they are NOT
+ * rendered as mention links. Only commands the assignee can actually honor are
+ * listed (the adapter capability endpoint returns `[]` otherwise), so a
+ * non-goal agent simply shows no `/goal` entry.
+ */
+export interface ChatCommandOption {
+  id: string;
+  kind: "chat-command";
+  name: string;
+  argHint: string | null;
+  description: string;
+  aliases: string[];
+}
+
+export type SlashCommandOption = SkillCommandOption | RoutineCommandOption | ChatCommandOption;
 
 interface EditorAutocompleteContextValue {
   slashCommands: SlashCommandOption[];
@@ -38,7 +56,18 @@ const EditorAutocompleteContext = createContext<EditorAutocompleteContextValue>(
   slashCommands: [],
 });
 
-export function EditorAutocompleteProvider({ children }: { children: ReactNode }) {
+export function EditorAutocompleteProvider({
+  children,
+  assigneeAgentId = null,
+}: {
+  children: ReactNode;
+  /**
+   * When set, the assignee agent's advertised chat commands (e.g. Codex
+   * `/goal`) are added to the autocomplete. Used by the issue-thread composer
+   * so `/` lists commands addressed to the issue's assignee.
+   */
+  assigneeAgentId?: string | null;
+}) {
   const { selectedCompanyId } = useCompany();
   const { data: companySkills = [] } = useQuery({
     queryKey: selectedCompanyId
@@ -54,9 +83,26 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
     queryFn: () => routinesApi.list(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
   });
+  const { data: chatCommands = [] } = useQuery({
+    queryKey: assigneeAgentId
+      ? queryKeys.agents.chatCommands(assigneeAgentId)
+      : ["agents", "chat-commands", "__none__"],
+    queryFn: () => agentsApi.listChatCommands(assigneeAgentId!, selectedCompanyId ?? undefined),
+    enabled: Boolean(assigneeAgentId),
+  });
 
   const value = useMemo<EditorAutocompleteContextValue>(() => ({
     slashCommands: [
+      // Assignee chat commands lead the list so `/goal` is the first, most
+      // prominent suggestion when a goal-enabled agent is addressed.
+      ...chatCommands.map((command) => ({
+        id: `chat-command:${command.name}`,
+        kind: "chat-command" as const,
+        name: command.name,
+        argHint: command.argHint ?? null,
+        description: command.description,
+        aliases: [command.name, `/${command.name}`],
+      })),
       ...companySkills.map((skill) => ({
         id: `skill:${skill.id}`,
         kind: "skill" as const,
@@ -81,7 +127,7 @@ export function EditorAutocompleteProvider({ children }: { children: ReactNode }
           aliases: [`routine:${routine.title}`, routine.title, routine.id],
         })),
     ],
-  }), [companySkills, routines]);
+  }), [chatCommands, companySkills, routines]);
 
   return (
     <EditorAutocompleteContext.Provider value={value}>

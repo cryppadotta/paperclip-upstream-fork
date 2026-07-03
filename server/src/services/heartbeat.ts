@@ -117,6 +117,7 @@ import {
   normalizeMaxTurnStopReason,
 } from "./heartbeat-stop-metadata.js";
 import {
+  buildGoalChatCommandReplyPresentation,
   buildUnsupportedChatCommandReply,
   isHumanIssueChatCommandComment,
   parseLeadingIssueChatCommand,
@@ -15921,7 +15922,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (!existingRunComment) {
               const issueComment = buildHeartbeatRunIssueComment(persistedResultJson);
               if (issueComment) {
-                await issuesSvc.addComment(issueId, issueComment, { agentId: agent.id, runId: livenessRun.id });
+                // Supported adapter chat-command replies (e.g. Codex `/goal`)
+                // render as a structured goal card; everything else posts as a
+                // plain run-summary comment.
+                const goalReply = buildGoalChatCommandReplyPresentation(persistedResultJson);
+                await issuesSvc.addComment(
+                  issueId,
+                  issueComment,
+                  { agentId: agent.id, runId: livenessRun.id },
+                  goalReply
+                    ? { presentation: goalReply.presentation, metadata: goalReply.metadata }
+                    : undefined,
+                );
               }
             }
           } catch (err) {

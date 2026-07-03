@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGoalChatCommandReplyPresentation,
   buildUnsupportedChatCommandReply,
   isHumanIssueChatCommandComment,
   parseLeadingIssueChatCommand,
@@ -47,5 +48,55 @@ describe("issue chat command router helpers", () => {
       supported: false,
       sourceCommentId: "comment-1",
     });
+  });
+});
+
+describe("buildGoalChatCommandReplyPresentation", () => {
+  it("ignores results that are not supported goal command replies", () => {
+    expect(buildGoalChatCommandReplyPresentation(null)).toBeNull();
+    expect(buildGoalChatCommandReplyPresentation({ summary: "done" })).toBeNull();
+    // The unsupported reply carries `supported: false` and no `action`.
+    expect(
+      buildGoalChatCommandReplyPresentation({ chatCommand: { name: "goal", supported: false } }),
+    ).toBeNull();
+    // A different command should not render as a goal card.
+    expect(
+      buildGoalChatCommandReplyPresentation({ chatCommand: { name: "review", action: "status" } }),
+    ).toBeNull();
+  });
+
+  it("renders a success card with objective + budget for /goal set", () => {
+    const built = buildGoalChatCommandReplyPresentation({
+      chatCommand: { name: "goal", action: "set" },
+      codexGoal: { objective: "Ship the feature", status: "active", tokenBudget: 500000, tokensUsed: 0 },
+      summary: "Goal set: Ship the feature - budget 500,000 tokens",
+    });
+    expect(built?.presentation).toMatchObject({ kind: "system_notice", tone: "success", title: "Goal set" });
+    expect(built?.metadata.sections[0]?.rows).toEqual([
+      { type: "key_value", label: "Objective", value: "Ship the feature" },
+      { type: "key_value", label: "Status", value: "active" },
+      { type: "key_value", label: "Budget", value: "0 / 500,000 tokens" },
+    ]);
+  });
+
+  it("uses a warning tone when /goal status reports a blocked goal", () => {
+    const built = buildGoalChatCommandReplyPresentation({
+      chatCommand: { name: "goal", action: "status" },
+      codexGoal: { objective: "Ship it", status: "blocked", tokenBudget: null, tokensUsed: 1234 },
+    });
+    expect(built?.presentation).toMatchObject({ tone: "warning", title: "Goal status" });
+    expect(built?.metadata.sections[0]?.rows).toContainEqual({
+      type: "key_value",
+      label: "Tokens used",
+      value: "1,234",
+    });
+  });
+
+  it("renders a neutral cleared card", () => {
+    const built = buildGoalChatCommandReplyPresentation({
+      chatCommand: { name: "goal", action: "clear" },
+      codexGoal: { objective: "", status: "cleared", tokenBudget: null, tokensUsed: 0 },
+    });
+    expect(built?.presentation).toMatchObject({ tone: "neutral", title: "Goal cleared" });
   });
 });
