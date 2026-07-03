@@ -29,6 +29,7 @@ import {
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
+  asBoolean,
   asString,
   asNumber,
   parseObject,
@@ -104,6 +105,14 @@ import {
   formatCodexAcpFallbackMessage,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
+import {
+  CODEX_APP_SERVER_RUNTIME,
+  buildCodexGoalObjective,
+  executeCodexAppServerGoalRun,
+  fingerprintCodexGoalObjective,
+  readCodexGoalConfig,
+  readContextIssueRef,
+} from "./app-server/index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -564,6 +573,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "codex");
   const model = asString(config.model, "");
+  const codexGoalConfig = readCodexGoalConfig(config);
+  const codexAppServerGoalMode =
+    codexGoalConfig.runtime === CODEX_APP_SERVER_RUNTIME && codexGoalConfig.goal.enabled;
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -604,6 +616,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  if (codexGoalConfig.runtime === CODEX_APP_SERVER_RUNTIME && !codexGoalConfig.goal.enabled) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Codex app-server runtime requires goal.enabled=true in adapter config.",
+      errorCode: "codex_goal_config_invalid",
+      provider: "openai",
+      biller: null,
+      model,
+      billingType: null,
+      costUsd: null,
+      resultJson: {
+        runtime: CODEX_APP_SERVER_RUNTIME,
+        errorCode: "codex_goal_config_invalid",
+      },
+      summary: "",
+    };
+  }
+  if (codexAppServerGoalMode && executionTargetIsRemote) {
+    return {
+      exitCode: null,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Codex goal runtime is only supported for local execution targets.",
+      errorCode: "codex_goal_remote_unsupported",
+      provider: "openai",
+      biller: null,
+      model,
+      billingType: null,
+      costUsd: null,
+      resultJson: {
+        runtime: CODEX_APP_SERVER_RUNTIME,
+        errorCode: "codex_goal_remote_unsupported",
+      },
+      summary: "",
+    };
+  }
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -921,10 +971,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
-    if (authToken) {
+    if (authToken && !codexAppServerGoalMode) {
       env.PAPERCLIP_API_KEY = authToken;
     }
-    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
+    if (codexAppServerGoalMode) {
+      delete env.PAPERCLIP_API_KEY;
+      delete env.PAPERCLIP_API_BRIDGE_MODE;
+    }
+    if (!codexAppServerGoalMode && executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
       paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
         target: runtimeExecutionTarget,
@@ -1016,10 +1070,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const currentIssueRef = readContextIssueRef(context);
+    const codexGoalObjective = buildCodexGoalObjective(context, "");
+    const codexGoalObjectiveFingerprint = fingerprintCodexGoalObjective(codexGoalObjective);
+    const runtimeFeatures = Array.isArray(runtimeSessionParams.features)
+      ? runtimeSessionParams.features.filter((value): value is string => typeof value === "string")
+      : [];
+    const runtimeGoalSessionMatches =
+      !codexAppServerGoalMode ||
+      (
+        asString(runtimeSessionParams.protocol, "") === "app_server" &&
+        runtimeFeatures.includes("goal") &&
+        (!currentIssueRef.id || asString(runtimeSessionParams.issueId, "") === currentIssueRef.id) &&
+        asString(runtimeSessionParams.objectiveFingerprint, "") === codexGoalObjectiveFingerprint
+      );
     const canResumeSession =
       runtimeSessionId.length > 0 &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget) &&
+      runtimeGoalSessionMatches;
     const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
     const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
     const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
@@ -1034,6 +1103,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
+      if (codexAppServerGoalMode && !runtimeGoalSessionMatches) {
+        await onLog(
+          "stdout",
+          "[paperclip] Skipping saved Codex app-server goal session because its issue id or objective fingerprint does not match this Paperclip issue.\n",
+        );
+      }
     }
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
     const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
@@ -1317,6 +1392,86 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     };
 
+    const runGoalAttempt = async (resumeSessionId: string | null) => {
+      const bypass = asBoolean(
+        config.dangerouslyBypassApprovalsAndSandbox,
+        asBoolean(config.dangerouslyBypassSandbox, false),
+      );
+      const modelReasoningEffort = asString(
+        config.modelReasoningEffort,
+        asString(config.reasoningEffort, ""),
+      ).trim();
+      const goalTimeoutSec = codexGoalConfig.goal.timeoutSec ?? (timeoutSec > 0 ? timeoutSec : 3600);
+      const threadConfig: Record<string, unknown> = {
+        cwd: effectiveExecutionCwd,
+        approvalPolicy: "never",
+        sandbox: bypass ? "danger-full-access" : "workspace-write",
+        ...(model ? { model } : {}),
+        baseInstructions: promptInstructionsPrefix || null,
+        developerInstructions: commandNotes.join("\n"),
+        ephemeral: false,
+      };
+      const commandNotesWithGoal = [
+        ...commandNotes,
+        "Using Codex app-server goal runtime over stdio; Paperclip API write credentials are not injected into goal-mode processes.",
+      ];
+      if (onMeta) {
+        await onMeta({
+          adapterType: "codex_local",
+          command: resolvedCommand,
+          cwd: effectiveExecutionCwd,
+          commandNotes: commandNotesWithGoal,
+          commandArgs: ["app-server", "--listen", "stdio://", "--enable", "goals"],
+          env: loggedEnv,
+          prompt,
+          promptMetrics,
+          context,
+        });
+      }
+
+      const proc = await executeCodexAppServerGoalRun({
+        runId,
+        command,
+        cwd: effectiveExecutionCwd,
+        env,
+        prompt,
+        model,
+        reasoningEffort: modelReasoningEffort || null,
+        objective: codexGoalObjective,
+        objectiveFingerprint: codexGoalObjectiveFingerprint,
+        issueId: currentIssueRef.id,
+        resumeThreadId: resumeSessionId,
+        tokenBudget: codexGoalConfig.goal.tokenBudget,
+        timeoutSec: goalTimeoutSec,
+        graceSec,
+        stopAfterTurn: codexGoalConfig.goal.stopAfterTurn,
+        pauseOnExit: true,
+        thread: threadConfig,
+        onLog: async (stream, chunk) => {
+          if (stream !== "stderr") {
+            await onLog(stream, chunk);
+            return;
+          }
+          const cleaned = stripCodexRolloutNoise(chunk);
+          if (!cleaned.trim()) return;
+          await onLog(stream, cleaned);
+        },
+        onSpawn,
+      });
+      return {
+        proc: {
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          timedOut: proc.timedOut,
+          stdout: proc.stdout,
+          stderr: stripCodexRolloutNoise(proc.stderr),
+        },
+        rawStderr: proc.rawStderr,
+        parsed: parseCodexJsonl(proc.stdout),
+        monitor: { fired: false as const },
+      };
+    };
+
     const toResult = (
       attempt: {
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string };
@@ -1388,6 +1543,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ...(workspaceId ? { workspaceId } : {}),
           ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(codexAppServerGoalMode
+            ? {
+                protocol: "app_server",
+                features: ["goal"],
+                goalRuntimeMode: CODEX_APP_SERVER_RUNTIME,
+                issueId: currentIssueRef.id,
+                objectiveFingerprint: codexGoalObjectiveFingerprint,
+              }
+            : {}),
         } as Record<string, unknown>)
         : null;
       const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
@@ -1441,17 +1605,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const errorFamily =
         authRefreshFailure ??
         (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
+      const goalErrorCode =
+        codexAppServerGoalMode && typeof attempt.parsed.errorCode === "string" && attempt.parsed.errorCode.trim()
+          ? attempt.parsed.errorCode.trim()
+          : null;
+      const shouldTreatGoalErrorAsFailure =
+        goalErrorCode != null &&
+        ["codex_goal_budget_limited", "codex_goal_blocked", "codex_goal_usage_limited"].includes(goalErrorCode);
+      const effectiveExitCode = shouldTreatGoalErrorAsFailure && (attempt.proc.exitCode ?? 0) === 0
+        ? 1
+        : attempt.proc.exitCode;
 
       return {
-        exitCode: attempt.proc.exitCode,
+        exitCode: effectiveExitCode,
         signal: attempt.proc.signal,
         timedOut: false,
         errorMessage:
-          (attempt.proc.exitCode ?? 0) === 0
+          (effectiveExitCode ?? 0) === 0
             ? null
             : fallbackErrorMessage,
         errorCode:
-          authRefreshFailure
+          goalErrorCode ??
+          (authRefreshFailure
             ? authRefreshFailure
             : providerQuota
             ? "provider_quota"
@@ -1459,7 +1634,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             ? "codex_transient_upstream"
             : harnessCrash
             ? "codex_harness_crash"
-            : null,
+            : null),
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
         usage: attempt.parsed.usage,
@@ -1476,6 +1651,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
           ...(errorFamily ? { errorFamily } : {}),
+          ...(codexAppServerGoalMode ? { codexGoal: attempt.parsed.codexGoal ?? null } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -1486,6 +1662,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
 
     try {
+      if (codexAppServerGoalMode) {
+        const initial = await runGoalAttempt(sessionId);
+        return toResult(initial, false, false);
+      }
+
       const initial = await runAttempt(sessionId);
       if (
         sessionId &&

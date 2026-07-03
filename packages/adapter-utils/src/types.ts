@@ -513,6 +513,17 @@ export type TranscriptEntry =
   | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
+  | {
+      kind: "goal_update";
+      ts: string;
+      phase: "init" | "progress" | "transition" | "final";
+      status: "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete" | "cleared" | "error";
+      objective?: string;
+      tokensUsed?: number;
+      tokenBudget?: number | null;
+      timeUsedSeconds?: number;
+      reason?: string;
+    }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
   | { kind: "stderr"; ts: string; text: string }
   | { kind: "system"; ts: string; text: string }
@@ -571,6 +582,8 @@ export interface CreateConfigValues {
   geminiAcpWarmHandleIdleMs?: number;
   search: boolean;
   fastMode: boolean;
+  goalRuntime?: "off" | "app_server_experimental";
+  goalTokenBudget?: number;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;
