@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { fingerprintCodexGoalObjective } from "./app-server/index.js";
 import { execute } from "./execute.js";
 
 type Capture = {
@@ -23,10 +24,22 @@ afterEach(async () => {
   }
 });
 
-async function writeFakeCodexAppServer(commandPath: string, status: "complete" | "blocked" | "usageLimited" = "complete") {
+async function writeFakeCodexAppServer(
+  commandPath: string,
+  options: {
+    status?: "complete" | "blocked" | "usageLimited";
+    unsupportedGoalSet?: boolean;
+  } = {},
+) {
+  const status = options.status ?? "complete";
   const script = `#!/usr/bin/env node
 const fs = require("node:fs");
 const readline = require("node:readline");
+
+if (process.argv[2] === "--version") {
+  console.log("codex-cli 0.0.0-test");
+  process.exit(0);
+}
 
 const capturePath = process.env.PAPERCLIP_TEST_CAPTURE_PATH;
 let threadId = "thread-goal-1";
@@ -99,6 +112,10 @@ rl.on("line", (line) => {
       result(message.id, { turn: { id: turnId } });
       break;
     case "thread/goal/set": {
+      if (${JSON.stringify(options.unsupportedGoalSet === true)}) {
+        send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+        break;
+      }
       const activeGoal = {
         threadId,
         objective: message.params.objective || "goal",
@@ -133,6 +150,7 @@ rl.on("line", (line) => {
       break;
     case "thread/goal/clear":
       send({ method: "thread/goal/cleared", params: { threadId } });
+      threadId = "thread-goal-1";
       result(message.id, {});
       break;
     default:
@@ -207,7 +225,20 @@ async function prepareFixture(status: "complete" | "blocked" | "usageLimited" = 
   await fs.mkdir(workspace, { recursive: true });
   await fs.mkdir(codexHome, { recursive: true });
   await fs.writeFile(path.join(codexHome, "auth.json"), "{}", "utf8");
-  await writeFakeCodexAppServer(commandPath, status);
+  await writeFakeCodexAppServer(commandPath, { status });
+  return { capturePath, input };
+}
+
+async function prepareUnsupportedGoalSetFixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-app-server-unsupported-"));
+  cleanupDirs.push(root);
+  const commandPath = path.join(root, "codex");
+  const capturePath = path.join(root, "capture.json");
+  const { workspace, codexHome, input } = baseExecuteInput(root, commandPath, capturePath);
+  await fs.mkdir(workspace, { recursive: true });
+  await fs.mkdir(codexHome, { recursive: true });
+  await fs.writeFile(path.join(codexHome, "auth.json"), "{}", "utf8");
+  await writeFakeCodexAppServer(commandPath, { unsupportedGoalSet: true });
   return { capturePath, input };
 }
 
@@ -310,6 +341,39 @@ describe("codex app-server goal runtime", () => {
     expect(capture.methods).not.toContain("turn/start");
   });
 
+  it("refuses to resume a saved goal session when the live objective fingerprint mismatches", async () => {
+    const { capturePath, input } = await prepareFixture();
+    const expectedObjective = "Complete Paperclip issue PAP-12601 Port goal runtime.";
+    const result = await execute({
+      ...input,
+      runtime: {
+        sessionId: "thread-goal-stale",
+        sessionParams: {
+          sessionId: "thread-goal-stale",
+          protocol: "app_server",
+          features: ["goal"],
+          issueId: "issue-1",
+          objectiveFingerprint: fingerprintCodexGoalObjective(expectedObjective),
+        },
+        sessionDisplayId: "thread-goal-stale",
+        taskKey: null,
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+    expect(result.sessionId).toBe("thread-goal-1");
+
+    const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as Capture;
+    expect(capture.methods).toEqual(expect.arrayContaining([
+      "thread/resume",
+      "thread/goal/get",
+      "thread/goal/clear",
+      "thread/start",
+      "thread/goal/set",
+    ]));
+  });
+
   it("maps blocked and usageLimited goal statuses to terminal error codes instead of waiting for timeout", async () => {
     const blocked = await prepareFixture("blocked");
     const blockedResult = await execute(blocked.input);
@@ -336,5 +400,17 @@ describe("codex app-server goal runtime", () => {
 
     expect(result.exitCode).toBeNull();
     expect(result.errorCode).toBe("codex_goal_remote_unsupported");
+  });
+
+  it("maps missing thread/goal/set support to codex_goal_unsupported_cli", async () => {
+    const { capturePath, input } = await prepareUnsupportedGoalSetFixture();
+    const result = await execute(input);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("codex_goal_unsupported_cli");
+    expect(result.errorMessage).toContain("does not support thread/goal/set");
+
+    const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as Capture;
+    expect(capture.methods).toEqual(expect.arrayContaining(["thread/goal/set"]));
   });
 });

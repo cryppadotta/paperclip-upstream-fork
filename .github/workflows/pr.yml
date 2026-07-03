@@ -435,6 +435,14 @@ jobs:
         # browser bundles inside the 30 minute job budget.
         run: google-chrome --version
 
+      - name: Optional Codex goal app-server probe
+        run: |
+          if command -v codex >/dev/null 2>&1; then
+            pnpm --filter @paperclipai/adapter-codex-local probe:goal
+          else
+            echo "codex binary not installed; skipping optional goal app-server probe"
+          fi
+
       - name: Generate Paperclip config
         run: |
           mkdir -p ~/.paperclip/instances/default
