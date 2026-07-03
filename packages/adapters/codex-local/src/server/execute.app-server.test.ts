@@ -85,6 +85,11 @@ rl.on("line", (line) => {
       send({ method: "thread/started", params: { thread: { id: threadId } } });
       result(message.id, { thread: { id: threadId } });
       break;
+    case "thread/resume":
+      threadId = message.params?.threadId || threadId;
+      send({ method: "thread/started", params: { thread: { id: threadId } } });
+      result(message.id, { thread: { id: threadId } });
+      break;
     case "turn/start":
       prompt = message.params?.input?.[0]?.text || null;
       send({ method: "turn/started", params: { threadId, turn: { id: turnId } } });
@@ -238,6 +243,73 @@ describe("codex app-server goal runtime", () => {
     ]));
   });
 
+  it("handles /goal status without starting a model turn", async () => {
+    const { capturePath, input } = await prepareFixture();
+    const result = await execute({
+      ...input,
+      runtime: {
+        sessionId: "thread-goal-1",
+        sessionParams: {
+          sessionId: "thread-goal-1",
+          protocol: "app_server",
+          features: ["goal"],
+          issueId: "issue-1",
+        },
+        sessionDisplayId: "thread-goal-1",
+        taskKey: null,
+      },
+      context: {
+        ...input.context,
+        paperclipChatCommand: {
+          name: "goal",
+          raw: "/goal status",
+          args: "status",
+          sourceCommentId: "comment-1",
+          sourceAuthorType: "user",
+        },
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.errorMessage).toBeNull();
+    expect(result.summary).toContain("Goal status: active");
+    expect(result.resultJson?.chatCommand).toMatchObject({ name: "goal", action: "status" });
+
+    const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as Capture;
+    expect(capture.methods).toEqual(expect.arrayContaining(["initialize", "thread/resume", "thread/goal/get"]));
+    expect(capture.methods).not.toContain("turn/start");
+    expect(capture.prompt).toBeNull();
+  });
+
+  it("handles /goal set with the user-supplied objective", async () => {
+    const { capturePath, input } = await prepareFixture();
+    const result = await execute({
+      ...input,
+      context: {
+        ...input.context,
+        paperclipChatCommand: {
+          name: "goal",
+          raw: "/goal ship the feature",
+          args: "ship the feature",
+          sourceCommentId: "comment-1",
+          sourceAuthorType: "user",
+        },
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toContain("Goal set: ship the feature");
+    expect(result.sessionParams).toMatchObject({
+      protocol: "app_server",
+      features: ["goal"],
+      issueId: "issue-1",
+    });
+
+    const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as Capture;
+    expect(capture.methods).toEqual(expect.arrayContaining(["thread/start", "thread/goal/set"]));
+    expect(capture.methods).not.toContain("turn/start");
+  });
+
   it("maps blocked and usageLimited goal statuses to terminal error codes instead of waiting for timeout", async () => {
     const blocked = await prepareFixture("blocked");
     const blockedResult = await execute(blocked.input);
@@ -266,4 +338,3 @@ describe("codex app-server goal runtime", () => {
     expect(result.errorCode).toBe("codex_goal_remote_unsupported");
   });
 });
-

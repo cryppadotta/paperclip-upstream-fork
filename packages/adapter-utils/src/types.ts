@@ -416,11 +416,32 @@ export interface AcpTargetDescriptor {
   };
 }
 
+export interface AdapterChatCommand {
+  name: string;
+  argHint?: string | null;
+  description: string;
+}
+
+export interface AdapterChatCommandContext {
+  adapterConfig: Record<string, unknown>;
+  runtimeConfig?: Record<string, unknown> | null;
+  agent?: AdapterAgent | null;
+}
+
+export interface AdapterChatCommandInvocation {
+  name: string;
+  raw: string;
+  args: string;
+  sourceCommentId: string | null;
+  sourceAuthorType: "user" | "agent" | "system" | null;
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
   acp?: AcpTargetDescriptor;
+  listChatCommands?: (ctx: AdapterChatCommandContext) => Promise<AdapterChatCommand[]> | AdapterChatCommand[];
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;

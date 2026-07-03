@@ -54,6 +54,40 @@ export interface ExecuteCodexGoalRunInput {
   onSpawn?: AdapterExecutionContext["onSpawn"];
 }
 
+export type CodexGoalChatCommandAction = "set" | "status" | "clear";
+
+export interface ExecuteCodexGoalCommandInput {
+  runId: string;
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+  action: CodexGoalChatCommandAction;
+  objective: string | null;
+  objectiveFingerprint: string | null;
+  issueId: string | null;
+  resumeThreadId: string | null;
+  tokenBudget: number | null;
+  graceSec: number;
+  thread: Record<string, unknown>;
+  onLog: AdapterExecutionContext["onLog"];
+  onSpawn?: AdapterExecutionContext["onSpawn"];
+}
+
+export interface CodexGoalCommandResult {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  rawStderr: string;
+  sessionId: string | null;
+  goal: CodexGoalSnapshot | null;
+  summary: string;
+  errorMessage: string | null;
+  errorCode: string | null;
+  clearSession?: boolean;
+}
+
 function asNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -434,4 +468,200 @@ export async function executeCodexAppServerGoalRun(input: ExecuteCodexGoalRunInp
     usage,
     errorMessage,
   };
+}
+
+export async function executeCodexAppServerGoalCommand(
+  input: ExecuteCodexGoalCommandInput,
+): Promise<CodexGoalCommandResult> {
+  const stdoutEvents: string[] = [];
+  const emitEvent = (event: Record<string, unknown>) => {
+    const line = JSON.stringify(event);
+    stdoutEvents.push(line);
+    void input.onLog("stdout", `${line}\n`).catch(() => undefined);
+  };
+
+  let threadId: string | null = null;
+  let lastGoal: CodexGoalSnapshot | null = null;
+  let errorMessage: string | null = null;
+  let errorCode: string | null = null;
+  let exitCode: number | null = 0;
+  let timedOut = false;
+
+  const transport = new CodexAppServerTransport({
+    runId: input.runId,
+    command: input.command,
+    args: ["app-server", "--listen", "stdio://", "--enable", "goals"],
+    cwd: input.cwd,
+    env: input.env,
+    onLog: input.onLog,
+    onSpawn: input.onSpawn,
+    onStdoutEvent: (message) => {
+      const method = asString(message.method, "");
+      const params = parseObject(message.params);
+      if (method === "thread/started") {
+        const thread = parseObject(params.thread);
+        threadId = asString(thread.id, threadId ?? "") || threadId;
+        emitEvent({ type: "thread.started", thread_id: threadId, model: "codex" });
+        return;
+      }
+      if (method === "thread/goal/updated") {
+        const goal = normalizeGoal(params.goal, threadId);
+        if (goal) {
+          lastGoal = goal;
+          emitEvent({ type: "goal.updated", thread_id: goal.threadId, goal });
+        }
+        return;
+      }
+      if (method === "thread/goal/cleared") {
+        lastGoal = lastGoal
+          ? { ...lastGoal, status: "cleared", reason: "Goal cleared" }
+          : {
+              threadId,
+              objective: "",
+              status: "cleared",
+              tokenBudget: null,
+              tokensUsed: 0,
+              timeUsedSeconds: 0,
+              createdAt: null,
+              updatedAt: Math.floor(Date.now() / 1000),
+              reason: "Goal cleared",
+            };
+        emitEvent({ type: "goal.cleared", thread_id: params.threadId ?? threadId, reason: "Goal cleared" });
+      }
+    },
+  });
+
+  try {
+    await transport.start();
+    await transport.request("initialize", {
+      clientInfo: { name: "paperclip", title: "Paperclip", version: "0.0.0" },
+      capabilities: { experimentalApi: true },
+    });
+    transport.notify("initialized");
+
+    if (input.resumeThreadId) {
+      const resumed = await transport.request("thread/resume", { ...input.thread, threadId: input.resumeThreadId });
+      threadId = threadIdFromResult(resumed);
+    }
+
+    if (!threadId && input.action === "set") {
+      const started = await transport.request("thread/start", { ...input.thread, ephemeral: false });
+      threadId = threadIdFromResult(started);
+    }
+
+    if (!threadId) {
+      const message = input.action === "status" ? "No active Codex goal is stored for this issue." : "No Codex goal is stored for this issue.";
+      return {
+        exitCode: 0,
+        signal: transport.signal,
+        timedOut: false,
+        stdout: stdoutEvents.join("\n") + (stdoutEvents.length > 0 ? "\n" : ""),
+        stderr: transport.capturedStderr,
+        rawStderr: transport.capturedStderr,
+        sessionId: null,
+        goal: null,
+        summary: message,
+        errorMessage: null,
+        errorCode: null,
+        clearSession: input.action === "clear",
+      };
+    }
+
+    if (input.action === "set") {
+      if (!input.objective || !input.objectiveFingerprint) {
+        throw new Error("`/goal` needs an objective, or use `/goal status` / `/goal clear`.");
+      }
+      let setGoalResult: unknown;
+      try {
+        setGoalResult = await transport.request("thread/goal/set", {
+          threadId,
+          objective: input.objective,
+          status: "active",
+          tokenBudget: input.tokenBudget,
+        });
+      } catch (error) {
+        if (error instanceof CodexAppServerError && (error.code === -32601 || error.code === "-32601")) {
+          const version = await readCodexCliVersion(input.command, input.cwd, input.env);
+          throw new CodexAppServerError(
+            `Codex CLI ${version} does not support thread/goal/set; enable a Codex CLI with the goals app-server RPC.`,
+            { code: "codex_goal_unsupported_cli" },
+          );
+        }
+        throw error;
+      }
+      const goal = normalizeGoal(parseObject(setGoalResult).goal, threadId);
+      if (goal) {
+        lastGoal = goal;
+        emitEvent({ type: "goal.updated", thread_id: threadId, goal });
+      }
+    } else if (input.action === "status") {
+      const got = await transport.request("thread/goal/get", { threadId }, 5_000).catch(() => null);
+      lastGoal = normalizeGoal(parseObject(got).goal, threadId);
+      if (lastGoal) emitEvent({ type: "goal.updated", thread_id: threadId, goal: lastGoal });
+    } else {
+      await transport.request("thread/goal/clear", { threadId }, 5_000);
+      const previousGoal = lastGoal as CodexGoalSnapshot | null;
+      lastGoal = previousGoal
+        ? { ...previousGoal, status: "cleared", reason: "Goal cleared" }
+        : {
+            threadId,
+            objective: "",
+            status: "cleared",
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: null,
+            updatedAt: Math.floor(Date.now() / 1000),
+            reason: "Goal cleared",
+          };
+      emitEvent({ type: "goal.cleared", thread_id: threadId, reason: "Goal cleared" });
+    }
+  } catch (error) {
+    exitCode = 1;
+    errorMessage = error instanceof Error ? error.message : String(error);
+    if (/timed out/i.test(errorMessage)) timedOut = true;
+    errorCode =
+      error instanceof CodexAppServerError && typeof error.code === "string"
+        ? error.code
+        : "codex_goal_command_failed";
+    emitEvent({
+      type: "error",
+      message: errorMessage,
+      errorCode,
+    });
+  } finally {
+    await transport.stopWithGrace(Math.max(1, input.graceSec) * 1000).catch(() => undefined);
+  }
+
+  const summary = formatCodexGoalCommandSummary(input.action, lastGoal, errorMessage);
+  return {
+    exitCode,
+    signal: transport.signal,
+    timedOut,
+    stdout: stdoutEvents.join("\n") + (stdoutEvents.length > 0 ? "\n" : ""),
+    stderr: transport.capturedStderr,
+    rawStderr: transport.capturedStderr,
+    sessionId: threadId,
+    goal: lastGoal,
+    summary,
+    errorMessage,
+    errorCode,
+    clearSession: input.action === "clear",
+  };
+}
+
+function formatCodexGoalCommandSummary(
+  action: CodexGoalChatCommandAction,
+  goal: CodexGoalSnapshot | null,
+  errorMessage: string | null,
+): string {
+  if (errorMessage) return errorMessage;
+  if (action === "clear") return "Goal cleared.";
+  if (!goal) return "No active Codex goal is stored for this issue.";
+  if (action === "set") {
+    const budget = goal.tokenBudget == null ? "" : ` - budget ${goal.tokenBudget.toLocaleString()} tokens`;
+    return `Goal set: ${goal.objective}${budget}`;
+  }
+  const budget = goal.tokenBudget == null ? "unbounded" : `${goal.tokenBudget.toLocaleString()} tokens`;
+  return `Goal status: ${goal.status}; ${goal.tokensUsed.toLocaleString()} tokens used of ${budget}.`;
 }

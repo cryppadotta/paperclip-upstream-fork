@@ -37,6 +37,20 @@ export {
 } from "./quota.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
+import type { AdapterChatCommand } from "@paperclipai/adapter-utils";
+import { CODEX_APP_SERVER_RUNTIME, readCodexGoalConfig } from "./app-server/index.js";
+
+export function listCodexChatCommands(ctx: { adapterConfig: Record<string, unknown> }): AdapterChatCommand[] {
+  const goalConfig = readCodexGoalConfig(ctx.adapterConfig);
+  if (goalConfig.runtime !== CODEX_APP_SERVER_RUNTIME || !goalConfig.goal.enabled) return [];
+  return [
+    {
+      name: "goal",
+      argHint: "<objective> | status | clear",
+      description: "Set, inspect, or clear the Codex goal for this issue thread.",
+    },
+  ];
+}
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;

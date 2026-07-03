@@ -27,6 +27,7 @@ import {
 } from "@paperclipai/adapter-claude-local";
 import {
   execute as codexExecute,
+  listCodexChatCommands,
   listCodexSkills,
   syncCodexSkills,
   testEnvironment as codexTestEnvironment,
@@ -266,6 +267,7 @@ const codexLocalAdapter: ServerAdapterModule = {
       packages: ["@agentclientprotocol/codex-acp"],
     },
   },
+  listChatCommands: listCodexChatCommands,
   listSkills: listCodexSkills,
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,

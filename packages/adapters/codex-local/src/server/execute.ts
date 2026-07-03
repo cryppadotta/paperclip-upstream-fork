@@ -10,6 +10,7 @@ import {
   resolveCodexAuthCacheEntryPath,
   selectVendCredential,
 } from "./codex-auth-cache.js";
+import type { AdapterChatCommandInvocation } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -108,6 +109,7 @@ import {
 import {
   CODEX_APP_SERVER_RUNTIME,
   buildCodexGoalObjective,
+  executeCodexAppServerGoalCommand,
   executeCodexAppServerGoalRun,
   fingerprintCodexGoalObjective,
   readCodexGoalConfig,
@@ -141,6 +143,41 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+function readChatCommandInvocation(context: Record<string, unknown>): AdapterChatCommandInvocation | null {
+  const raw = parseObject(context.paperclipChatCommand);
+  const name = asString(raw.name, "").trim().toLowerCase();
+  if (!name) return null;
+  return {
+    name,
+    raw: asString(raw.raw, ""),
+    args: asString(raw.args, ""),
+    sourceCommentId: asString(raw.sourceCommentId, "") || null,
+    sourceAuthorType: (() => {
+      const authorType = asString(raw.sourceAuthorType, "").trim();
+      return authorType === "user" || authorType === "agent" || authorType === "system" ? authorType : null;
+    })(),
+  };
+}
+
+function parseGoalChatCommand(args: string): {
+  action: "set" | "status" | "clear";
+  objective: string | null;
+  error: string | null;
+} {
+  const trimmed = args.trim();
+  if (!trimmed) {
+    return {
+      action: "set",
+      objective: null,
+      error: "`/goal` needs an objective, or use `/goal status` / `/goal clear`.",
+    };
+  }
+  const lower = trimmed.toLowerCase();
+  if (lower === "status") return { action: "status", objective: null, error: null };
+  if (lower === "clear") return { action: "clear", objective: null, error: null };
+  return { action: "set", objective: trimmed, error: null };
 }
 
 function signalCodexChild(
@@ -576,6 +613,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const codexGoalConfig = readCodexGoalConfig(config);
   const codexAppServerGoalMode =
     codexGoalConfig.runtime === CODEX_APP_SERVER_RUNTIME && codexGoalConfig.goal.enabled;
+  const chatCommand = readChatCommandInvocation(context);
+  const codexGoalChatCommand = chatCommand?.name === "goal" ? parseGoalChatCommand(chatCommand.args) : null;
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
@@ -635,7 +674,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       summary: "",
     };
   }
-  if (codexAppServerGoalMode && executionTargetIsRemote) {
+  if ((codexAppServerGoalMode || codexGoalChatCommand) && executionTargetIsRemote) {
     return {
       exitCode: null,
       signal: null,
@@ -1082,7 +1121,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         asString(runtimeSessionParams.protocol, "") === "app_server" &&
         runtimeFeatures.includes("goal") &&
         (!currentIssueRef.id || asString(runtimeSessionParams.issueId, "") === currentIssueRef.id) &&
-        asString(runtimeSessionParams.objectiveFingerprint, "") === codexGoalObjectiveFingerprint
+        (
+          codexGoalChatCommand != null ||
+          asString(runtimeSessionParams.objectiveFingerprint, "") === codexGoalObjectiveFingerprint
+        )
       );
     const canResumeSession =
       runtimeSessionId.length > 0 &&
@@ -1218,6 +1260,150 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (preparedRuntimeConfig.notes.length > 0) {
       commandNotes.unshift(...preparedRuntimeConfig.notes);
+    }
+    if (codexGoalChatCommand) {
+      if (codexGoalChatCommand.error) {
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          errorCode: null,
+          usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+          sessionId: undefined,
+          sessionParams: undefined,
+          sessionDisplayId: undefined,
+          provider: "openai",
+          biller: resolveCodexBiller(effectiveEnv, billingType),
+          model,
+          billingType,
+          costUsd: null,
+          resultJson: {
+            chatCommand: {
+              name: "goal",
+              action: "invalid",
+              sourceCommentId: chatCommand?.sourceCommentId ?? null,
+            },
+            summary: codexGoalChatCommand.error,
+          },
+          summary: codexGoalChatCommand.error,
+        };
+      }
+
+      const commandObjective = codexGoalChatCommand.objective;
+      const commandObjectiveFingerprint = commandObjective ? fingerprintCodexGoalObjective(commandObjective) : null;
+      const bypass = asBoolean(
+        config.dangerouslyBypassApprovalsAndSandbox,
+        asBoolean(config.dangerouslyBypassSandbox, false),
+      );
+      const modelReasoningEffort = asString(
+        config.modelReasoningEffort,
+        asString(config.reasoningEffort, ""),
+      ).trim();
+      const threadConfig: Record<string, unknown> = {
+        cwd: effectiveExecutionCwd,
+        approvalPolicy: "never",
+        sandbox: bypass ? "danger-full-access" : "workspace-write",
+        ...(model ? { model } : {}),
+        baseInstructions: null,
+        developerInstructions: commandNotes.join("\n"),
+        ephemeral: false,
+      };
+      const commandArgs = ["app-server", "--listen", "stdio://", "--enable", "goals"];
+      if (onMeta) {
+        await onMeta({
+          adapterType: "codex_local",
+          command: resolvedCommand,
+          cwd: effectiveExecutionCwd,
+          commandNotes: [
+            ...commandNotes,
+            `Handling issue-thread slash command /${chatCommand?.name ?? "goal"} without starting a model turn.`,
+          ],
+          commandArgs,
+          env: loggedEnv,
+          prompt: "",
+          promptMetrics: {
+            promptChars: 0,
+            instructionsChars: 0,
+            bootstrapPromptChars: 0,
+            wakePromptChars: 0,
+            sessionHandoffChars: 0,
+            heartbeatPromptChars: 0,
+          },
+          context,
+        });
+      }
+      const commandResult = await executeCodexAppServerGoalCommand({
+        runId,
+        command,
+        cwd: effectiveExecutionCwd,
+        env,
+        action: codexGoalChatCommand.action,
+        objective: commandObjective,
+        objectiveFingerprint: commandObjectiveFingerprint,
+        issueId: currentIssueRef.id,
+        resumeThreadId: sessionId,
+        tokenBudget: codexGoalConfig.goal.tokenBudget,
+        graceSec,
+        thread: threadConfig,
+        onLog: async (stream, chunk) => {
+          if (stream !== "stderr") {
+            await onLog(stream, chunk);
+            return;
+          }
+          const cleaned = stripCodexRolloutNoise(chunk);
+          if (!cleaned.trim()) return;
+          await onLog(stream, cleaned);
+        },
+        onSpawn,
+      });
+      const nextSessionParams =
+        commandResult.sessionId && !commandResult.clearSession
+          ? ({
+              sessionId: commandResult.sessionId,
+              cwd: effectiveExecutionCwd,
+              ...(executionTargetIsRemote
+                ? {
+                    remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+                  }
+                : {}),
+              ...(workspaceId ? { workspaceId } : {}),
+              ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+              ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+              protocol: "app_server",
+              features: ["goal"],
+              goalRuntimeMode: CODEX_APP_SERVER_RUNTIME,
+              issueId: currentIssueRef.id,
+              ...(commandObjectiveFingerprint ? { objectiveFingerprint: commandObjectiveFingerprint } : {}),
+            } as Record<string, unknown>)
+          : undefined;
+      return {
+        exitCode: commandResult.exitCode,
+        signal: commandResult.signal,
+        timedOut: commandResult.timedOut,
+        errorMessage: commandResult.errorMessage,
+        errorCode: commandResult.errorCode,
+        usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+        sessionId: commandResult.sessionId ?? undefined,
+        sessionParams: nextSessionParams,
+        sessionDisplayId: commandResult.sessionId,
+        provider: "openai",
+        biller: resolveCodexBiller(effectiveEnv, billingType),
+        model,
+        billingType,
+        costUsd: null,
+        resultJson: {
+          chatCommand: {
+            name: "goal",
+            action: codexGoalChatCommand.action,
+            sourceCommentId: chatCommand?.sourceCommentId ?? null,
+          },
+          codexGoal: commandResult.goal,
+          summary: commandResult.summary,
+        },
+        summary: commandResult.summary,
+        clearSession: commandResult.clearSession,
+      };
     }
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
