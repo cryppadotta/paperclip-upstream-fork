@@ -943,6 +943,19 @@ function buildIssueBlockerDiagnosticsResponse(input: {
     if (issue.status === "blocked" && blocker.status === "done") flags.push("done_but_blocking");
     if (blocker.status === "cancelled") flags.push("cancelled_blocker_in_set");
     if (isPendingFinalize) flags.push("workspace_finalize_pending");
+    const terminalGate = isPendingFinalize
+      ? {
+          kind: "workspace_finalize_pending" as const,
+          sourceIssueId: blocker.id,
+          owner: "system" as const,
+          reason: `${blockerDiagnosticLabel(blocker)} reached done, but its execution workspace has not recorded a successful workspace_finalize gate.`,
+          evidence: {
+            blockerIssueId: blocker.id,
+            gate: "workspace_finalize" as const,
+          },
+          policy: "wait_for_workspace_finalize" as const,
+        }
+      : null;
 
     return {
       ...blocker,
@@ -950,6 +963,7 @@ function buildIssueBlockerDiagnosticsResponse(input: {
       isPendingFinalize,
       isDependencyReady: blocker.status === "done" && !isPendingFinalize,
       flags,
+      terminalGate,
     };
   });
 
