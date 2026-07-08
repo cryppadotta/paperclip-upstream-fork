@@ -1613,6 +1613,7 @@ function IssueDetailActivityTab({
         successfulRunHandoff={issue.successfulRunHandoff ?? null}
         blockerDiagnostics={blockerDiagnosticsQuery.data ?? null}
         diagnosticsError={blockerDiagnosticsError}
+        hasLiveRun={hasLiveRuns}
         className="mb-3"
       />
       <IssueScheduledRetryCard issueId={issue.id} scheduledRetry={issue.scheduledRetry ?? null} />

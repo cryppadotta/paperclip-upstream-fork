@@ -32,7 +32,7 @@ function inboxAttention(
     stoppedSinceAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
     owner: { type: "agent", agentId: "qa-1", userId: null, label: "QA" },
     action: {
-      label: "Wake QA on the stalled verification",
+      label: "finish the QA verification",
       detail: "Resolve PAP-12921 or remove it as a blocker.",
     },
     sourceIssue: {

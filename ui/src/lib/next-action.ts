@@ -8,28 +8,36 @@ import type {
   IssueStatus,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
-import { deriveActiveRecoveryDisplayState, recoveryChipLabel } from "./recovery-display";
-import { blockedReasonLabel } from "./blockedInbox";
+import { deriveActiveRecoveryDisplayState } from "./recovery-display";
 
 /**
  * A single, readable answer to: "what moves this task forward next?"
  *
- * PAP-13005 product rule: every agent-owned non-terminal task, and every task
- * that blocks another, must expose one machine-readable and human-readable
- * next-action truth. This module collapses the various server signals
- * (blocked-inbox attention, active recovery action, scheduled retry,
- * successful-run handoff, and blocker diagnostics) into that single answer so
- * the UI never shows churn without telling the board what happens next.
+ * PAP-13005 product rule + Phase 4 UX spec: every agent-owned non-terminal
+ * task, and every task that blocks another, resolves into EXACTLY ONE of four
+ * lanes so the board never has to synthesize an answer from five cards.
+ *
+ * Resolution priority (spec §2): Working now (an actual run beats everything)
+ * → Recovery in flight (a routed recovery is more actionable than the blocker
+ * it fixes) → Waiting on a decision → Blocked by real work.
  */
-export type NextActionKind =
+export type NextActionLane =
+  | "working_now"
   | "recovery"
-  | "scheduled_retry"
-  | "successful_run_handoff"
-  | "blocked"
-  | "terminal_gate"
+  | "waiting_decision"
+  | "blocked_real_work"
   | "none";
 
-export type NextActionTone = "amber" | "sky" | "red" | "emerald" | "muted";
+/** Maps to the left-accent hue. Recovery uses the recovery-display ladder. */
+export type NextActionAccent =
+  | "in_progress"
+  | "in_review"
+  | "todo"
+  | "blocked"
+  | "recovery_amber"
+  | "recovery_sky"
+  | "recovery_red"
+  | "none";
 
 export interface NextActionIssueRef {
   id: string;
@@ -43,26 +51,44 @@ export interface NextActionOwner {
   kind: "agent" | "user" | "board" | "external" | "system" | "unknown";
 }
 
+export type NextActionControlKind =
+  | "open_recovery"
+  | "assign_worker"
+  | "retry_now"
+  | "choose_disposition"
+  | "open_blocker";
+
+export interface NextActionReference {
+  label: string;
+  ref: NextActionIssueRef;
+  /** Terminal-gate evidence chip, e.g. "gate: workspace_finalize_pending". */
+  gate?: string | null;
+}
+
 export interface NextActionSummary {
-  kind: NextActionKind;
-  tone: NextActionTone;
-  /** Short chip label, e.g. "Recovery needed", "Blocked", "Terminal gate". */
-  badge: string;
-  /** Plain-language sentence: what moves this forward next. */
-  headline: string;
-  /** The concrete action the owner should take, if any. */
-  action: { label: string; detail: string | null } | null;
+  lane: NextActionLane;
+  accent: NextActionAccent;
+  /** Uppercase lane chip label. */
+  laneLabel: string;
+  /** Plain-language answer, kept short (spec: ≤ ~64 chars). */
+  statement: string;
+  /** Owner + timing/context context line. */
+  why: string | null;
   owner: NextActionOwner | null;
-  /** The task where the work actually happens next. */
-  sourceRef: NextActionIssueRef | null;
-  /** The leaf blocker that is ultimately holding the tree. */
-  leafRef: NextActionIssueRef | null;
-  /** An open recovery task tracking the fix, if any. */
-  recoveryRef: NextActionIssueRef | null;
-  /** Terminal-gate blockers (done/cancelled but still blocking, or finalize-pending). */
-  terminalGates: IssueBlockerDiagnosticNode[];
+  /** At most one primary control; only rendered when we have a deep-link target. */
+  primaryControl: { label: string; kind: NextActionControlKind; ref: NextActionIssueRef | null } | null;
+  references: NextActionReference[];
+  /** Blocked-lane terminal gate variant. */
+  terminalGate: boolean;
+  /** Recovery-lane escalation / status-only-suppression variant. */
+  recoveryDebt: boolean;
+  /** Live pulse dot (Working now, actual run). */
+  live: boolean;
+  /** Provenance: which field resolved this lane (audit trail / QA aid). */
+  resolvedFrom: string;
   recovery: IssueRecoveryAction | null;
   scheduledRetry: IssueScheduledRetry | null;
+  terminalGates: IssueBlockerDiagnosticNode[];
 }
 
 export interface NextActionInput {
@@ -71,8 +97,9 @@ export interface NextActionInput {
   activeRecoveryAction?: IssueRecoveryAction | null;
   scheduledRetry?: IssueScheduledRetry | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
-  /** Optional richer blocker view from GET /issues/:id/diagnostics/blockers. */
   blockerDiagnostics?: IssueBlockerDiagnosticsResponse | null;
+  /** True when an actual run is executing against this task right now. */
+  hasLiveRun?: boolean;
 }
 
 function toRef(
@@ -83,26 +110,12 @@ function toRef(
     | undefined,
 ): NextActionIssueRef | null {
   if (!ref) return null;
-  return {
-    id: ref.id,
-    identifier: ref.identifier ?? null,
-    title: ref.title,
-    status: ref.status,
-  };
+  return { id: ref.id, identifier: ref.identifier ?? null, title: ref.title, status: ref.status };
 }
 
-function ownerFromInbox(
-  owner: IssueBlockedInboxAttention["owner"],
-): NextActionOwner | null {
-  if (!owner) return null;
-  const label = owner.label
-    ?? (owner.type === "board"
-      ? "Board"
-      : owner.type === "external"
-        ? "External owner"
-        : null);
-  if (!label) return null;
-  return { label, kind: owner.type };
+function truncate(text: string, max = 72): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
 const ACTIVE_RETRY_STATUSES = new Set<IssueScheduledRetry["status"]>([
@@ -111,7 +124,6 @@ const ACTIVE_RETRY_STATUSES = new Set<IssueScheduledRetry["status"]>([
   "running",
 ]);
 
-/** Terminal-gate flags: a done/cancelled or finalize-pending blocker still holding dependents. */
 function terminalGateBlockers(
   diagnostics: IssueBlockerDiagnosticsResponse | null | undefined,
 ): IssueBlockerDiagnosticNode[] {
@@ -126,227 +138,280 @@ function terminalGateBlockers(
   );
 }
 
-const NO_NEXT_ACTION: NextActionSummary = {
-  kind: "none",
-  tone: "muted",
-  badge: "On track",
-  headline: "This task has a live next step.",
-  action: null,
-  owner: null,
-  sourceRef: null,
-  leafRef: null,
-  recoveryRef: null,
-  terminalGates: [],
-  recovery: null,
-  scheduledRetry: null,
-};
-
-function retryScheduleLabel(retry: IssueScheduledRetry): string {
-  if (retry.status === "running") return "A corrective run is in progress.";
-  if (retry.status === "queued") return "A corrective run is queued.";
-  return "A corrective wake is scheduled.";
+function gateLabel(node: IssueBlockerDiagnosticNode): string | null {
+  const flag = node.flags.find(
+    (f) => f === "workspace_finalize_pending" || f === "done_but_blocking" || f === "cancelled_blocker_in_set",
+  );
+  if (flag === "workspace_finalize_pending") return "gate: workspace_finalize_pending";
+  if (flag === "cancelled_blocker_in_set") return "gate: cancelled_blocker";
+  if (flag === "done_but_blocking") return "gate: done_but_blocking";
+  return null;
 }
 
+function ownerFromInbox(owner: IssueBlockedInboxAttention["owner"]): NextActionOwner | null {
+  if (!owner) return null;
+  const label = owner.label
+    ?? (owner.type === "board" ? "Board" : owner.type === "external" ? "External owner" : null);
+  if (!label) return null;
+  return { label, kind: owner.type };
+}
+
+const NONE: NextActionSummary = {
+  lane: "none",
+  accent: "none",
+  laneLabel: "On track",
+  statement: "This task has a live next step.",
+  why: null,
+  owner: null,
+  primaryControl: null,
+  references: [],
+  terminalGate: false,
+  recoveryDebt: false,
+  live: false,
+  resolvedFrom: "no_attention_signal",
+  recovery: null,
+  scheduledRetry: null,
+  terminalGates: [],
+};
+
 /**
- * Collapse all available next-action signals into a single readable summary.
- * Priority reflects specificity: an explicit recovery action or scheduled
- * corrective run is the most concrete answer, followed by the server's
- * consolidated blocked-inbox attention, then terminal-gate diagnostics.
+ * Collapse all next-action signals into a single lane. Only one lane renders.
  */
 export function deriveNextAction(input: NextActionInput): NextActionSummary {
   const {
     status,
-    blockedInboxAttention,
+    blockedInboxAttention: attn,
     activeRecoveryAction,
     scheduledRetry,
     successfulRunHandoff,
     blockerDiagnostics,
+    hasLiveRun,
   } = input;
 
-  if (status === "done" || status === "cancelled") {
-    return NO_NEXT_ACTION;
-  }
+  // Spec §4: the panel hides on terminal tasks so it never adds noise.
+  if (status === "done" || status === "cancelled") return NONE;
 
   const gates = terminalGateBlockers(blockerDiagnostics);
+  const retryActive = Boolean(scheduledRetry && ACTIVE_RETRY_STATUSES.has(scheduledRetry.status));
 
-  // 1. An active recovery action is the most concrete next-action truth.
-  const recoveryState = activeRecoveryAction
-    ? deriveActiveRecoveryDisplayState(activeRecoveryAction)
-    : null;
-  if (activeRecoveryAction && recoveryState) {
-    const tone: NextActionTone =
-      recoveryState === "escalated"
-        ? "red"
-        : recoveryState === "in_progress"
-          ? "sky"
-          : recoveryState === "observe_only"
-            ? "muted"
-            : "amber";
+  // 1. Working now — an actual run, or a queued/scheduled corrective wake.
+  if (hasLiveRun) {
     return {
-      kind: "recovery",
-      tone,
-      badge: recoveryChipLabel(recoveryState, activeRecoveryAction.kind),
-      // The recovery action's own next-step sentence is the headline; the
-      // dedicated recovery card below it carries the resolve/reissue controls,
-      // so we intentionally avoid repeating it as a separate action row.
-      headline: activeRecoveryAction.nextAction
-        || "A recovery action owns the next step for this task.",
-      action: null,
-      owner: activeRecoveryAction.ownerAgentId
-        ? { label: "Assigned agent", kind: "agent" }
-        : activeRecoveryAction.ownerType === "board"
-          ? { label: "Board", kind: "board" }
-          : activeRecoveryAction.ownerType === "user"
-            ? { label: "User", kind: "user" }
-            : { label: "System", kind: "system" },
-      sourceRef: null,
-      leafRef: null,
-      recoveryRef: null,
-      terminalGates: gates,
-      recovery: activeRecoveryAction,
+      ...NONE,
+      lane: "working_now",
+      accent: "in_progress",
+      laneLabel: "Working now",
+      statement: "A run is working on this now.",
+      why: "A live run owns the next step.",
+      live: true,
+      resolvedFrom: "live_run",
       scheduledRetry: scheduledRetry ?? null,
     };
   }
-
-  // 2. A scheduled/queued corrective run is a live wake path.
-  if (scheduledRetry && ACTIVE_RETRY_STATUSES.has(scheduledRetry.status)) {
+  if (retryActive && scheduledRetry) {
+    const running = scheduledRetry.status === "running";
+    const agent = scheduledRetry.agentName ?? "the assignee";
     return {
-      kind: "scheduled_retry",
-      tone: "sky",
-      badge: "Corrective run",
-      headline: retryScheduleLabel(scheduledRetry),
-      action: scheduledRetry.scheduledRetryReason
-        ? { label: "Retry now", detail: scheduledRetry.scheduledRetryReason }
-        : { label: "Retry now", detail: null },
-      owner: scheduledRetry.agentName
-        ? { label: scheduledRetry.agentName, kind: "agent" }
-        : { label: "Assigned agent", kind: "agent" },
-      sourceRef: null,
-      leafRef: null,
-      recoveryRef: null,
-      terminalGates: gates,
-      recovery: null,
+      ...NONE,
+      lane: "working_now",
+      accent: "in_progress",
+      laneLabel: "Working now",
+      statement: running ? "A corrective run is in progress." : `Queued to wake ${agent}.`,
+      why: scheduledRetry.scheduledRetryReason
+        ? truncate(`Corrective wake — ${scheduledRetry.scheduledRetryReason}`, 96)
+        : "A corrective wake is scheduled on the next heartbeat.",
+      owner: { label: agent, kind: "agent" },
+      live: running,
+      resolvedFrom: `scheduled_retry:${scheduledRetry.status}`,
       scheduledRetry,
     };
   }
 
-  // 3. A finished run left the task open with no owner for the next action.
-  if (successfulRunHandoff?.required) {
+  // 2. Recovery in flight — a routed recovery action owns the fix.
+  const recoveryState = activeRecoveryAction
+    ? deriveActiveRecoveryDisplayState(activeRecoveryAction)
+    : null;
+  if (activeRecoveryAction && recoveryState) {
+    const escalated = recoveryState === "escalated";
+    const accent: NextActionAccent = escalated
+      ? "recovery_red"
+      : recoveryState === "in_progress"
+        ? "recovery_sky"
+        : "recovery_amber";
+    const attempt = activeRecoveryAction.maxAttempts
+      ? `attempt ${activeRecoveryAction.attemptCount}/${activeRecoveryAction.maxAttempts}`
+      : `attempt ${activeRecoveryAction.attemptCount}`;
+    const ownerLabel = activeRecoveryAction.ownerType === "board"
+      ? "Board"
+      : activeRecoveryAction.ownerType === "user"
+        ? "a user"
+        : activeRecoveryAction.ownerType === "agent"
+          ? "the assigned agent"
+          : "the system";
     return {
-      kind: "successful_run_handoff",
-      tone: "amber",
-      badge: "Needs disposition",
-      headline:
-        "A run finished successfully but this task is still open with no next step chosen.",
-      action: {
-        label: "Choose a disposition",
-        detail: "Mark done, send for review, delegate follow-up, or mark blocked with an owner.",
-      },
-      owner: successfulRunHandoff.assigneeAgentId
-        ? { label: "Assigned agent", kind: "agent" }
+      ...NONE,
+      lane: "recovery",
+      accent,
+      laneLabel: escalated ? "Recovery debt" : "Recovery in flight",
+      statement: truncate(
+        activeRecoveryAction.nextAction || "A recovery action owns the next step.",
+      ),
+      why: escalated ? `Escalated · ${attempt}.` : `${attempt}.`,
+      owner: { label: ownerLabel, kind: activeRecoveryAction.ownerType === "agent" ? "agent" : activeRecoveryAction.ownerType === "board" ? "board" : activeRecoveryAction.ownerType === "user" ? "user" : "system" },
+      primaryControl: activeRecoveryAction.recoveryIssueId
+        ? {
+          label: escalated ? "Assign a worker lane" : "Open recovery",
+          kind: escalated ? "assign_worker" : "open_recovery",
+          ref: {
+            id: activeRecoveryAction.recoveryIssueId,
+            identifier: null,
+            title: "Recovery task",
+            status: "in_progress",
+          },
+        }
         : null,
-      sourceRef: null,
-      leafRef: null,
-      recoveryRef: null,
-      terminalGates: gates,
-      recovery: null,
+      recoveryDebt: escalated,
+      resolvedFrom: `active_recovery_action:${recoveryState}`,
+      recovery: activeRecoveryAction,
       scheduledRetry: scheduledRetry ?? null,
+      terminalGates: gates,
     };
   }
 
-  // 4. The server's consolidated blocked-inbox attention answer.
-  if (blockedInboxAttention) {
-    const attn = blockedInboxAttention;
-    const isTerminalGate =
-      attn.reason === "blocked_by_cancelled_issue" || gates.length > 0;
-    const tone: NextActionTone =
-      attn.severity === "critical"
-        ? "red"
-        : attn.severity === "high"
-          ? "amber"
-          : attn.state === "external_wait" || attn.state === "awaiting_decision"
-            ? "sky"
-            : "amber";
+  // 3. Waiting on a decision — approval / interaction / human owner / disposition.
+  if (successfulRunHandoff?.required) {
     return {
-      kind: isTerminalGate ? "terminal_gate" : "blocked",
-      tone,
-      badge: blockedReasonLabel(attn.reason),
-      headline: buildBlockedHeadline(attn, gates),
-      action: attn.action
-        ? { label: attn.action.label, detail: attn.action.detail }
-        : null,
-      owner: ownerFromInbox(attn.owner),
-      sourceRef: toRef(attn.sourceIssue),
-      leafRef: toRef(attn.leafIssue),
-      recoveryRef: toRef(attn.recoveryIssue),
-      terminalGates: gates,
-      recovery: null,
+      ...NONE,
+      lane: "waiting_decision",
+      accent: "in_review",
+      laneLabel: "Waiting on a decision",
+      statement: "A run finished — pick a disposition to move on.",
+      why: "Mark done, send for review, delegate, or block with an owner.",
+      owner: successfulRunHandoff.assigneeAgentId ? { label: "the assignee", kind: "agent" } : null,
+      primaryControl: { label: "Choose a disposition", kind: "choose_disposition", ref: null },
+      resolvedFrom: "successful_run_handoff",
       scheduledRetry: scheduledRetry ?? null,
+    };
+  }
+  if (attn) {
+    const isWaiting =
+      Boolean(attn.interactionId || attn.approvalId)
+      || attn.state === "awaiting_decision"
+      || attn.state === "external_wait"
+      || attn.state === "missing_disposition"
+      || attn.owner?.type === "board"
+      || attn.owner?.type === "user"
+      || attn.owner?.type === "external";
+    const owner = ownerFromInbox(attn.owner);
+    if (isWaiting) {
+      const who = owner?.label ?? "an owner";
+      return {
+        ...NONE,
+        lane: "waiting_decision",
+        accent: "in_review",
+        laneLabel: "Waiting on a decision",
+        statement: attn.state === "external_wait"
+          ? truncate(`Waiting on ${who} outside Paperclip.`)
+          : truncate(`Waiting for ${who} to ${attn.action?.label ?? "respond"}.`, 88),
+        why: attn.action?.detail ?? null,
+        owner,
+        primaryControl: null,
+        references: buildReferences(attn, []),
+        resolvedFrom: `blocked_inbox:${attn.state}`,
+        scheduledRetry: scheduledRetry ?? null,
+      };
+    }
+
+    // 4. Blocked by real work (with terminal-gate variant).
+    const terminalGate = gates.length > 0 || attn.leafIssue?.status === "done";
+    const leaf = attn.leafIssue?.identifier ?? attn.leafIssue?.title ?? "an upstream task";
+    const accent: NextActionAccent = terminalGate && gates.some(isUnhealthyGate) ? "blocked" : "todo";
+    return {
+      ...NONE,
+      lane: "blocked_real_work",
+      accent,
+      laneLabel: "Blocked by real work",
+      statement: terminalGate
+        ? truncate(`Blocked by ${leaf} — it's Done but its gate hasn't cleared.`, 88)
+        : truncate(`Blocked by ${leaf} until it finishes.`),
+      why: attn.action ? truncate(`${attn.action.label}${attn.action.detail ? ` — ${attn.action.detail}` : ""}`, 120) : null,
+      owner,
+      primaryControl: terminalGate && attn.recoveryIssue
+        ? { label: "Open recovery", kind: "open_recovery", ref: toRef(attn.recoveryIssue) }
+        : null,
+      references: buildReferences(attn, gates),
+      terminalGate,
+      resolvedFrom: terminalGate ? "terminal_gate" : `blocked_inbox:${attn.state}`,
+      scheduledRetry: scheduledRetry ?? null,
+      terminalGates: gates,
     };
   }
 
   // 5. Blocker diagnostics alone can still reveal a terminal gate.
   if (gates.length > 0) {
+    const first = gates[0];
     return {
-      kind: "terminal_gate",
-      tone: "amber",
-      badge: "Terminal gate",
-      headline: buildTerminalGateHeadline(gates),
-      action: {
-        label: "Resolve the terminal gate",
-        detail: "Clear the finalize/cancelled blocker or remove it from the blocker set.",
-      },
-      owner: null,
-      sourceRef: null,
-      leafRef: toRef(gates[0]),
-      recoveryRef: null,
-      terminalGates: gates,
-      recovery: null,
+      ...NONE,
+      lane: "blocked_real_work",
+      accent: gates.some(isUnhealthyGate) ? "blocked" : "todo",
+      laneLabel: "Blocked by real work",
+      statement: truncate(
+        `Blocked by ${first.identifier ?? first.title} — Done, but its gate hasn't cleared.`,
+        88,
+      ),
+      why: "A post-run gate on a Done blocker still holds this task.",
+      primaryControl: null,
+      references: [
+        {
+          label: "Blocked by",
+          ref: toRef(first)!,
+          gate: gateLabel(first),
+        },
+      ],
+      terminalGate: true,
+      resolvedFrom: "terminal_gate",
       scheduledRetry: scheduledRetry ?? null,
+      terminalGates: gates,
     };
   }
 
-  return NO_NEXT_ACTION;
+  return NONE;
 }
 
-function buildBlockedHeadline(
+function isUnhealthyGate(node: IssueBlockerDiagnosticNode): boolean {
+  return node.flags.includes("cancelled_blocker_in_set");
+}
+
+function buildReferences(
   attn: IssueBlockedInboxAttention,
   gates: IssueBlockerDiagnosticNode[],
-): string {
-  if (gates.length > 0) {
-    return buildTerminalGateHeadline(gates);
+): NextActionReference[] {
+  const refs: NextActionReference[] = [];
+  const gateByIdentifier = new Map<string, IssueBlockerDiagnosticNode>();
+  for (const gate of gates) {
+    const key = gate.identifier ?? gate.id;
+    gateByIdentifier.set(key, gate);
   }
-  const leaf = attn.leafIssue?.identifier ?? attn.leafIssue?.title;
-  const ownerLabel = attn.owner?.label ?? null;
-  switch (attn.state) {
-    case "awaiting_decision":
-      return ownerLabel
-        ? `Waiting on ${ownerLabel} to decide.`
-        : "Waiting on a decision to move forward.";
-    case "external_wait":
-      return ownerLabel
-        ? `Waiting on ${ownerLabel} outside Paperclip.`
-        : "Waiting on an external owner.";
-    case "recovery_open":
-      return "A recovery task is tracking the fix that moves this forward.";
-    case "missing_disposition":
-      return "This task needs a disposition to move forward.";
-    case "needs_attention":
-    default:
-      return leaf
-        ? `Ultimately waiting on ${leaf}; it has no live next step yet.`
-        : "This blocked chain has no live next step yet.";
+  if (attn.sourceIssue) {
+    refs.push({ label: "Work happens on", ref: toRef(attn.sourceIssue)! });
   }
-}
-
-function buildTerminalGateHeadline(gates: IssueBlockerDiagnosticNode[]): string {
-  const first = gates[0];
-  const id = first?.identifier ?? first?.title ?? "a blocker";
-  if (first?.flags.includes("workspace_finalize_pending")) {
-    return `${id} is done but its workspace finalize gate still blocks this task.`;
+  if (attn.leafIssue) {
+    const key = attn.leafIssue.identifier ?? attn.leafIssue.id;
+    refs.push({
+      label: "Waiting on",
+      ref: toRef(attn.leafIssue)!,
+      gate: gateByIdentifier.has(key) ? gateLabel(gateByIdentifier.get(key)!) : null,
+    });
   }
-  if (first?.flags.includes("cancelled_blocker_in_set")) {
-    return `${id} is cancelled but still listed as a blocker; it will never resolve on its own.`;
+  // Any terminal gate not already attached to the leaf gets its own chip.
+  for (const gate of gates) {
+    const key = gate.identifier ?? gate.id;
+    const leafKey = attn.leafIssue?.identifier ?? attn.leafIssue?.id;
+    if (key === leafKey) continue;
+    refs.push({ label: "Blocked by", ref: toRef(gate)!, gate: gateLabel(gate) });
   }
-  return `${id} is done but still blocking this task; its post-run gate needs recovery.`;
+  if (attn.recoveryIssue) {
+    refs.push({ label: "Recovery", ref: toRef(attn.recoveryIssue)! });
+  }
+  return refs;
 }

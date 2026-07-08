@@ -17,7 +17,7 @@ function inboxAttention(
     severity: "medium",
     stoppedSinceAt: null,
     owner: { type: "agent", agentId: "a1", userId: null, label: "ClaudeCoder" },
-    action: { label: "Resolve the stalled chain", detail: "Wake QA or remove the blocker." },
+    action: { label: "resolve the stalled chain", detail: "Wake QA or remove the blocker." },
     sourceIssue: null,
     leafIssue: {
       id: "leaf-1",
@@ -131,80 +131,102 @@ describe("deriveNextAction", () => {
       blockedInboxAttention: inboxAttention(),
       activeRecoveryAction: recoveryAction(),
     });
-    expect(result.kind).toBe("none");
+    expect(result.lane).toBe("none");
   });
 
-  it("prioritizes an active recovery action over blocked attention", () => {
+  it("puts a live run in Working now ahead of everything", () => {
+    const result = deriveNextAction({
+      status: "in_progress",
+      hasLiveRun: true,
+      activeRecoveryAction: recoveryAction(),
+    });
+    expect(result.lane).toBe("working_now");
+    expect(result.live).toBe(true);
+    expect(result.resolvedFrom).toBe("live_run");
+  });
+
+  it("treats a scheduled corrective wake as Working now (queued)", () => {
+    const result = deriveNextAction({ status: "in_progress", scheduledRetry });
+    expect(result.lane).toBe("working_now");
+    expect(result.statement).toContain("Queued to wake");
+    expect(result.resolvedFrom).toContain("scheduled_retry");
+  });
+
+  it("routes an active recovery action to the Recovery lane with attempt count", () => {
     const result = deriveNextAction({
       status: "in_progress",
       activeRecoveryAction: recoveryAction(),
       blockedInboxAttention: inboxAttention(),
     });
-    expect(result.kind).toBe("recovery");
-    expect(result.headline).toContain("clean isolated workspace");
-    expect(result.recovery?.id).toBe("rec-1");
+    expect(result.lane).toBe("recovery");
+    expect(result.statement).toContain("clean isolated workspace");
+    expect(result.why).toContain("attempt 1/3");
+    expect(result.primaryControl?.kind).toBe("open_recovery");
   });
 
-  it("uses the scheduled corrective run when no recovery action is present", () => {
+  it("flags escalated recovery as recovery debt", () => {
     const result = deriveNextAction({
-      status: "in_progress",
-      scheduledRetry,
+      status: "blocked",
+      activeRecoveryAction: recoveryAction({ status: "escalated" }),
     });
-    expect(result.kind).toBe("scheduled_retry");
-    expect(result.tone).toBe("sky");
-    expect(result.action?.label).toBe("Retry now");
+    expect(result.lane).toBe("recovery");
+    expect(result.recoveryDebt).toBe(true);
+    expect(result.laneLabel).toBe("Recovery debt");
+    expect(result.primaryControl?.kind).toBe("assign_worker");
   });
 
-  it("surfaces the successful-run handoff before generic blocked attention", () => {
+  it("routes a board owner to Waiting on a decision", () => {
     const result = deriveNextAction({
-      status: "in_progress",
-      successfulRunHandoff: {
-        state: "required",
-        required: true,
-        sourceRunId: "run-x",
-        correctiveRunId: null,
-        assigneeAgentId: "a1",
-        detectedProgressSummary: null,
-        createdAt: null,
-      },
+      status: "in_review",
+      blockedInboxAttention: inboxAttention({
+        state: "awaiting_decision",
+        reason: "pending_board_decision",
+        owner: { type: "board", agentId: null, userId: null, label: "Board" },
+        action: { label: "accept or reject the plan", detail: null },
+        leafIssue: null,
+      }),
     });
-    expect(result.kind).toBe("successful_run_handoff");
-    expect(result.action?.label).toBe("Choose a disposition");
+    expect(result.lane).toBe("waiting_decision");
+    expect(result.owner?.label).toBe("Board");
+    expect(result.statement).toContain("Waiting for Board");
   });
 
-  it("collapses blocked-inbox attention into a readable answer with the leaf blocker", () => {
+  it("routes a needs-attention blocker chain to Blocked by real work", () => {
     const result = deriveNextAction({
       status: "blocked",
       blockedInboxAttention: inboxAttention(),
     });
-    expect(result.kind).toBe("blocked");
-    expect(result.owner?.label).toBe("ClaudeCoder");
-    expect(result.leafRef?.identifier).toBe("PAP-12921");
-    expect(result.action?.label).toBe("Resolve the stalled chain");
+    expect(result.lane).toBe("blocked_real_work");
+    expect(result.terminalGate).toBe(false);
+    expect(result.references.some((r) => r.ref.identifier === "PAP-12921")).toBe(true);
   });
 
-  it("flags a done-but-blocking terminal gate from blocker diagnostics", () => {
+  it("marks a workspace-finalize gate as a terminal-gate blocked variant", () => {
+    const result = deriveNextAction({
+      status: "blocked",
+      blockedInboxAttention: inboxAttention(),
+      blockerDiagnostics: blockerDiagnostics(["workspace_finalize_pending"]),
+    });
+    expect(result.lane).toBe("blocked_real_work");
+    expect(result.terminalGate).toBe(true);
+    expect(result.statement).toContain("Done");
+    expect(
+      result.references.some((r) => r.gate === "gate: workspace_finalize_pending"),
+    ).toBe(true);
+  });
+
+  it("reveals a terminal gate from blocker diagnostics alone", () => {
     const result = deriveNextAction({
       status: "blocked",
       blockerDiagnostics: blockerDiagnostics(["done_but_blocking"]),
     });
-    expect(result.kind).toBe("terminal_gate");
+    expect(result.lane).toBe("blocked_real_work");
+    expect(result.terminalGate).toBe(true);
     expect(result.terminalGates).toHaveLength(1);
-    expect(result.headline).toContain("done but still blocking");
-  });
-
-  it("explains a workspace-finalize-pending gate in plain language", () => {
-    const result = deriveNextAction({
-      status: "blocked",
-      blockedInboxAttention: inboxAttention({ reason: "blocked_chain_stalled" }),
-      blockerDiagnostics: blockerDiagnostics(["workspace_finalize_pending"]),
-    });
-    expect(result.kind).toBe("terminal_gate");
-    expect(result.headline).toContain("workspace finalize gate");
   });
 
   it("returns none when nothing needs attention", () => {
     const result = deriveNextAction({ status: "in_progress" });
-    expect(result.kind).toBe("none");
+    expect(result.lane).toBe("none");
   });
 });

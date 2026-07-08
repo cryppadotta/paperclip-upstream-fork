@@ -55,7 +55,7 @@ const attention: IssueBlockedInboxAttention = {
   severity: "high",
   stoppedSinceAt: null,
   owner: { type: "agent", agentId: "a1", userId: null, label: "ClaudeCoder" },
-  action: { label: "Resolve the stalled review", detail: "Wake QA on PAP-12921." },
+  action: { label: "wake QA on the stalled review", detail: "Resolve PAP-12921." },
   sourceIssue: null,
   leafIssue: {
     id: "leaf-1",
@@ -111,29 +111,29 @@ describe("IssueNextActionCard", () => {
     expect(container.querySelector('[data-testid="issue-next-action-card"]')).toBeNull();
   });
 
-  it("renders a blocked next-action answer with owner and leaf blocker", () => {
+  it("renders a Blocked-by-real-work lane with owner and leaf blocker", () => {
     render(<IssueNextActionCard status="blocked" blockedInboxAttention={attention} />);
     const card = container.querySelector('[data-testid="issue-next-action-card"]');
     expect(card).not.toBeNull();
-    expect(card?.getAttribute("data-next-action-kind")).toBe("blocked");
-    expect(container.textContent).toContain("Resolve the stalled review");
+    expect(card?.getAttribute("data-next-action-lane")).toBe("blocked_real_work");
+    expect(card?.getAttribute("role")).toBe("status");
+    expect(container.textContent).toContain("Blocked by PAP-12921");
     expect(container.textContent).toContain("ClaudeCoder");
-    expect(container.textContent).toContain("PAP-12921");
+    expect(container.textContent).toContain("resolved from");
   });
 
-  it("renders a terminal-gate answer from blocker diagnostics", () => {
+  it("renders a terminal-gate variant with a gate chip", () => {
     render(
       <IssueNextActionCard
         status="blocked"
+        blockedInboxAttention={attention}
         blockerDiagnostics={gateDiagnostics}
       />,
     );
     const card = container.querySelector('[data-testid="issue-next-action-card"]');
-    expect(card?.getAttribute("data-next-action-kind")).toBe("terminal_gate");
-    expect(
-      container.querySelector('[data-testid="issue-next-action-terminal-gates"]'),
-    ).not.toBeNull();
-    expect(container.textContent).toContain("workspace finalize gate");
+    expect(card?.getAttribute("data-next-action-lane")).toBe("blocked_real_work");
+    expect(card?.getAttribute("data-terminal-gate")).toBe("true");
+    expect(container.textContent).toContain("gate: workspace_finalize_pending");
   });
 
   it("surfaces a diagnostics load failure clearly", () => {
