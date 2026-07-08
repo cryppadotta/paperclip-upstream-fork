@@ -120,11 +120,13 @@ import {
   IssueMonitorComposerStrip,
   hasVisibleMonitorSurface,
 } from "../components/IssueMonitorBanner";
+import { IssueNextActionCard } from "../components/IssueNextActionCard";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
+import { useIssueBlockerDiagnostics } from "../hooks/useIssueBlockerDiagnostics";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -1379,6 +1381,16 @@ function IssueDetailActivityTab({
       issueId,
     ),
   });
+  // Load richer blocker diagnostics only when the task is actually blocked, so
+  // the next-action surface can explain terminal gates without extra fetches.
+  const blockerDiagnosticsQuery = useIssueBlockerDiagnostics(issueId, {
+    enabled: issueStatus === "blocked",
+  });
+  const blockerDiagnosticsError = blockerDiagnosticsQuery.error
+    ? blockerDiagnosticsQuery.error instanceof ApiError
+      ? `Request failed (${blockerDiagnosticsQuery.error.status})`
+      : "Please try again."
+    : null;
   const { data: issueTreeCostSummary } = useQuery({
     queryKey: queryKeys.issues.costSummary(issueId),
     queryFn: () => issuesApi.getCostSummary(issueId),
@@ -1593,6 +1605,16 @@ function IssueDetailActivityTab({
           ))}
         </div>
       )}
+      <IssueNextActionCard
+        status={issueStatus}
+        blockedInboxAttention={issue.blockedInboxAttention ?? null}
+        activeRecoveryAction={issue.activeRecoveryAction ?? null}
+        scheduledRetry={issue.scheduledRetry ?? null}
+        successfulRunHandoff={issue.successfulRunHandoff ?? null}
+        blockerDiagnostics={blockerDiagnosticsQuery.data ?? null}
+        diagnosticsError={blockerDiagnosticsError}
+        className="mb-3"
+      />
       <IssueScheduledRetryCard issueId={issue.id} scheduledRetry={issue.scheduledRetry ?? null} />
       {/* Waiting-monitor state now lives in the pinned top banner (IssueMonitorBanner) — PAP-14557 decision 1. */}
     </>
