@@ -6,6 +6,7 @@ import type {
   IssueRelationIssueSummary,
   IssueScheduledRetry,
   IssueStatus,
+  IssueSubtreeDiagnosticNode,
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import { deriveActiveRecoveryDisplayState } from "./recovery-display";
@@ -414,4 +415,161 @@ function buildReferences(
     refs.push({ label: "Recovery", ref: toRef(attn.recoveryIssue)! });
   }
   return refs;
+}
+
+/**
+ * Compact, per-node verdict for the subtree / blocker diagnostics view
+ * (Phase 4 UX spec §5). One line per node so the operator can scan a whole
+ * tree and find where work moves next without opening every child.
+ *
+ * A subtree node only carries what the diagnostics endpoint exposes — status
+ * plus its own blocker set with terminal-gate flags — so this is a deliberate
+ * subset of the four-lane resolver: Working now / Blocked by real work (with
+ * the terminal-gate + recovery-debt variants surfaced from blocker flags).
+ * The single actionable leaf is chosen across nodes by {@link selectActionableLeafNodeId}.
+ */
+export interface NextActionNodeBadge {
+  lane: NextActionLane;
+  accent: NextActionAccent;
+  /** Short lane label, e.g. "Blocked", "Recovery", "Recovery debt", "Working". */
+  laneLabel: string;
+  /** Compact verdict, e.g. "Blocked → PAP-123", "Recovery → workspace gate". */
+  statement: string;
+  /** The upstream node the operator should look at next, when there is one. */
+  target: NextActionIssueRef | null;
+  /** Terminal-gate evidence chip, when the node is held by a gate. */
+  gate: string | null;
+  /** True when this node itself can move (unblocked, non-terminal). */
+  ready: boolean;
+  resolvedFrom: string;
+}
+
+function unresolvedBlockers(node: IssueSubtreeDiagnosticNode): IssueBlockerDiagnosticNode[] {
+  return node.blockers.filter((b) => b.isUnresolved);
+}
+
+function nodeGate(node: IssueSubtreeDiagnosticNode): IssueBlockerDiagnosticNode | null {
+  return (
+    node.blockers.find((b) => b.flags.includes("cancelled_blocker_in_set"))
+    ?? node.blockers.find((b) => b.flags.includes("workspace_finalize_pending"))
+    ?? node.blockers.find((b) => b.flags.includes("done_but_blocking"))
+    ?? null
+  );
+}
+
+function blockerRef(node: IssueBlockerDiagnosticNode): NextActionIssueRef {
+  return { id: node.id, identifier: node.identifier, title: node.title, status: node.status };
+}
+
+function blockerLabel(node: IssueBlockerDiagnosticNode): string {
+  return node.identifier ?? node.title ?? node.id.slice(0, 8);
+}
+
+export function deriveSubtreeNodeBadge(node: IssueSubtreeDiagnosticNode): NextActionNodeBadge {
+  const status = node.issue.status;
+
+  // Terminal nodes never carry a next action — render them muted, never actionable.
+  if (status === "done" || status === "cancelled") {
+    return {
+      lane: "none",
+      accent: "none",
+      laneLabel: status === "done" ? "Done" : "Cancelled",
+      statement: status === "done" ? "Complete." : "Cancelled.",
+      target: null,
+      gate: null,
+      ready: false,
+      resolvedFrom: `status:${status}`,
+    };
+  }
+
+  const gate = nodeGate(node);
+  if (gate) {
+    // A cancelled blocker left in the set is unhealthy — it needs a worker lane,
+    // not a wait. Everything else is a routed/system gate we can name and hold on.
+    if (gate.flags.includes("cancelled_blocker_in_set")) {
+      return {
+        lane: "recovery",
+        accent: "recovery_red",
+        laneLabel: "Recovery debt",
+        statement: "Recovery debt → assign worker",
+        target: blockerRef(gate),
+        gate: gateLabel(gate),
+        ready: false,
+        resolvedFrom: "cancelled_blocker_in_set",
+      };
+    }
+    if (gate.flags.includes("workspace_finalize_pending")) {
+      return {
+        lane: "recovery",
+        accent: "recovery_sky",
+        laneLabel: "Recovery",
+        statement: "Recovery → workspace gate",
+        target: blockerRef(gate),
+        gate: gateLabel(gate),
+        ready: false,
+        resolvedFrom: "workspace_finalize_pending",
+      };
+    }
+    // done_but_blocking — a Done blocker whose gate hasn't cleared.
+    return {
+      lane: "blocked_real_work",
+      accent: "todo",
+      laneLabel: "Blocked",
+      statement: `Blocked → ${blockerLabel(gate)}`,
+      target: blockerRef(gate),
+      gate: gateLabel(gate),
+      ready: false,
+      resolvedFrom: "done_but_blocking",
+    };
+  }
+
+  const unresolved = unresolvedBlockers(node);
+  if (unresolved.length > 0) {
+    const first = unresolved[0];
+    const extra = unresolved.length > 1 ? ` +${unresolved.length - 1}` : "";
+    return {
+      lane: "blocked_real_work",
+      accent: "todo",
+      laneLabel: "Blocked",
+      statement: `Blocked → ${blockerLabel(first)}${extra}`,
+      target: blockerRef(first),
+      gate: null,
+      ready: false,
+      resolvedFrom: "unresolved_blockers",
+    };
+  }
+
+  // No blockers hold this node and it is non-terminal — this is where work can
+  // actually move next. It is a candidate for the single highlighted leaf.
+  const inProgress = status === "in_progress" || status === "in_review";
+  return {
+    lane: inProgress ? "working_now" : "none",
+    accent: inProgress ? "in_progress" : "none",
+    laneLabel: inProgress ? "Working" : "Ready",
+    statement: inProgress ? "Work is moving here." : "Ready to run.",
+    target: null,
+    gate: null,
+    ready: true,
+    resolvedFrom: inProgress ? "unblocked_active" : "unblocked_ready",
+  };
+}
+
+/**
+ * Across a subtree, pick the ONE node the operator should act on — the single
+ * actionable leaf the spec highlights. Priority: an unblocked leaf where work
+ * can move now → an unhealthy recovery-debt node needing a worker → the nearest
+ * routed recovery/terminal gate. Returns null when nothing is actionable
+ * (e.g. every node is done or waiting purely on healthy upstream work).
+ */
+export function selectActionableLeafNodeId(
+  nodes: IssueSubtreeDiagnosticNode[],
+): string | null {
+  const scored = nodes.map((node) => ({ node, badge: deriveSubtreeNodeBadge(node) }));
+  const ready = scored.find(({ badge }) => badge.ready);
+  if (ready) return ready.node.issue.id;
+  const debt = scored.find(({ badge }) => badge.resolvedFrom === "cancelled_blocker_in_set");
+  if (debt) return debt.node.issue.id;
+  const recovery = scored.find(({ badge }) => badge.lane === "recovery");
+  if (recovery) return recovery.node.issue.id;
+  return null;
 }

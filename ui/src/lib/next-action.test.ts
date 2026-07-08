@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type {
   IssueBlockedInboxAttention,
+  IssueBlockerDiagnosticNode,
   IssueBlockerDiagnosticsResponse,
   IssueRecoveryAction,
   IssueScheduledRetry,
+  IssueStatus,
+  IssueSubtreeDiagnosticNode,
 } from "@paperclipai/shared";
-import { deriveNextAction } from "./next-action";
+import {
+  deriveNextAction,
+  deriveSubtreeNodeBadge,
+  selectActionableLeafNodeId,
+} from "./next-action";
 
 function inboxAttention(
   overrides: Partial<IssueBlockedInboxAttention> = {},
@@ -228,5 +235,159 @@ describe("deriveNextAction", () => {
   it("returns none when nothing needs attention", () => {
     const result = deriveNextAction({ status: "in_progress" });
     expect(result.lane).toBe("none");
+  });
+});
+
+function blockerNode(
+  overrides: Partial<IssueBlockerDiagnosticNode> = {},
+): IssueBlockerDiagnosticNode {
+  return {
+    id: "b1",
+    identifier: "PAP-900",
+    title: "Upstream work",
+    status: "in_progress",
+    priority: "medium",
+    assigneeAgentId: null,
+    assigneeUserId: null,
+    isUnresolved: true,
+    isDependencyReady: false,
+    isPendingFinalize: false,
+    flags: [],
+    ...overrides,
+  };
+}
+
+function subtreeNode(
+  overrides: Partial<IssueSubtreeDiagnosticNode> & {
+    id?: string;
+    identifier?: string;
+    status?: IssueStatus;
+  } = {},
+): IssueSubtreeDiagnosticNode {
+  const { id = "n1", identifier = "PAP-100", status = "in_progress", ...rest } = overrides;
+  return {
+    issue: {
+      id,
+      identifier,
+      title: "A node",
+      status,
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    },
+    parentId: null,
+    depth: 0,
+    diagnosis: null,
+    likelyReason: null,
+    blockers: [],
+    blockerReadiness: null,
+    omittedUnauthorizedBlockerCount: null,
+    wakeEvents: [],
+    wakeRequestCount: 0,
+    activityRecordCount: 0,
+    truncated: false,
+    truncatedSections: { blockers: false, wakeRequests: false, activityRecords: false },
+    ...rest,
+  };
+}
+
+describe("deriveSubtreeNodeBadge", () => {
+  it("mutes terminal nodes and never marks them actionable", () => {
+    const badge = deriveSubtreeNodeBadge(subtreeNode({ status: "done" }));
+    expect(badge.lane).toBe("none");
+    expect(badge.laneLabel).toBe("Done");
+    expect(badge.ready).toBe(false);
+  });
+
+  it("points a blocked node at its first unresolved blocker", () => {
+    const badge = deriveSubtreeNodeBadge(
+      subtreeNode({
+        status: "blocked",
+        blockers: [
+          blockerNode({ id: "u1", identifier: "PAP-901" }),
+          blockerNode({ id: "u2", identifier: "PAP-902" }),
+        ],
+      }),
+    );
+    expect(badge.lane).toBe("blocked_real_work");
+    expect(badge.statement).toBe("Blocked → PAP-901 +1");
+    expect(badge.target?.identifier).toBe("PAP-901");
+    expect(badge.ready).toBe(false);
+  });
+
+  it("labels a workspace-finalize gate as a routed recovery", () => {
+    const badge = deriveSubtreeNodeBadge(
+      subtreeNode({
+        status: "blocked",
+        blockers: [
+          blockerNode({
+            status: "done",
+            isUnresolved: false,
+            isPendingFinalize: true,
+            flags: ["workspace_finalize_pending"],
+          }),
+        ],
+      }),
+    );
+    expect(badge.lane).toBe("recovery");
+    expect(badge.laneLabel).toBe("Recovery");
+    expect(badge.statement).toBe("Recovery → workspace gate");
+    expect(badge.gate).toBe("gate: workspace_finalize_pending");
+  });
+
+  it("surfaces a cancelled blocker as recovery debt needing a worker", () => {
+    const badge = deriveSubtreeNodeBadge(
+      subtreeNode({
+        status: "blocked",
+        blockers: [
+          blockerNode({
+            status: "cancelled",
+            isUnresolved: false,
+            flags: ["cancelled_blocker_in_set"],
+          }),
+        ],
+      }),
+    );
+    expect(badge.lane).toBe("recovery");
+    expect(badge.laneLabel).toBe("Recovery debt");
+    expect(badge.statement).toBe("Recovery debt → assign worker");
+    expect(badge.accent).toBe("recovery_red");
+  });
+
+  it("marks an unblocked non-terminal node as ready to run", () => {
+    const badge = deriveSubtreeNodeBadge(subtreeNode({ status: "todo" }));
+    expect(badge.ready).toBe(true);
+    expect(badge.lane).toBe("none");
+  });
+});
+
+describe("selectActionableLeafNodeId", () => {
+  it("prefers an unblocked leaf where work can move now", () => {
+    const nodes = [
+      subtreeNode({ id: "root", identifier: "PAP-1", status: "blocked", blockers: [blockerNode()] }),
+      subtreeNode({ id: "leaf", identifier: "PAP-2", status: "todo" }),
+    ];
+    expect(selectActionableLeafNodeId(nodes)).toBe("leaf");
+  });
+
+  it("falls back to recovery-debt when nothing is unblocked", () => {
+    const nodes = [
+      subtreeNode({ id: "root", identifier: "PAP-1", status: "blocked", blockers: [blockerNode()] }),
+      subtreeNode({
+        id: "debt",
+        identifier: "PAP-2",
+        status: "blocked",
+        blockers: [blockerNode({ status: "cancelled", isUnresolved: false, flags: ["cancelled_blocker_in_set"] })],
+      }),
+    ];
+    expect(selectActionableLeafNodeId(nodes)).toBe("debt");
+  });
+
+  it("returns null when every node is done", () => {
+    const nodes = [
+      subtreeNode({ id: "a", status: "done" }),
+      subtreeNode({ id: "b", status: "cancelled" }),
+    ];
+    expect(selectActionableLeafNodeId(nodes)).toBeNull();
   });
 });

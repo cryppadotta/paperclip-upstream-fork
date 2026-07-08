@@ -121,12 +121,14 @@ import {
   hasVisibleMonitorSurface,
 } from "../components/IssueMonitorBanner";
 import { IssueNextActionCard } from "../components/IssueNextActionCard";
+import { IssueSubtreeNextActionView } from "../components/IssueSubtreeNextActionView";
 import { IssueScheduledRetryCard } from "../components/IssueScheduledRetryCard";
 import { IssueProperties } from "../components/IssueProperties";
 import { PauseAffectsSummaryView } from "../components/interrupt-handoff/InterruptHandoffViews";
 import { computePauseAffectsSummary } from "../lib/interrupt-handoff";
 import { useIssueExternalObjects } from "../hooks/useIssueExternalObjects";
 import { useIssueBlockerDiagnostics } from "../hooks/useIssueBlockerDiagnostics";
+import { useIssueSubtreeDiagnostics } from "../hooks/useIssueSubtreeDiagnostics";
 import { IssueRunLedger } from "../components/IssueRunLedger";
 import { IssueWorkspaceCard } from "../components/IssueWorkspaceCard";
 import type { MentionOption } from "../components/MarkdownEditor";
@@ -1391,6 +1393,12 @@ function IssueDetailActivityTab({
       ? `Request failed (${blockerDiagnosticsQuery.error.status})`
       : "Please try again."
     : null;
+  // Subtree diagnostics power the per-node next-action map (Phase 4 UX spec §5).
+  // Only worth loading for a blocked parent whose children may hold the work.
+  const subtreeDiagnosticsQuery = useIssueSubtreeDiagnostics(issueId, {
+    enabled: issueStatus === "blocked" && childIssues.length > 0,
+  });
+  const subtreeDiagnostics = subtreeDiagnosticsQuery.data ?? null;
   const { data: issueTreeCostSummary } = useQuery({
     queryKey: queryKeys.issues.costSummary(issueId),
     queryFn: () => issuesApi.getCostSummary(issueId),
@@ -1616,6 +1624,9 @@ function IssueDetailActivityTab({
         hasLiveRun={hasLiveRuns}
         className="mb-3"
       />
+      {subtreeDiagnostics && subtreeDiagnostics.nodes.length > 1 ? (
+        <IssueSubtreeNextActionView data={subtreeDiagnostics} className="mb-3" />
+      ) : null}
       <IssueScheduledRetryCard issueId={issue.id} scheduledRetry={issue.scheduledRetry ?? null} />
       {/* Waiting-monitor state now lives in the pinned top banner (IssueMonitorBanner) — PAP-14557 decision 1. */}
     </>
