@@ -4623,6 +4623,28 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertWorkflowHandoffMutationAllowedByRunContext(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    const run = await loadActorRunContext(req, issue.companyId);
+    if (!run) return true;
+    if (!isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
+
+    res.status(403).json({
+      error: "Cheap status-only recovery runs cannot create issue-thread interactions or accepted-plan decompositions",
+      details: {
+        issueId: issue.id,
+        runId: run.id,
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        resumeRequiresNormalModel: true,
+      },
+    });
+    return false;
+  }
+
   async function loadWorkProductRunAttribution(runId: string) {
     return await db
       .select({
@@ -8067,6 +8089,7 @@ export function issueRoutes(
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, sourceIssue))) return;
+    if (!(await assertWorkflowHandoffMutationAllowedByRunContext(req, res, sourceIssue))) return;
 
     const requestedChildren = [];
     for (const child of req.body.children as Array<typeof req.body.children[number]>) {
@@ -10190,6 +10213,7 @@ export function issueRoutes(
     if (req.actor.type === "agent") {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
       if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
+      if (!(await assertWorkflowHandoffMutationAllowedByRunContext(req, res, issue))) return;
     } else {
       assertBoard(req);
     }
