@@ -4,7 +4,7 @@ import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, instanceUserRoles, invites } from "@paperclipai/db";
-import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode, ServerRuntimeInfo } from "@paperclipai/shared";
 import { readPersistedDevServerStatus, toDevServerHealthStatus, writeDevServerRestartRequest } from "../dev-server-status.js";
 import { isCloudManagedInstance } from "../middleware/auth.js";
 import { logger } from "../middleware/logger.js";
@@ -73,6 +73,7 @@ export function healthRoutes(
     authReady: boolean;
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
+    serverRuntimeInfo?: ServerRuntimeInfo;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
     devDatabaseSourceUrl?: string;
   } = {
@@ -142,7 +143,7 @@ export function healthRoutes(
     // in local_trusted dev — never anonymous authenticated callers. The
     // enableServerInfoDebugView experimental flag gates the UI surface, not this
     // already access-controlled field.
-    const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
+    const serverInfo = opts.serverInfo ?? getServerInfoSnapshot({ runtimeInfo: opts.serverRuntimeInfo });
     const exposeDevServerDetails =
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
@@ -262,3 +263,4 @@ export function healthRoutes(
 
   return router;
 }
+
