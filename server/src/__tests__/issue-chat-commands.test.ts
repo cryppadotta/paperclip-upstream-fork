@@ -49,6 +49,26 @@ describe("issue chat command router helpers", () => {
       sourceCommentId: "comment-1",
     });
   });
+
+  it("tailors the unsupported /goal warning to the assignee's adapter", () => {
+    const command = {
+      name: "goal",
+      raw: "/goal ship it",
+      args: "ship it",
+      sourceCommentId: "comment-1",
+      sourceAuthorType: "user" as const,
+    };
+    const claude = buildUnsupportedChatCommandReply({ adapterType: "claude_local", command });
+    expect(claude.message).toContain("Claude Code goal command");
+    expect(claude.message).toContain("adapter settings");
+
+    // Harnesses without any goal support get an explicit not-supported warning
+    // instead of enable-it instructions they cannot follow.
+    const gemini = buildUnsupportedChatCommandReply({ adapterType: "gemini_local", command });
+    expect(gemini.message).toContain("`gemini_local`");
+    expect(gemini.message).toContain("not supported");
+    expect(gemini.result.resultJson?.chatCommand).toMatchObject({ name: "goal", supported: false });
+  });
 });
 
 describe("buildGoalChatCommandReplyPresentation", () => {
@@ -98,5 +118,27 @@ describe("buildGoalChatCommandReplyPresentation", () => {
       codexGoal: { objective: "", status: "cleared", tokenBudget: null, tokensUsed: 0 },
     });
     expect(built?.presentation).toMatchObject({ tone: "neutral", title: "Goal cleared" });
+  });
+
+  it("renders Claude goal replies through the same card", () => {
+    const built = buildGoalChatCommandReplyPresentation({
+      chatCommand: { name: "goal", action: "set" },
+      claudeGoal: { objective: "all tests pass", status: "complete", tokenBudget: null, tokensUsed: 812 },
+      summary: "Goal met: all tests pass",
+    });
+    expect(built?.presentation).toMatchObject({ kind: "system_notice", tone: "success", title: "Goal set" });
+    expect(built?.metadata.sections[0]?.rows).toEqual([
+      { type: "key_value", label: "Objective", value: "all tests pass" },
+      { type: "key_value", label: "Status", value: "complete" },
+      { type: "key_value", label: "Tokens used", value: "812" },
+    ]);
+  });
+
+  it("uses an info tone for an active Claude goal status", () => {
+    const built = buildGoalChatCommandReplyPresentation({
+      chatCommand: { name: "goal", action: "status" },
+      claudeGoal: { objective: "the build is green", status: "active", tokenBudget: null, tokensUsed: 0 },
+    });
+    expect(built?.presentation).toMatchObject({ tone: "info", title: "Goal status" });
   });
 });

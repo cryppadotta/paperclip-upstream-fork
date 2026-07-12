@@ -11,6 +11,7 @@ import {
 } from "@paperclipai/adapter-utils";
 import {
   execute as claudeExecute,
+  listClaudeChatCommands,
   listClaudeSkills,
   syncClaudeSkills,
   listClaudeModels,
@@ -194,6 +195,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
       packages: ["@agentclientprotocol/claude-agent-acp"],
     },
   },
+  listChatCommands: listClaudeChatCommands,
   listSkills: listClaudeSkills,
   syncSkills: syncClaudeSkills,
   sessionCodec: claudeSessionCodec,

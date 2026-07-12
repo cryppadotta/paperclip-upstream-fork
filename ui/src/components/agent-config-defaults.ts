@@ -13,6 +13,7 @@ export const defaultCreateValues: CreateConfigValues = {
   fastMode: false,
   goalRuntime: "off",
   goalTokenBudget: 0,
+  goalCommand: false,
   dangerouslyBypassSandbox: false,
   command: "",
   args: "",

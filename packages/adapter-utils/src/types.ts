@@ -605,6 +605,7 @@ export interface CreateConfigValues {
   fastMode: boolean;
   goalRuntime?: "off" | "app_server_experimental";
   goalTokenBudget?: number;
+  goalCommand?: boolean;
   dangerouslyBypassSandbox: boolean;
   command: string;
   args: string;

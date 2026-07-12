@@ -36,13 +36,29 @@ export function isHumanIssueChatCommandComment(comment: {
   return Boolean(comment && !comment.deletedAt && comment.authorType === "user");
 }
 
+/**
+ * Adapter-aware guidance for a `/goal` command the assignee cannot honor.
+ * Adapters that *could* support goals get enable-it instructions; every other
+ * harness gets an explicit "not supported here" warning so humans learn the
+ * command is agent-dependent rather than silently losing the request.
+ */
+function unsupportedGoalCommandMessage(adapterType: string): string {
+  if (adapterType === "codex_local") {
+    return "`/goal` requires a Codex agent using the app-server goal runtime. Enable the Codex goal runtime in the assignee's adapter settings, then try again.";
+  }
+  if (adapterType === "claude_local") {
+    return "`/goal` requires the Claude Code goal command to be enabled for this agent. Turn on the goal command in the assignee's adapter settings, then try again.";
+  }
+  return `\`/goal\` is not supported by this agent's \`${adapterType}\` harness. Reassign the issue to a Codex or Claude Code agent with goal support enabled, or send a regular comment instead.`;
+}
+
 export function buildUnsupportedChatCommandReply(input: {
   command: AdapterChatCommandInvocation;
   adapterType: string;
 }): { message: string; result: AdapterExecutionResult } {
   const message =
     input.command.name === "goal"
-      ? "`/goal` requires a Codex agent using the app-server goal runtime. Enable the Codex goal runtime in the assignee's adapter settings, then try again."
+      ? unsupportedGoalCommandMessage(input.adapterType)
       : `Unsupported issue-thread command: \`/${input.command.name}\`.`;
   return {
     message,
@@ -96,9 +112,10 @@ const GOAL_STATUS_TONES: Record<string, IssueCommentPresentationTone> = {
 };
 
 /**
- * Derive the structured notice presentation + metadata for a supported Codex
- * `/goal` command reply so the composer feedback renders as a goal card
- * (objective / status / budget rows) instead of a bare confirmation line.
+ * Derive the structured notice presentation + metadata for a supported `/goal`
+ * command reply (Codex app-server or Claude Code) so the composer feedback
+ * renders as a goal card (objective / status / budget rows) instead of a bare
+ * confirmation line.
  *
  * Returns `null` for any result that is not a supported goal command reply, in
  * which case the caller posts a plain comment. The unsupported-command error is
@@ -115,7 +132,7 @@ export function buildGoalChatCommandReplyPresentation(
   const action = asTrimmedString(chatCommand.action);
   if (!action) return null;
 
-  const goal = asRecord(root.codexGoal);
+  const goal = asRecord(root.codexGoal ?? root.claudeGoal);
   const status = asTrimmedString(goal.status);
   const objective = asTrimmedString(goal.objective);
   const tokenBudget = asFiniteNumber(goal.tokenBudget);
