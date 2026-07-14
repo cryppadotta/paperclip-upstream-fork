@@ -1,4 +1,4 @@
-import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { memo, useState, type MouseEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
@@ -137,7 +137,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const hasImages = images.length > 0;
   // The issue (or source) this row points at — used as the target for the
   // "n more" affordance in the expanded gallery.
-  const issueHref = item.relatedIssue?.href ?? href;
+  const issueHref = taskRef?.href ?? null;
   // Inline-resolvable active rows expand to reveal their resolver; rows with
   // images expand to reveal a larger gallery (PAP-13544); triage-enabled rows
   // expand to reveal the per-card triage strip (PAP-16032 §4.5). Any of these
@@ -148,14 +148,15 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const activate = () => {
     if (expandable) onToggleExpand(item);
   };
-  const onHeaderKeyDown = (e: KeyboardEvent) => {
-    if (!expandable) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onToggleExpand(item);
+  const activateFromCard = (event: MouseEvent<HTMLDivElement>) => {
+    if (event.target instanceof Element) {
+      const interactive = event.target.closest(
+        "a,button,input,textarea,select,[role='button'],[role='menuitem']",
+      );
+      if (interactive && interactive !== event.currentTarget) return;
     }
+    activate();
   };
-
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
   const compactActions = !isHidden ? collectCompactActions(item) : [];
@@ -250,10 +251,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       data-attention-source={item.sourceKind}
       data-attention-severity={item.severity}
     >
-      {/* Meta band: one breadcrumb of identity on the left (kind → task →
-          project), recency + overflow on the right. Not part of the clickable
-          headline, so the menu never toggles it. */}
-      <div className="flex items-start justify-between gap-2">
+      {/* The summary body is the larger disclosure target. Nested links and
+          controls keep their own behavior through activateFromCard's guard. */}
+      <div
+        className={cn("flex flex-col gap-4", expandable && "cursor-pointer")}
+        onClick={activateFromCard}
+        data-attention-card-body
+      >
+        {/* Meta band: one breadcrumb of identity on the left (kind → task →
+            project), recency + overflow on the right. */}
+        <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-1">
           <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
             <StatusGlyph status={status} size="md" />
@@ -264,8 +271,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               <EyebrowSeparator />
               <Link
                 to={taskRef.href ?? "#"}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
-                onClick={(e) => e.stopPropagation()}
               >
                 {taskRef.identifier}
               </Link>
@@ -297,6 +305,16 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             >
               Reappears {reappearLabel(snoozedUntil)}
             </span>
+          ) : issueHref ? (
+            <Link
+              to={issueHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-(length:--text-nano) text-muted-foreground hover:text-foreground"
+              aria-label="Open task in a new tab"
+            >
+              {relativeTime(item.activityAt)}
+            </Link>
           ) : (
             <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
           )}
@@ -330,30 +348,28 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             </DropdownMenu>
           )}
         </div>
-      </div>
+        </div>
 
-      {/* Headline — the primary expand target for inline rows. Title wraps to
-          two lines instead of truncating to a sliver on narrow screens. */}
-      <div
-        className={cn(
-          "min-w-0 rounded-md",
-          expandable && "cursor-pointer focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none",
-        )}
-        {...(expandable
-          ? {
-              role: "button",
-              tabIndex: 0,
-              "aria-expanded": expanded,
-              "aria-label": expanded ? "Collapse decision" : "Expand decision",
-              onClick: activate,
-              onKeyDown: onHeaderKeyDown,
-            }
-          : {})}
-      >
-        <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
-          {item.subject.title ?? meta.label}
-        </span>
-        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
+        {/* The title navigates to its task; detail text and surrounding empty
+            summary space remain disclosure targets. */}
+        <div className="min-w-0 rounded-md">
+          {issueHref ? (
+            <Link
+              to={issueHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="line-clamp-2 text-sm font-medium text-foreground hover:underline"
+              title={item.subject.title ?? undefined}
+            >
+              {item.subject.title ?? meta.label}
+            </Link>
+          ) : (
+            <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
+              {item.subject.title ?? meta.label}
+            </span>
+          )}
+          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
+        </div>
       </div>
 
       {/* Collapsed-only content. It has no counterpart to morph into — the
