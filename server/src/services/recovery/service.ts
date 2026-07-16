@@ -3161,7 +3161,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
 
-    if (input.recoveryCause === "workspace_validation_failed") {
+    const latestRetryReason = readNonEmptyString(parseObject(input.latestRun?.contextSnapshot).retryReason);
+    if (
+      input.recoveryCause === "workspace_validation_failed" &&
+      latestRetryReason !== "workspace_validation_auto_repaired"
+    ) {
       const workspaceValidation = readWorkspaceValidationPayload(input.latestRun);
       if (workspaceValidation) {
         const repair = await attemptMechanicalWorkspaceValidationRepair({
@@ -3178,7 +3182,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               `- Execution workspace: \`${repair.executionWorkspaceId ?? "unknown"}\``,
               `- Failed run: \`${input.latestRun?.id ?? "unknown"}\``,
               `- Repair result: ${repair.reason}`,
-              "- Next action: retry the source issue on the repaired workspace.",
+              input.issue.assigneeAgentId
+                ? "- Next action: retry the source issue on the repaired workspace."
+                : "- Next action: continue recovery escalation because the source issue has no agent assignee.",
             ].join("\n"),
             {},
             { authorType: "system" },
@@ -3223,8 +3229,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 executionWorkspaceId: repair.executionWorkspaceId,
               }, "normal_model"),
             });
+            return input.issue;
           }
-          return input.issue;
         }
       }
     }
