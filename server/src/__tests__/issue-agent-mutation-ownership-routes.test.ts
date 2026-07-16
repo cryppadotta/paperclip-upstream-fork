@@ -1559,6 +1559,194 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
+  it("allows manager cleanup runs to reconcile in-tree sibling issue status and cancel the active run", async () => {
+    const cleanupIssueId = "aaaaaaaa-1111-4111-8111-aaaaaaaa1111";
+    const cleanupParentIssueId = "aaaaaaaa-2222-4222-8222-aaaaaaaa2222";
+    const targetParentIssueId = "aaaaaaaa-3333-4333-8333-aaaaaaaa3333";
+    const treeRootIssueId = "aaaaaaaa-4444-4444-8444-aaaaaaaa4444";
+    const targetRunId = "aaaaaaaa-5555-4555-8555-aaaaaaaa5555";
+    const managerRunId = peerActor().runId as string;
+    const targetIssue = makeIssue({
+      id: issueId,
+      status: "in_progress",
+      assigneeAgentId: ownerAgentId,
+      parentId: targetParentIssueId,
+      executionRunId: targetRunId,
+    });
+    const cleanupIssue = makeIssue({
+      id: cleanupIssueId,
+      status: "in_progress",
+      assigneeAgentId: peerAgentId,
+      parentId: cleanupParentIssueId,
+      checkoutRunId: managerRunId,
+      executionRunId: managerRunId,
+    });
+    const issueById = new Map<string, Record<string, unknown>>([
+      [issueId, targetIssue],
+      [cleanupIssueId, cleanupIssue],
+      [cleanupParentIssueId, makeIssue({ id: cleanupParentIssueId, status: "blocked", assigneeAgentId: peerAgentId, parentId: treeRootIssueId })],
+      [targetParentIssueId, makeIssue({ id: targetParentIssueId, status: "blocked", assigneeAgentId: ownerAgentId, parentId: treeRootIssueId })],
+      [treeRootIssueId, makeIssue({ id: treeRootIssueId, status: "blocked", assigneeAgentId: peerAgentId, parentId: null })],
+    ]);
+    mockIssueService.getById.mockImplementation(async (id: string) => issueById.get(id) ?? null);
+    mockIssueService.update.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({
+      ...issueById.get(id),
+      ...patch,
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts"
+        ? "allow_manager_chain"
+        : input.action === "issue:read"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed because the actor manages the issue assignee."
+        : input.action === "issue:read"
+          ? "Allowed to read the target issue."
+          : "No agent permission mapping exists for issue:mutate.",
+    }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: targetRunId,
+      companyId,
+      agentId: ownerAgentId,
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    mockHeartbeatService.cancelRun.mockResolvedValue({
+      id: targetRunId,
+      companyId,
+      agentId: ownerAgentId,
+      status: "cancelled",
+    });
+
+    const app = await createApp(
+      peerActor(),
+      createRunContextDb({ issueId: cleanupIssueId }, peerAgentId, managerRunId),
+    );
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled", comment: "Duplicate sibling closed by cleanup reconciliation." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "cancelled",
+        actorAgentId: peerAgentId,
+      }),
+    );
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(targetRunId);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Duplicate sibling closed by cleanup reconciliation.",
+      expect.objectContaining({ agentId: peerAgentId, runId: managerRunId }),
+      expect.any(Object),
+    );
+  });
+
+  it("rejects manager cleanup reconciliation for out-of-tree sibling issues", async () => {
+    const cleanupIssueId = "bbbbbbbb-1111-4111-8111-bbbbbbbb1111";
+    const cleanupParentIssueId = "bbbbbbbb-2222-4222-8222-bbbbbbbb2222";
+    const cleanupRootIssueId = "bbbbbbbb-3333-4333-8333-bbbbbbbb3333";
+    const outOfTreeRootIssueId = "bbbbbbbb-4444-4444-8444-bbbbbbbb4444";
+    const managerRunId = peerActor().runId as string;
+    const issueById = new Map<string, Record<string, unknown>>([
+      [issueId, makeIssue({ id: issueId, status: "in_progress", assigneeAgentId: ownerAgentId, parentId: outOfTreeRootIssueId })],
+      [cleanupIssueId, makeIssue({
+        id: cleanupIssueId,
+        status: "in_progress",
+        assigneeAgentId: peerAgentId,
+        parentId: cleanupParentIssueId,
+        checkoutRunId: managerRunId,
+        executionRunId: managerRunId,
+      })],
+      [cleanupParentIssueId, makeIssue({ id: cleanupParentIssueId, status: "blocked", assigneeAgentId: peerAgentId, parentId: cleanupRootIssueId })],
+      [cleanupRootIssueId, makeIssue({ id: cleanupRootIssueId, status: "blocked", assigneeAgentId: peerAgentId, parentId: null })],
+      [outOfTreeRootIssueId, makeIssue({ id: outOfTreeRootIssueId, status: "todo", assigneeAgentId: ownerAgentId, parentId: null })],
+    ]);
+    mockIssueService.getById.mockImplementation(async (id: string) => issueById.get(id) ?? null);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts"
+        ? "allow_manager_chain"
+        : input.action === "issue:read"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed because the actor manages the issue assignee."
+        : input.action === "issue:read"
+          ? "Allowed to read the target issue."
+          : "No agent permission mapping exists for issue:mutate.",
+    }));
+
+    const app = await createApp(
+      peerActor(),
+      createRunContextDb({ issueId: cleanupIssueId }, peerAgentId, managerRunId),
+    );
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps low-trust issue-boundary denials ahead of manager cleanup overrides", async () => {
+    const cleanupIssueId = "cccccccc-1111-4111-8111-cccccccc1111";
+    const cleanupParentIssueId = "cccccccc-2222-4222-8222-cccccccc2222";
+    const treeRootIssueId = "cccccccc-3333-4333-8333-cccccccc3333";
+    const managerRunId = peerActor().runId as string;
+    const issueById = new Map<string, Record<string, unknown>>([
+      [issueId, makeIssue({ id: issueId, status: "in_progress", assigneeAgentId: ownerAgentId, parentId: treeRootIssueId })],
+      [cleanupIssueId, makeIssue({
+        id: cleanupIssueId,
+        status: "in_progress",
+        assigneeAgentId: peerAgentId,
+        parentId: cleanupParentIssueId,
+        checkoutRunId: managerRunId,
+        executionRunId: managerRunId,
+      })],
+      [cleanupParentIssueId, makeIssue({ id: cleanupParentIssueId, status: "blocked", assigneeAgentId: peerAgentId, parentId: treeRootIssueId })],
+      [treeRootIssueId, makeIssue({ id: treeRootIssueId, status: "blocked", assigneeAgentId: peerAgentId, parentId: null })],
+    ]);
+    mockIssueService.getById.mockImplementation(async (id: string) => issueById.get(id) ?? null);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts"
+        ? "allow_manager_chain"
+        : input.action === "issue:read"
+          ? "allow_explicit_grant"
+          : "deny_low_trust_boundary",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed because the actor manages the issue assignee."
+        : input.action === "issue:read"
+          ? "Allowed to read the target issue."
+          : "Issue is outside this low-trust boundary.",
+    }));
+
+    const app = await createApp(
+      peerActor(),
+      createRunContextDb({ issueId: cleanupIssueId }, peerAgentId, managerRunId),
+    );
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "tasks:manage_active_checkouts" }),
+    );
+  });
+
+
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],

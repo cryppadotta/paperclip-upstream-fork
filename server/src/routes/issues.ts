@@ -3862,6 +3862,91 @@ export function issueRoutes(
     return decision.allowed;
   }
 
+  const ISSUE_GRAPH_CLEANUP_UPDATE_FIELDS = new Set(["status", "blockedByIssueIds", "comment"]);
+  const ISSUE_GRAPH_CLEANUP_ANCESTRY_MAX_DEPTH = 50;
+
+  function isIssueGraphCleanupUpdateRequest(input: unknown) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) return false;
+    const keys = Object.keys(input as Record<string, unknown>).filter((key) =>
+      (input as Record<string, unknown>)[key] !== undefined
+    );
+    return keys.length > 0 && keys.every((key) => ISSUE_GRAPH_CLEANUP_UPDATE_FIELDS.has(key));
+  }
+
+  function readRunContextIssueId(contextSnapshot: unknown) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+    const context = contextSnapshot as Record<string, unknown>;
+    const issueId = typeof context.issueId === "string" ? context.issueId.trim() : "";
+    if (issueId) return issueId;
+    const taskId = typeof context.taskId === "string" ? context.taskId.trim() : "";
+    return taskId || null;
+  }
+
+  async function loadIssueAncestryForCleanupOverride(
+    companyId: string,
+    issueId: string,
+    seed?: Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId"> | null,
+  ): Promise<Array<Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId">> | null> {
+    const ancestry: Array<Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId">> = [];
+    const seen = new Set<string>();
+    let cursor: string | null = issueId;
+
+    for (let depth = 0; cursor && depth < ISSUE_GRAPH_CLEANUP_ANCESTRY_MAX_DEPTH; depth += 1) {
+      if (seen.has(cursor)) return null;
+      seen.add(cursor);
+
+      const issue: Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId"> | null =
+        seed && cursor === seed.id ? seed : await svc.getById(cursor);
+      if (!issue || issue.companyId !== companyId) return null;
+      ancestry.push({ id: issue.id, companyId: issue.companyId, parentId: issue.parentId });
+      cursor = issue.parentId;
+    }
+
+    if (cursor) return null;
+    return ancestry;
+  }
+
+  async function hasIssueGraphCleanupMutationOverride(input: {
+    req: Request;
+    issue: Pick<IssueRouteSnapshot, "id" | "companyId" | "parentId" | "assigneeAgentId" | "status">;
+    boundaryDecision: Awaited<ReturnType<typeof decideIssueAccess>>;
+    requestedUpdate: unknown;
+  }) {
+    if (input.req.actor.type !== "agent") return false;
+    if (input.boundaryDecision.reason !== "deny_missing_grant") return false;
+    if (!isIssueGraphCleanupUpdateRequest(input.requestedUpdate)) return false;
+
+    const actorAgentId = input.req.actor.agentId;
+    if (!actorAgentId || !input.issue.assigneeAgentId || input.issue.assigneeAgentId === actorAgentId) {
+      return false;
+    }
+    if (!(await hasActiveCheckoutManagementOverride(actorAgentId, input.issue.companyId, input.issue.assigneeAgentId))) {
+      return false;
+    }
+
+    const run = await loadActorRunContext(input.req, input.issue.companyId);
+    const sourceIssueId = readRunContextIssueId(run?.contextSnapshot);
+    if (!run || !sourceIssueId || sourceIssueId === input.issue.id) return false;
+
+    const sourceIssue = await svc.getById(sourceIssueId);
+    if (
+      !sourceIssue ||
+      sourceIssue.companyId !== input.issue.companyId ||
+      sourceIssue.assigneeAgentId !== actorAgentId ||
+      sourceIssue.status !== "in_progress"
+    ) {
+      return false;
+    }
+    if (sourceIssue.checkoutRunId !== run.id && sourceIssue.executionRunId !== run.id) return false;
+
+    const sourceAncestry = await loadIssueAncestryForCleanupOverride(input.issue.companyId, sourceIssue.id, sourceIssue);
+    const targetAncestry = await loadIssueAncestryForCleanupOverride(input.issue.companyId, input.issue.id, input.issue);
+    if (!sourceAncestry || !targetAncestry || sourceAncestry.length < 2) return false;
+
+    const sourceRootId = sourceAncestry[sourceAncestry.length - 1]?.id ?? null;
+    return Boolean(sourceRootId && targetAncestry.some((entry) => entry.id === sourceRootId));
+  }
+
   async function assertAgentIssueMutationAllowed(
     req: Request,
     res: Response,
@@ -3876,7 +3961,11 @@ export function issueRoutes(
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
-    options: { allowVisibleIssueWrite?: boolean } = {},
+    options: {
+      allowVisibleIssueWrite?: boolean;
+      allowIssueGraphCleanupOverride?: boolean;
+      requestedUpdate?: unknown;
+    } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3909,6 +3998,17 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
+      if (
+        options.allowIssueGraphCleanupOverride === true &&
+        await hasIssueGraphCleanupMutationOverride({
+          req,
+          issue,
+          boundaryDecision,
+          requestedUpdate: options.requestedUpdate,
+        })
+      ) {
+        return true;
+      }
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
     if (issue.assigneeAgentId === null) {
@@ -8437,7 +8537,11 @@ export function issueRoutes(
       req,
       res,
       existing,
-      { allowVisibleIssueWrite: true },
+      {
+        allowVisibleIssueWrite: true,
+        allowIssueGraphCleanupOverride: true,
+        requestedUpdate: req.body,
+      },
     );
     if (!issueMutationAccess) return;
     const issueMutationAuthorizationReason = req.actor.type === "agent"
