@@ -141,6 +141,7 @@ import {
   isReviewPathRecoveryIdempotencyConflict,
   REVIEW_PATH_RECOVERY_INSTRUCTION,
 } from "../services/recovery/review-path-recovery.js";
+import { RECOVERY_ORIGIN_KINDS } from "../services/recovery/origins.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -3933,7 +3934,8 @@ export function issueRoutes(
       !sourceIssue ||
       sourceIssue.companyId !== input.issue.companyId ||
       sourceIssue.assigneeAgentId !== actorAgentId ||
-      sourceIssue.status !== "in_progress"
+      sourceIssue.status !== "in_progress" ||
+      sourceIssue.originKind !== RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
     ) {
       return false;
     }
