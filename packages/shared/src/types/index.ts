@@ -753,6 +753,13 @@ export type {
   SecretProviderDescriptor,
   SecretStatus,
   SecretVersionStatus,
+  SecretProposalKind,
+  SecretProposalStatus,
+  SecretProposalAgentRef,
+  SecretProposalIssueRef,
+  SecretProposalView,
+  ApproveSecretProposalInput,
+  RejectSecretProposalInput,
 } from "./secrets.js";
 export type {
   Routine,
