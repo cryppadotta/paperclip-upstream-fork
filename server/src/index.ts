@@ -46,6 +46,7 @@ import {
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
+  createSecretProposalsService,
   environmentCustomImageService,
   decisionService,
   decisionRetentionService,
@@ -958,6 +959,7 @@ export async function startServer(): Promise<StartedServer> {
   };
 
   if (heartbeat) {
+    const secretProposals = createSecretProposalsService(db as any);
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     const retentionExecutor = decisionRetentionService(db as any, {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
@@ -1252,6 +1254,14 @@ export async function startServer(): Promise<StartedServer> {
           })
           .catch((err) => {
             logger.error({ err }, "periodic tool connection health sweep failed");
+          }));
+
+        trackHeartbeatSchedulerWork(secretProposals.sweepExpired()
+          .then((expired) => {
+            if (expired > 0) logger.warn({ expired }, "periodic secret proposal expiry scrubbed proposals");
+          })
+          .catch((err) => {
+            logger.error({ err }, "periodic secret proposal expiry sweep failed");
           }));
 
         if (heartbeatSchedulerStopped) return;
