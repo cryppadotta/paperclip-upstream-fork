@@ -46,7 +46,6 @@ import {
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
-  createSecretProposalsService,
   environmentCustomImageService,
   decisionService,
   decisionRetentionService,
@@ -64,6 +63,7 @@ import {
   toolAccessService,
 } from "./services/index.js";
 import { queueIssueAssignmentWakeup } from "./services/issue-assignment-wakeup.js";
+import { createSecretProposalsService } from "./services/secret-proposals.js";
 import { resolveWorktreeRunExecutionActivationState } from "./services/instance-settings.js";
 import {
   parseAdapterRegistryEnv,
