@@ -1803,6 +1803,8 @@ export {
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
   updateToolConnectionSchema,
+  createConnectionTriggerSchema,
+  updateConnectionTriggerSchema,
   putToolConnectionInstallsSchema,
   updateToolMcpGatewaySchema,
   createToolInvocationSchema,
