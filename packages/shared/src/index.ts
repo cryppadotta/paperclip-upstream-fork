@@ -1266,6 +1266,13 @@ export type {
   ConnectionTokenUseEnvLeaseResponse,
   ConnectionTokenResponse,
   ConnectionTokenIssuance,
+  ConnectionTokenSubject,
+  ConnectionRecoverableErrorCode,
+  ConnectionRecoverableErrorPayload,
+  ConnectionUsageDailyBucket,
+  ConnectionUsageResponse,
+  StartConnectionAuthorizationRequest,
+  StartConnectionAuthorizationResponse,
   ToolCredentialSecretRef,
   ToolInvocation,
   ToolInvocationApprovalState,
@@ -1393,6 +1400,7 @@ export {
   COMPANY_SEARCH_SORTS,
   COMPANY_SEARCH_UPDATED_WITHIN_OPTIONS,
 } from "./types/index.js";
+export { CONNECTION_RECOVERABLE_ERROR_CODES } from "./types/index.js";
 export {
   ISSUE_REFERENCE_IDENTIFIER_RE,
   buildIssueReferenceHref,
