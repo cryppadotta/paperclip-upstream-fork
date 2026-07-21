@@ -735,6 +735,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1075.0
         version: 3.1075.0
+      '@paperclip/connect-protocol':
+        specifier: workspace:*
+        version: link:../packages/connect-protocol
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
