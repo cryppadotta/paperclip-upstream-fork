@@ -10,6 +10,7 @@ import {
   type DeploymentMode,
   type PermissionKey,
   connectToolAppSchema,
+  createConnectionTriggerSchema,
   createToolStdioCommandTemplateSchema,
   createToolApplicationSchema,
   createToolConnectionSchema,
@@ -36,6 +37,7 @@ import {
   unbindToolProfileBindingSchema,
   updateToolApplicationSchema,
   updateToolConnectionSchema,
+  updateConnectionTriggerSchema,
   updateToolPolicySchema,
   updateToolProfileEntrySchema,
   updateToolProfileWithEntriesSchema,
@@ -45,6 +47,7 @@ import { getActorInfo, assertBoard, assertCompanyAccess, hasCompanyAccess } from
 import { badRequest, forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService, googleSheetsRobotEmailFromEnv, logActivity, toolAccessPolicyService, toolAccessService } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { connectionTriggerService } from "../services/connection-relay.js";
 
 /** Allowlist (e.g. Google Sheets allowed spreadsheet ids) lives in connection config. */
 function allowlistIds(config: Record<string, unknown> | null | undefined): string[] {
@@ -90,6 +93,7 @@ export function toolAccessRoutes(
   const router = Router();
   const svc = toolAccessService(db, options);
   const policySvc = toolAccessPolicyService(db);
+  const triggerSvc = connectionTriggerService(db);
 
   function configuredPublicBaseUrl() {
     const raw = (
