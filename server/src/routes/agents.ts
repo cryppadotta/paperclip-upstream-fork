@@ -47,7 +47,6 @@ import {
   companySkillService,
   budgetService,
   heartbeatService,
-  createRunSecretRedactionRegistry,
   ISSUE_LIST_DEFAULT_LIMIT,
   issueApprovalService,
   issueRecoveryActionService,
@@ -57,6 +56,7 @@ import {
   workspaceOperationService,
 } from "../services/index.js";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
