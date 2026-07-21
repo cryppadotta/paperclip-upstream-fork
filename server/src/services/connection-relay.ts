@@ -285,7 +285,12 @@ export async function pollRelayChannel(options: {
     response = await fetcher(new URL("/v1/relay/poll?waitSeconds=25", options.baseUrl), { headers });
     if (response.ok) {
       const payload = await response.json() as unknown;
-      items = (Array.isArray(payload) ? payload : [payload])
+      const deliveries = payload && typeof payload === "object" && Array.isArray((payload as { deliveries?: unknown }).deliveries)
+        ? (payload as { deliveries: unknown[] }).deliveries
+        : Array.isArray(payload)
+          ? payload
+          : [payload];
+      items = deliveries
         .map(parseRelayChannelItem)
         .filter((item): item is RelayChannelItem => item !== null);
     }

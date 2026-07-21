@@ -83,6 +83,7 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { createConnectionRuntime } from "./services/connection-runtime.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -222,6 +223,7 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const connectionRuntime = createConnectionRuntime(db, { pluginWorkerManager: workerManager });
 
   // Mount API routes
   const api = Router();
@@ -313,6 +315,8 @@ export async function createApp(
     deploymentExposure: opts.deploymentExposure,
     trustedLocalStdioRuntimeHost,
     toolGateway,
+    connectionBroker: connectionRuntime?.broker,
+    brokeredCustodyMode: "A",
   }));
   api.use(smokeLabRoutes(db, {
     deploymentMode: opts.deploymentMode,
@@ -611,6 +615,7 @@ export async function createApp(
     if (appServicesShutdown) return;
     appServicesShutdown = true;
     disableFeedbackExportFlushes();
+    connectionRuntime?.close();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

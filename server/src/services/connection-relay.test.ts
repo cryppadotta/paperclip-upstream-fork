@@ -197,6 +197,21 @@ describe("processConnectionRelay", () => {
     expect(received).toEqual(["dl_01K0EXAMPLE"]);
   });
 
+  it("unwraps connector-service long-poll delivery responses", async () => {
+    const { rawBody } = fixture();
+    const envelope = JSON.parse(rawBody.toString("utf8"));
+    const received: string[] = [];
+    await pollRelayChannel({
+      baseUrl: "https://connect.example",
+      createSession: async () => "short-lived-token",
+      fetch: async (url) => new URL(String(url)).pathname === "/v1/relay/stream"
+        ? new Response(null, { status: 503 })
+        : Response.json({ deliveries: [{ envelope, signature: "v1=test", timestamp: "1784657045" }] }),
+      onEnvelope: async ({ body }) => { received.push(JSON.parse(body.toString("utf8")).deliveryId); },
+    });
+    expect(received).toEqual(["dl_01K0EXAMPLE"]);
+  });
+
   it("consumes SSE data and acknowledges successful deliveries", async () => {
     const { rawBody } = fixture();
     const envelope = JSON.parse(rawBody.toString("utf8"));
