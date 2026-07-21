@@ -4990,7 +4990,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         connection: toConnection(connection),
         catalog,
         actions: groupedActions(catalog),
-        suggestedDefaults: galleryEntry?.recommendedDefaults ?? { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
+          access: "all_agents",
+          askFirstRiskLevels: ["write", "destructive"],
+        },
         auth: null,
       };
     }

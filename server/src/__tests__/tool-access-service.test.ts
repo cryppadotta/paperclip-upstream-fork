@@ -2913,11 +2913,15 @@ describeEmbeddedPostgres("tool access service", () => {
       status: 200,
       json: async () => ({ access_token: "user-access-token", refresh_token: "user-refresh-token", expires_in: 3600 }),
     } as Response);
-    await service.completeOAuthCallback({
+    const completed = await service.completeOAuthCallback({
       state: state.state,
       code: "authorization-code",
       redirectUri: "https://paperclip.example/api/tools/oauth/callback",
       actor: { actorType: "user", actorId: "user-for-run" },
+    });
+    expect(completed.suggestedDefaults).toEqual({
+      access: "all_agents",
+      askFirstRiskLevels: ["write", "destructive"],
     });
 
     const [grant] = await db.select().from(connectionGrants).where(and(
