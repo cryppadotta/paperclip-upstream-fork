@@ -28,6 +28,14 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import {
+  AgentConfigurationRail,
+  ConfigurationSection,
+  EffectiveConfigurationStrip,
+  filterAgentConfigurationSections,
+  resolveEffectiveConfiguration,
+  type AgentConfigurationSectionId,
+} from "../components/agent-configuration-shell";
 import { PageTabBar } from "../components/PageTabBar";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -765,6 +773,7 @@ export function AgentDetail() {
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
+  const [configDirtyDetails, setConfigDirtyDetails] = useState<{ count: number; sections: string[] }>({ count: 0, sections: [] });
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
@@ -1429,13 +1438,14 @@ export function AgentDetail() {
       {!isMobile && showConfigActionBar && (
         <div className="fixed bottom-6 right-6 z-30">
           <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
+            <span className="text-xs text-muted-foreground">{configDirtyDetails.count} unsaved {configDirtyDetails.count === 1 ? "change" : "changes"}</span>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              Discard
             </Button>
             <Button
               size="sm"
@@ -1455,13 +1465,14 @@ export function AgentDetail() {
             className="flex items-center justify-end gap-2 px-3 py-2"
             style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
           >
+            <span className="mr-auto text-xs text-muted-foreground">{configDirtyDetails.count} unsaved {configDirtyDetails.count === 1 ? "change" : "changes"}</span>
             <Button
               variant="ghost"
               size="sm"
               onClick={() => cancelConfigActionRef.current?.()}
               disabled={configSaving}
             >
-              Cancel
+              Discard
             </Button>
             <Button
               size="sm"
@@ -1476,6 +1487,8 @@ export function AgentDetail() {
 
       {/* View content */}
       {activeView === "dashboard" && (
+        <div className="space-y-8">
+        <AgentProfileCard agent={agent} companyId={resolvedCompanyId ?? undefined} />
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
@@ -1484,6 +1497,7 @@ export function AgentDetail() {
           agentId={agent.id}
           agentRouteId={canonicalAgentRef}
         />
+        </div>
       )}
 
       {activeView === "instructions" && (
@@ -1503,6 +1517,7 @@ export function AgentDetail() {
           agentId={agent.id}
           companyId={resolvedCompanyId ?? undefined}
           onDirtyChange={setConfigDirty}
+          onDirtyDetailsChange={setConfigDirtyDetails}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
           onSavingChange={setConfigSaving}
@@ -1758,6 +1773,35 @@ function LatestRunCard({
 
 /* ---- Agent Overview (main single-page view) ---- */
 
+function AgentProfileCard({ agent, companyId }: { agent: AgentDetailRecord; companyId?: string }) {
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { pushToast } = useToastActions();
+  const updateAgent = useMutation({
+    mutationFn: (patch: Record<string, unknown>) => agentsApi.update(agent.id, patch, companyId),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(agent.companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
+      if (!syncAgentRouteAfterRename(queryClient, navigate, agent, updated, "dashboard")) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });
+      }
+      pushToast({ title: "Profile saved", tone: "success" });
+    },
+  });
+  return (
+    <AgentConfigForm
+      mode="edit"
+      agent={agent}
+      onSave={(patch) => updateAgent.mutateAsync(patch)}
+      isSaving={updateAgent.isPending}
+      identityOnly
+      identitySectionTitle="Profile"
+      hidePromptTemplate
+      sectionLayout="cards"
+    />
+  );
+}
+
 function AgentOverview({
   agent,
   runs,
@@ -1953,6 +1997,7 @@ function AgentConfigurePage({
   agentId,
   companyId,
   onDirtyChange,
+  onDirtyDetailsChange,
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
@@ -1962,6 +2007,7 @@ function AgentConfigurePage({
   agentId: string;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
+  onDirtyDetailsChange: (details: { count: number; sections: string[] }) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
@@ -1971,11 +2017,31 @@ function AgentConfigurePage({
   const navigate = useNavigate();
   const { tab: urlTab } = useParams<{ tab?: string }>();
   const [revisionsOpen, setRevisionsOpen] = useState(false);
+  const [filterQuery, setFilterQuery] = useState("");
+  const [dirtyDetails, setDirtyDetails] = useState<{ count: number; sections: string[] }>({ count: 0, sections: [] });
+  const visibleSections = useMemo(() => filterAgentConfigurationSections(filterQuery), [filterQuery]);
 
   const { data: configRevisions } = useQuery({
     queryKey: queryKeys.agents.configRevisions(agent.id),
     queryFn: () => agentsApi.listConfigRevisions(agent.id, companyId),
   });
+  const { data: keys = [] } = useQuery({
+    queryKey: queryKeys.agents.keys(agentId),
+    queryFn: () => agentsApi.listKeys(agentId, companyId),
+  });
+  const { data: adapterModels = [] } = useQuery({
+    queryKey: companyId ? queryKeys.agents.adapterModels(companyId, agent.adapterType) : ["agents", "none", "adapter-models", agent.adapterType],
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
+    enabled: Boolean(companyId),
+  });
+  const effectiveConfig = useMemo(
+    () => resolveEffectiveConfiguration(agent, adapterModels, keys.filter((key) => !key.revokedAt).length),
+    [adapterModels, agent, keys],
+  );
+  const handleDirtyDetailsChange = useCallback((details: { count: number; sections: string[] }) => {
+    setDirtyDetails(details);
+    onDirtyDetailsChange(details);
+  }, [onDirtyDetailsChange]);
 
   const rollbackConfig = useMutation({
     mutationFn: (revisionId: string) => agentsApi.rollbackConfigRevision(agent.id, revisionId, companyId),
@@ -1988,11 +2054,31 @@ function AgentConfigurePage({
     },
   });
 
+  const effectiveChips: Array<{ label: string; value: string; section: AgentConfigurationSectionId; inherited?: boolean }> = [
+    { label: "Adapter", value: effectiveConfig.adapter, section: "runtime" },
+    { label: "Model", value: effectiveConfig.model, section: "runtime", inherited: effectiveConfig.modelInherited },
+    { label: "Cost saver", value: effectiveConfig.cheapModel, section: "runtime", inherited: effectiveConfig.cheapInherited },
+    { label: "Environment", value: effectiveConfig.environment, section: "environment", inherited: effectiveConfig.environmentInherited },
+    { label: "Heartbeat", value: effectiveConfig.cadence, section: "schedule" },
+    { label: "Trust", value: effectiveConfig.trust, section: "access" },
+    { label: "API keys", value: String(effectiveConfig.apiKeyCount), section: "keys" },
+  ];
+
   return (
-    <div className="max-w-3xl space-y-6">
-      <ConfigurationTab
+    <div className="space-y-5">
+      <EffectiveConfigurationStrip chips={effectiveChips} />
+      <div className="grid gap-6 md:grid-cols-(--gtc-agent-configuration)">
+        <AgentConfigurationRail
+          query={filterQuery}
+          onQueryChange={setFilterQuery}
+          visibleSections={visibleSections}
+          dirtySections={new Set(dirtyDetails.sections)}
+        />
+        <div className="max-w-3xl space-y-8">
+          <ConfigurationTab
         agent={agent}
         onDirtyChange={onDirtyChange}
+        onDirtyDetailsChange={handleDirtyDetailsChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         onSavingChange={onSavingChange}
@@ -2000,14 +2086,24 @@ function AgentConfigurePage({
         companyId={companyId}
         hidePromptTemplate
         hideInstructionsFile
+        visibleSections={visibleSections}
       />
-      <div>
-        <h3 className="text-sm font-medium mb-3">API Keys</h3>
-        <KeysTab agentId={agentId} companyId={companyId} />
-      </div>
+      {visibleSections.has("keys") ? (
+        <ConfigurationSection id="keys" title="API Keys" instant>
+          <p className="text-xs text-muted-foreground">Long-lived keys for external processes acting as this agent. Runs receive short-lived tokens automatically.</p>
+          <KeysTab agentId={agentId} companyId={companyId} />
+        </ConfigurationSection>
+      ) : null}
+      {visibleSections.has("danger") ? (
+        <ConfigurationSection id="danger" title="Danger & Legacy">
+          <div className="rounded-lg border border-border p-4 text-sm text-muted-foreground">
+            Adapter-specific sandbox bypass, permission skipping, and deprecated values remain draftable in the runtime form. They are grouped here for navigation while the field internals stay unchanged in P1.
+          </div>
+        </ConfigurationSection>
+      ) : null}
 
       {/* Configuration Revisions — collapsible at the bottom */}
-      <div>
+      {visibleSections.has("history") ? <ConfigurationSection id="history" title="History" instant>
         <button
           className="flex items-center gap-2 text-sm font-medium hover:text-foreground transition-colors"
           onClick={() => setRevisionsOpen((v) => !v)}
@@ -2055,6 +2151,8 @@ function AgentConfigurePage({
             )}
           </div>
         )}
+      </ConfigurationSection> : null}
+        </div>
       </div>
     </div>
   );
@@ -2066,6 +2164,7 @@ function ConfigurationTab({
   agent,
   companyId,
   onDirtyChange,
+  onDirtyDetailsChange,
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
@@ -2073,10 +2172,12 @@ function ConfigurationTab({
   hidePromptTemplate,
   hideInstructionsFile,
   content = "configuration",
+  visibleSections,
 }: {
   agent: AgentDetailRecord;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
+  onDirtyDetailsChange: (details: { count: number; sections: string[] }) => void;
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
@@ -2084,6 +2185,7 @@ function ConfigurationTab({
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
   content?: "configuration" | "secrets";
+  visibleSections?: Set<AgentConfigurationSectionId>;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -2180,12 +2282,16 @@ function ConfigurationTab({
         isSaving={isConfigSaving}
         adapterModels={adapterModels}
         onDirtyChange={onDirtyChange}
+        onDirtyDetailsChange={onDirtyDetailsChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
         hideInlineSave
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}
         content={content}
+        hideIdentity={content === "configuration"}
+        configurationShell={content === "configuration"}
+        visibleConfigurationSections={visibleSections}
         sectionLayout="cards"
       />
       {content === "configuration" ? (
@@ -2194,32 +2300,34 @@ function ConfigurationTab({
         </p>
       ) : null}
 
-      {content === "configuration" ? <TrustPresetSection
-        permissions={agent.permissions}
-        disabled={updatePermissions.isPending}
-        companyId={companyId}
-        projectCandidates={(boundaryProjects ?? []).map((project) => ({
-          id: project.id,
-          label: project.name,
-        }))}
-        issueCandidates={(boundaryIssues ?? []).map((issue) => ({
-          id: issue.id,
-          label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
-        }))}
-        candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
-        onChange={(nextPermissions) =>
-          updatePermissions.mutate({
-            canCreateAgents,
-            canCreateSkills,
-            canAssignTasks,
-            ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
-          })
-        }
-      /> : null}
+      {content === "configuration" && visibleSections?.has("access") ? (
+        <ConfigurationSection id="access" title="Access & Governance" instant>
+          <TrustPresetSection
+            permissions={agent.permissions}
+            disabled={updatePermissions.isPending}
+            companyId={companyId}
+            projectCandidates={(boundaryProjects ?? []).map((project) => ({
+              id: project.id,
+              label: project.name,
+            }))}
+            issueCandidates={(boundaryIssues ?? []).map((issue) => ({
+              id: issue.id,
+              label: `${issue.identifier ?? issue.id.slice(0, 8)} · ${issue.title}`,
+            }))}
+            candidatesLoading={boundaryProjectsLoading || boundaryIssuesLoading}
+            onChange={(nextPermissions) =>
+              updatePermissions.mutate({
+                canCreateAgents,
+                canCreateSkills,
+                canAssignTasks,
+                ...buildPermissionsForTrustPreset(nextPermissions, nextPermissions.trustPreset === "low_trust_review" ? "low_trust_review" : "standard"),
+              })
+            }
+          />
 
-      {content === "configuration" ? <div>
-        <h3 className="text-sm font-medium mb-3">Permissions</h3>
-        <div className="border border-border rounded-lg p-4 space-y-4">
+          <div>
+            <h3 className="text-sm font-medium mb-3">Permissions</h3>
+            <div className="border border-border rounded-lg p-4 space-y-4">
           <div className="flex items-center justify-between gap-4 text-sm">
             <div className="space-y-1">
               <div>Can create new agents</div>
@@ -2277,8 +2385,10 @@ function ConfigurationTab({
               disabled={updatePermissions.isPending || taskAssignLocked}
             />
           </div>
-        </div>
-      </div> : null}
+            </div>
+          </div>
+        </ConfigurationSection>
+      ) : null}
     </div>
   );
 }
