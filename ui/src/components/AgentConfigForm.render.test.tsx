@@ -2616,4 +2616,54 @@ describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
     expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
   });
 
+
+  it("renders thinking effort as a segmented group for adapters with a short effort list", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local" },
+    );
+    roots.push(result.root);
+
+    const group = result.container.querySelector<HTMLElement>(
+      '[role="radiogroup"][aria-label="Thinking effort"]',
+    );
+    expect(group).toBeTruthy();
+
+    const segments = Array.from(group!.querySelectorAll('[role="radio"]'));
+    expect(segments.map((segment) => segment.textContent?.trim())).toEqual([
+      "Auto",
+      "Low",
+      "Medium",
+      "High",
+    ]);
+    // "Auto" (the empty default) is selected when nothing is configured.
+    expect(segments[0]?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      segments
+        .find((segment) => segment.textContent?.trim() === "High")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const updatedSegments = Array.from(
+      result.container.querySelectorAll('[role="radiogroup"][aria-label="Thinking effort"] [role="radio"]'),
+    );
+    const highSegment = updatedSegments.find((segment) => segment.textContent?.trim() === "High");
+    expect(highSegment?.getAttribute("aria-checked")).toBe("true");
+    expect(updatedSegments[0]?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("keeps thinking effort as a dropdown for adapters with a long effort list", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "opencode_local" },
+    );
+    roots.push(result.root);
+
+    expect(
+      result.container.querySelector('[role="radiogroup"][aria-label="Thinking effort"]'),
+    ).toBeNull();
+    expect(result.container.textContent).toContain("Thinking effort");
+  });
 });
