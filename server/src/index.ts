@@ -45,6 +45,7 @@ import {
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
+  decisionService,
   heartbeatService,
   issueService,
   instanceSettingsService,
@@ -882,6 +883,14 @@ export async function startServer(): Promise<StartedServer> {
 
   if (config.heartbeatSchedulerEnabled) {
     const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+    const decisionExecutor = decisionService(db as any, {
+      wakeOriginAgent: async (input) => heartbeat.wakeup(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: `decision_${input.outcome}`,
+        payload: { issueId: input.issueId, decisionId: input.decisionId, outcome: input.outcome },
+      }),
+    });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
@@ -1014,6 +1023,7 @@ export async function startServer(): Promise<StartedServer> {
     if (toolHealthSweep.failed > 0) {
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
     }
+    await decisionExecutor.sweepExpired();
 
     heartbeatSchedulerInterval = setInterval(() => {
       // Async so the suppression checks below can honor the override-aware
@@ -1021,6 +1031,9 @@ export async function startServer(): Promise<StartedServer> {
       // wrapped in trackHeartbeatSchedulerWork with its own error handling.
       void (async () => {
         if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
+          logger.error({ err }, "decision expiry sweep failed");
+        }));
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {
           logger.info(
