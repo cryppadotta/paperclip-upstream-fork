@@ -1151,6 +1151,7 @@ export function agentService(db: Db) {
           name: agentApiKeys.name,
           responsibleUserId: agentApiKeys.responsibleUserId,
           scopeConfig: agentApiKeys.scopeConfig,
+          lastUsedAt: agentApiKeys.lastUsedAt,
           createdAt: agentApiKeys.createdAt,
           revokedAt: agentApiKeys.revokedAt,
         })
@@ -1161,6 +1162,7 @@ export function agentService(db: Db) {
           name: row.name,
           scope: normalizeAgentApiKeyScope(row.scopeConfig),
           responsibleUserId: row.responsibleUserId,
+          lastUsedAt: row.lastUsedAt,
           createdAt: row.createdAt,
           revokedAt: row.revokedAt,
         }))),
