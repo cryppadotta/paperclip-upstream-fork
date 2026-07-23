@@ -312,13 +312,15 @@ function stableStopFingerprint(input: {
   watchedIssueId: string;
   materialLeaves: TaskWatchdogMaterialLeaf[];
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
+  nonLeafStatuses: Array<{ issueId: string; status: string }>;
 }) {
   const payload = JSON.stringify({
-    version: 2,
+    version: 3,
     companyId: input.companyId,
     watchedIssueId: input.watchedIssueId,
     materialLeaves: input.materialLeaves,
     waitsByIssueId: input.waitsByIssueId,
+    nonLeafStatuses: input.nonLeafStatuses,
   });
   return `task_watchdog_stop:${createHash("sha256").update(payload).digest("hex")}`;
 }
@@ -510,11 +512,16 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
       latestWorkProductAt: optionalIso(issue.latestWorkProductAt),
     }));
   const materialLeaves = leaves.map(materialLeaf);
+  const nonLeafStatuses = included
+    .filter((issue) => (includedChildrenByParentId.get(issue.id) ?? []).length > 0)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map((issue) => ({ issueId: issue.id, status: issue.status }));
   const stopFingerprint = stableStopFingerprint({
     companyId: input.watchdog.companyId,
     watchedIssueId: input.watchdog.issueId,
     materialLeaves,
     waitsByIssueId,
+    nonLeafStatuses,
   });
   const currentStopSnapshot: TaskWatchdogStopSnapshot = {
     version: 2,

@@ -520,6 +520,91 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(escalationComments.some((comment) => comment.body.includes("Attempts: 3/3"))).toBe(true);
   });
 
+  it("re-fires and escalates failed restoration on an intermediate node with unchanged leaves", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-INTERMEDIATE-RESTORE",
+      status: "done",
+      responsibleUserId: "board-user",
+    });
+    const intermediateId = await seedIssue(companyId, {
+      identifier: "WDOG-INTERMEDIATE",
+      parentId: sourceId,
+      status: "done",
+    });
+    await seedIssue(companyId, {
+      identifier: "WDOG-LEAF",
+      parentId: intermediateId,
+      status: "done",
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [initialWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const reviewedFingerprint = initialWatchdog!.lastObservedFingerprint!;
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, initialWatchdog!.watchdogIssueId!));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, intermediateId));
+    const intermediateStop = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(intermediateStop).toMatchObject({ checked: 1, triggered: 1 });
+    const [stoppedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, initialWatchdog!.id));
+    expect(stoppedWatchdog?.lastObservedFingerprint).not.toBe(reviewedFingerprint);
+    const intermediateFingerprint = stoppedWatchdog!.lastObservedFingerprint!;
+
+    await db.update(issueWatchdogs).set({
+      restorationFingerprint: intermediateFingerprint,
+      restorationVerificationPending: true,
+      restorationAttemptCount: 1,
+      restorationAttempts: [{
+        attempt: 1,
+        fingerprint: intermediateFingerprint,
+        runId: randomUUID(),
+        mutations: [{ type: "update_issue", issueId: intermediateId }],
+        completedAt: new Date().toISOString(),
+      }],
+    }).where(eq(issueWatchdogs.id, initialWatchdog!.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, initialWatchdog!.watchdogIssueId!));
+
+    const retried = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(retried).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes.at(-1)?.opts?.contextSnapshot).toMatchObject({
+      taskWatchdog: {
+        stopFingerprint: intermediateFingerprint,
+        restorationAttempt: 2,
+        restorationAttemptLimit: 3,
+      },
+    });
+
+    const attempts = [1, 2, 3].map((attempt) => ({
+      attempt,
+      fingerprint: intermediateFingerprint,
+      runId: randomUUID(),
+      mutations: [{ type: "update_issue", issueId: intermediateId }],
+      completedAt: new Date(Date.now() + attempt).toISOString(),
+    }));
+    await db.update(issueWatchdogs).set({
+      restorationFingerprint: intermediateFingerprint,
+      restorationVerificationPending: true,
+      restorationAttemptCount: 3,
+      restorationAttempts: attempts,
+    }).where(eq(issueWatchdogs.id, initialWatchdog!.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, initialWatchdog!.watchdogIssueId!));
+
+    const escalated = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(escalated).toMatchObject({ checked: 1, triggered: 0 });
+    expect(wakes).toHaveLength(3);
+    const [escalatedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.id, initialWatchdog!.id));
+    expect(escalatedWatchdog?.restorationEscalatedAt).not.toBeNull();
+    const [watchdogIssue] = await db.select().from(issues).where(eq(issues.id, initialWatchdog!.watchdogIssueId!));
+    expect(watchdogIssue).toMatchObject({ status: "in_review", assigneeUserId: "board-user" });
+  });
+
   it("marks a completed watchdog fingerprint reviewed, then reuses the same issue for a later stopped state", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-3", status: "done" });
