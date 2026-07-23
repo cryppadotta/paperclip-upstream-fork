@@ -675,6 +675,34 @@ export const addIssueCommentSchema = z.object({
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
 
+const taskWatchdogRecoveryUpdateSchema = updateIssueSchema.pick({
+  status: true,
+  assigneeAgentId: true,
+  assigneeUserId: true,
+  blockedByIssueIds: true,
+  reopen: true,
+  resume: true,
+  comment: true,
+}).strict();
+
+export const taskWatchdogRecoveryBatchSchema = z.object({
+  stopFingerprint: z.string().trim().min(1),
+  mutations: z.array(z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("update_issue"),
+      issueId: z.string().uuid(),
+      update: taskWatchdogRecoveryUpdateSchema,
+    }).strict(),
+    z.object({
+      type: z.literal("add_comment"),
+      issueId: z.string().uuid(),
+      body: multilineTextSchema.pipe(z.string().min(1)),
+    }).strict(),
+  ])).min(1).max(3),
+}).strict();
+
+export type TaskWatchdogRecoveryBatch = z.infer<typeof taskWatchdogRecoveryBatchSchema>;
+
 export const issueThreadInteractionStatusSchema = z.enum(ISSUE_THREAD_INTERACTION_STATUSES);
 export const issueThreadInteractionKindSchema = z.enum(ISSUE_THREAD_INTERACTION_KINDS);
 export const issueThreadInteractionResolverPolicySchema = z.enum(ISSUE_THREAD_INTERACTION_RESOLVER_POLICIES);

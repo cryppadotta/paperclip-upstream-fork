@@ -15,14 +15,14 @@ import {
   issueWatchdogs,
   issueWorkProducts,
 } from "@paperclipai/db";
-import type { IssueWatchdog, IssueWatchdogSummary } from "@paperclipai/shared";
+import type { IssueWatchdog, IssueWatchdogSummary, TaskWatchdogRecoveryBatch } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
-import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import { TASK_WATCHDOG_ORIGIN_KIND, taskWatchdogScopeAllowsIssueMutation } from "./task-watchdog-scope.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -38,6 +38,7 @@ const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed
 // false-positive stopped-subtree review. The periodic watchdog reconciler
 // re-evaluates after the window, so a genuinely idle issue still triggers.
 const TASK_WATCHDOG_FIRST_RUN_GRACE_MS = 15_000;
+const TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS = 3;
 
 type ActorFields = {
   agentId?: string | null;
@@ -243,6 +244,11 @@ export function summarizeIssueWatchdog(row: IssueWatchdogRow): IssueWatchdogSumm
     watchdogIssueId: row.watchdogIssueId,
     lastObservedFingerprint: row.lastObservedFingerprint,
     lastReviewedFingerprint: row.lastReviewedFingerprint,
+    restorationFingerprint: row.restorationFingerprint,
+    restorationVerificationPending: row.restorationVerificationPending,
+    restorationAttemptCount: row.restorationAttemptCount,
+    restorationAttempts: row.restorationAttempts,
+    restorationEscalatedAt: row.restorationEscalatedAt,
     lastTriggeredAt: row.lastTriggeredAt,
     lastCompletedAt: row.lastCompletedAt,
     triggerCount: row.triggerCount,
@@ -613,8 +619,8 @@ function reviewedFingerprintForWatchdogIssue(issue: Pick<IssueRow, "originFinger
   return normalizeStopFingerprint(issue.originFingerprint) ?? stopFingerprintFromText(issue.description);
 }
 
-function taskWatchdogWakeIdempotencyKey(watchdogId: string, stopFingerprint: string) {
-  return `task_watchdog:${watchdogId}:${stopFingerprint}`;
+function taskWatchdogWakeIdempotencyKey(watchdogId: string, stopFingerprint: string, attempt: number) {
+  return `task_watchdog:${watchdogId}:${stopFingerprint}:attempt:${attempt}`;
 }
 
 function buildStoppedFingerprintComment(input: {
@@ -681,6 +687,7 @@ function watchdogWakeContext(input: {
   watchdogIssue: IssueRow;
   sourceIssue: IssueRow;
   classification: Extract<TaskWatchdogClassifierResult, { state: "stopped" }>;
+  restorationAttempt: number;
 }) {
   return {
     issueId: input.watchdogIssue.id,
@@ -696,6 +703,8 @@ function watchdogWakeContext(input: {
       pendingApprovals: Object.fromEntries(Object.entries(input.classification.stopSnapshot.waitsByIssueId)
         .filter(([, waits]) => waits.pendingApprovalIds.length > 0)
         .map(([issueId, waits]) => [issueId, waits.pendingApprovalIds])),
+      restorationAttempt: input.restorationAttempt,
+      restorationAttemptLimit: TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS,
       capabilities: {
         targetScope: {
           watchedIssueId: input.sourceIssue.id,
@@ -1284,6 +1293,14 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const reviewedStopSnapshot = observedSnapshot?.fingerprint === reviewedFingerprint
       ? observedSnapshot
       : null;
+    if (watchdog.restorationFingerprint === reviewedFingerprint && watchdog.restorationVerificationPending) {
+      const [updated] = await db
+        .update(issueWatchdogs)
+        .set({ restorationVerificationPending: false, lastCompletedAt: new Date(), updatedAt: new Date() })
+        .where(eq(issueWatchdogs.id, watchdog.id))
+        .returning();
+      return updated ?? watchdog;
+    }
     if (
       watchdog.lastReviewedFingerprint === reviewedFingerprint &&
       canonicalJson(parseStopSnapshot(watchdog.lastReviewedStopSnapshot)) === canonicalJson(reviewedStopSnapshot)
@@ -1293,6 +1310,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       .set({
         lastReviewedFingerprint: reviewedFingerprint,
         lastReviewedStopSnapshot: reviewedStopSnapshot,
+        restorationFingerprint: null,
+        restorationVerificationPending: false,
+        restorationAttemptCount: 0,
+        restorationAttempts: [],
+        restorationEscalatedAt: null,
         lastCompletedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -1452,6 +1474,39 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return { state: classification.state, reason: classification.reason, classification };
     }
 
+    const retryingRestoration = watchdog.restorationFingerprint === classification.stopFingerprint;
+    if (retryingRestoration && watchdog.restorationAttemptCount >= TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS) {
+      if (watchdog.restorationEscalatedAt) {
+        return { state: "restoration_escalated" as const, classification, watchdogIssueId: watchdog.watchdogIssueId };
+      }
+      if (watchdog.watchdogIssueId) {
+        const attemptHistory = watchdog.restorationAttempts
+          .map((attempt) => `- Attempt ${attempt.attempt}: run \`${attempt.runId ?? "unknown"}\` at ${attempt.completedAt}`)
+          .join("\n");
+        await db.update(issues).set({ status: "in_review", assigneeAgentId: null, assigneeUserId: sourceIssue.responsibleUserId ?? sourceIssue.createdByUserId ?? watchdog.createdByUserId, updatedAt: new Date() }).where(eq(issues.id, watchdog.watchdogIssueId));
+        await issuesSvc.addComment(watchdog.watchdogIssueId, `Task watchdog restoration attempts exhausted; human review is required.\n\nStopped fingerprint: \`${classification.stopFingerprint}\`\nAttempts: ${watchdog.restorationAttemptCount}/${TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS}\n\nAttempt history:\n${attemptHistory}`, { runId: opts.runId ?? null }, { authorType: "system" });
+      }
+      const escalatedAt = new Date();
+      await db.update(issueWatchdogs).set({ restorationEscalatedAt: escalatedAt, updatedAt: escalatedAt }).where(eq(issueWatchdogs.id, watchdog.id));
+      await logActivity(db, {
+        companyId: watchdog.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: watchdog.watchdogAgentId,
+        runId: opts.runId ?? null,
+        action: "issue.task_watchdog_restoration_escalated",
+        entityType: "issue",
+        entityId: watchdog.issueId,
+        details: {
+          watchdogId: watchdog.id,
+          watchdogIssueId: watchdog.watchdogIssueId,
+          stopFingerprint: classification.stopFingerprint,
+          attempts: watchdog.restorationAttempts,
+        },
+      });
+      return { state: "restoration_escalated" as const, classification, watchdogIssueId: watchdog.watchdogIssueId };
+    }
+
     const existingWatchdogIssueId = watchdog.watchdogIssueId ?? (await findTaskWatchdogIssue(
       watchdog.companyId,
       sourceIssue.id,
@@ -1545,6 +1600,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       watchdogIssue,
       sourceIssue,
       classification,
+      restorationAttempt: retryingRestoration ? watchdog.restorationAttemptCount + 1 : 1,
     });
     const wake = deps.enqueueWakeup
       ? await deps.enqueueWakeup(watchdog.watchdogAgentId, {
@@ -1553,7 +1609,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         reason: "task_watchdog_stopped_subtree",
         payload: context,
         contextSnapshot: context,
-        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint),
+        idempotencyKey: taskWatchdogWakeIdempotencyKey(watchdog.id, classification.stopFingerprint, retryingRestoration ? watchdog.restorationAttemptCount + 1 : 1),
         requestedByActorType: "system",
         requestedByActorId: null,
       })
@@ -1609,6 +1665,153 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         eq(issueWatchdogs.status, "active"),
         inArray(issueWatchdogs.issueId, ancestorIds),
       ));
+  }
+
+  async function applyRecoveryBatch(
+    scope: {
+      kind: "watchdog";
+      watchdogId: string;
+      companyId: string;
+      watchedIssueId: string;
+      watchdogIssueId: string | null;
+      stopFingerprint: string | null;
+    },
+    input: TaskWatchdogRecoveryBatch,
+    actor: { agentId: string; runId: string },
+  ) {
+    if (!scope.stopFingerprint || input.stopFingerprint !== scope.stopFingerprint) {
+      throw conflict("Task-watchdog recovery batch fingerprint does not match the persisted run context.");
+    }
+    const stopFingerprint = scope.stopFingerprint;
+
+    return db.transaction(async (tx) => {
+      const transactionDb = tx as unknown as Db;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${scope.watchdogId}, 0))`);
+      await tx.execute(sql`select id from issue_watchdogs where id = ${scope.watchdogId} for update`);
+      const watchdog = await tx
+        .select()
+        .from(issueWatchdogs)
+        .where(and(
+          eq(issueWatchdogs.id, scope.watchdogId),
+          eq(issueWatchdogs.companyId, scope.companyId),
+          eq(issueWatchdogs.issueId, scope.watchedIssueId),
+          eq(issueWatchdogs.status, "active"),
+        ))
+        .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+      if (!watchdog) throw conflict("Task-watchdog run context is not backed by an active persisted watchdog.");
+      if (watchdog.restorationAttempts.some((attempt) => attempt.runId === actor.runId)) {
+        throw conflict("Task-watchdog recovery batch is single-shot per run.");
+      }
+
+      await tx.execute(sql`
+        WITH RECURSIVE subtree(id) AS (
+          SELECT id FROM issues WHERE company_id = ${scope.companyId} AND id = ${scope.watchedIssueId}
+          UNION ALL
+          SELECT child.id
+          FROM issues child
+          JOIN subtree parent ON child.parent_id = parent.id
+          WHERE child.company_id = ${scope.companyId}
+            AND child.origin_kind IS DISTINCT FROM ${TASK_WATCHDOG_ORIGIN_KIND}
+        )
+        SELECT target.id FROM issues target JOIN subtree ON subtree.id = target.id FOR UPDATE OF target
+      `);
+
+      const revalidated = await taskWatchdogService(transactionDb).revalidateMutationScope(scope);
+      if (!revalidated.allowed) throw conflict(revalidated.reason);
+
+      const results: Array<Record<string, unknown>> = [];
+      const txIssues = issueService(transactionDb);
+      for (const mutation of input.mutations) {
+        const target = await tx
+          .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
+          .from(issues)
+          .where(and(eq(issues.id, mutation.issueId), eq(issues.companyId, scope.companyId)))
+          .then((rows: Array<{ id: string; companyId: string; parentId: string | null }>) => rows[0] ?? null);
+        if (!target) throw notFound("Issue not found");
+        const allowed = await taskWatchdogScopeAllowsIssueMutation(transactionDb, scope, target, { allowWatchdogIssue: false });
+        if (allowed.kind === "invalid") throw conflict(allowed.detail);
+
+        if (mutation.type === "add_comment") {
+          const comment = await txIssues.addComment(
+            mutation.issueId,
+            mutation.body,
+            { agentId: actor.agentId, runId: actor.runId },
+            { authorType: "agent" },
+            tx,
+          );
+          results.push({ type: mutation.type, issueId: mutation.issueId, commentId: comment.id });
+        } else {
+          const { comment, reopen: _reopen, resume: _resume, ...update } = mutation.update;
+          const updated = await txIssues.update(mutation.issueId, {
+            ...update,
+            actorAgentId: actor.agentId,
+          }, tx);
+          if (!updated) throw notFound("Issue not found");
+          if (comment) {
+            await txIssues.addComment(
+              mutation.issueId,
+              comment,
+              { agentId: actor.agentId, runId: actor.runId },
+              { authorType: "agent" },
+              tx,
+            );
+          }
+          results.push({ type: mutation.type, issueId: mutation.issueId, status: updated.status });
+        }
+
+        await logActivity(transactionDb, {
+          companyId: scope.companyId,
+          actorType: "agent",
+          actorId: actor.agentId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.task_watchdog_recovery_mutation",
+          entityType: "issue",
+          entityId: mutation.issueId,
+          details: {
+            watchdogId: scope.watchdogId,
+            sourceIssueId: scope.watchedIssueId,
+            watchdogIssueId: scope.watchdogIssueId,
+            stopFingerprint: scope.stopFingerprint,
+            mutation,
+          },
+        });
+      }
+
+      const attempt = watchdog.restorationFingerprint === stopFingerprint
+        ? watchdog.restorationAttemptCount + 1
+        : 1;
+      if (attempt > TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS) {
+        throw conflict("Task-watchdog restoration attempt limit has been reached; human review is required.");
+      }
+      const completedAt = new Date();
+      const attemptRecord = {
+        attempt,
+        fingerprint: stopFingerprint,
+        runId: actor.runId,
+        mutations: input.mutations,
+        completedAt: completedAt.toISOString(),
+      };
+      await tx
+        .update(issueWatchdogs)
+        .set({
+          restorationFingerprint: stopFingerprint,
+          restorationVerificationPending: true,
+          restorationAttemptCount: attempt,
+          restorationAttempts: watchdog.restorationFingerprint === stopFingerprint
+            ? [...watchdog.restorationAttempts, attemptRecord]
+            : [attemptRecord],
+          restorationEscalatedAt: null,
+          lastReviewedFingerprint: null,
+          lastCompletedAt: completedAt,
+          updatedByAgentId: actor.agentId,
+          updatedByRunId: actor.runId,
+          updatedAt: completedAt,
+        })
+        .where(eq(issueWatchdogs.id, scope.watchdogId));
+
+      return { attempt, attemptLimit: TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS, results };
+    });
   }
 
   async function revalidateMutationScope(scope: {
@@ -1810,6 +2013,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return result;
     },
 
+    applyRecoveryBatch,
     revalidateMutationScope,
   };
 }
