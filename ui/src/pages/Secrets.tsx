@@ -657,7 +657,7 @@ export function Secrets() {
   const [providerFilter, setProviderFilter] = useState<SecretProvider | "all">("all");
   const [providedByFilter, setProvidedByFilter] = useState<ProvidedByFilter>("all");
   const [searchParams, setSearchParams] = useSearchParams();
-  // The detail sheet is deep-linkable (PAP-15327): `?secret=<id>` /
+  // The detail sheet is deep-linkable: `?secret=<id>` /
   // `?definition=<id>` are the source of truth for the current selection, so
   // every open secret has a shareable URL and Back closes the sheet.
   const selectedSecretId = searchParams.get("secret");
