@@ -1,4 +1,4 @@
-CREATE TABLE "status_cards" (
+CREATE TABLE IF NOT EXISTS "status_cards" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"created_by_user_id" text,
@@ -32,7 +32,7 @@ CREATE TABLE "status_cards" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "status_card_updates" (
+CREATE TABLE IF NOT EXISTS "status_card_updates" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"card_id" uuid NOT NULL,
 	"kind" text NOT NULL,
@@ -50,26 +50,62 @@ CREATE TABLE "status_card_updates" (
 	"error" text
 );
 --> statement-breakpoint
-ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_query_compiled_by_agent_id_agents_id_fk" FOREIGN KEY ("query_compiled_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_query_compiled_by_agent_id_agents_id_fk" FOREIGN KEY ("query_compiled_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_document_id_documents_id_fk" FOREIGN KEY ("document_id") REFERENCES "public"."documents"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_document_id_documents_id_fk" FOREIGN KEY ("document_id") REFERENCES "public"."documents"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_generating_issue_id_issues_id_fk" FOREIGN KEY ("generating_issue_id") REFERENCES "public"."issues"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_generating_issue_id_issues_id_fk" FOREIGN KEY ("generating_issue_id") REFERENCES "public"."issues"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_archived_by_agent_id_agents_id_fk" FOREIGN KEY ("archived_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_cards" ADD CONSTRAINT "status_cards_archived_by_agent_id_agents_id_fk" FOREIGN KEY ("archived_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_card_updates" ADD CONSTRAINT "status_card_updates_card_id_status_cards_id_fk" FOREIGN KEY ("card_id") REFERENCES "public"."status_cards"("id") ON DELETE cascade ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_card_updates" ADD CONSTRAINT "status_card_updates_card_id_status_cards_id_fk" FOREIGN KEY ("card_id") REFERENCES "public"."status_cards"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_card_updates" ADD CONSTRAINT "status_card_updates_generation_issue_id_issues_id_fk" FOREIGN KEY ("generation_issue_id") REFERENCES "public"."issues"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_card_updates" ADD CONSTRAINT "status_card_updates_generation_issue_id_issues_id_fk" FOREIGN KEY ("generation_issue_id") REFERENCES "public"."issues"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-ALTER TABLE "status_card_updates" ADD CONSTRAINT "status_card_updates_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;
+DO $$ BEGIN
+ ALTER TABLE "status_card_updates" ADD CONSTRAINT "status_card_updates_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE set null ON UPDATE no action;
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;
 --> statement-breakpoint
-CREATE INDEX "status_cards_company_archived_idx" ON "status_cards" USING btree ("company_id","archived_at");
+CREATE INDEX IF NOT EXISTS "status_cards_company_archived_idx" ON "status_cards" USING btree ("company_id","archived_at");
 --> statement-breakpoint
-CREATE INDEX "status_cards_company_next_eval_idx" ON "status_cards" USING btree ("company_id","next_eval_at");
+CREATE INDEX IF NOT EXISTS "status_cards_company_next_eval_idx" ON "status_cards" USING btree ("company_id","next_eval_at");
 --> statement-breakpoint
-CREATE INDEX "status_card_updates_card_started_idx" ON "status_card_updates" USING btree ("card_id","started_at");
+CREATE INDEX IF NOT EXISTS "status_card_updates_card_started_idx" ON "status_card_updates" USING btree ("card_id","started_at");
