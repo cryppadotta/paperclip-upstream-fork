@@ -50,7 +50,7 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
-  it("treats terminal and waiting leaves as stopped work that needs verification", () => {
+  it("treats an in-review leaf with a pending interaction as live", () => {
     const result = classify({
       issues: [
         issue({ status: "done" }),
@@ -59,16 +59,96 @@ describe("task watchdog subtree classifier", () => {
       pendingInteractions: [{ companyId, issueId: childId, id: "interaction-1", status: "pending" }],
     });
 
+    expect(result).toMatchObject({ state: "live", liveIssueIds: [childId] });
+  });
+
+  it.each(["pending", "revision_requested"])(
+    "treats an in-review leaf with a %s approval as live",
+    (status) => {
+      const result = classify({
+        issues: [
+          issue({ status: "done" }),
+          issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "in_review" }),
+        ],
+        pendingApprovals: [{ companyId, issueId: childId, id: "approval-1", status }],
+      });
+
+      expect(result).toMatchObject({ state: "live", liveIssueIds: [childId] });
+    },
+  );
+
+  it("ignores pending interactions attached to terminal leaves", () => {
+    const stoppedSiblingId = "child-2";
+    const result = classify({
+      issues: [
+        issue({ status: "done" }),
+        issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "done" }),
+        issue({ id: stoppedSiblingId, identifier: "PAP-3", parentId: sourceId, status: "blocked" }),
+      ],
+      pendingInteractions: [{ companyId, issueId: childId, id: "interaction-1", status: "pending" }],
+    });
+
     expect(result.state).toBe("stopped");
     if (result.state !== "stopped") return;
-    expect(result.stopFingerprint).toMatch(/^task_watchdog_stop:/);
     expect(result.stoppedLeaves).toEqual([
-      expect.objectContaining({
-        issueId: childId,
-        status: "in_review",
-        pendingInteractionIds: ["interaction-1"],
-      }),
+      expect.objectContaining({ issueId: childId, pendingInteractionIds: ["interaction-1"] }),
+      expect.objectContaining({ issueId: stoppedSiblingId }),
     ]);
+  });
+
+  it("returns a new stopped fingerprint after a pending interaction resolves", () => {
+    const beforeInteraction = classify({
+      issues: [issue({ status: "in_review", updatedAt: new Date("2026-06-17T20:00:00.000Z") })],
+    });
+    expect(beforeInteraction.state).toBe("stopped");
+    if (beforeInteraction.state !== "stopped") return;
+
+    const waiting = classify({
+      issues: [issue({ status: "in_review", updatedAt: new Date("2026-06-17T20:00:00.000Z") })],
+      pendingInteractions: [{ companyId, issueId: sourceId, id: "interaction-1", status: "pending" }],
+    });
+    expect(waiting.state).toBe("live");
+
+    const resolved = classify({
+      issues: [issue({ status: "in_review", updatedAt: new Date("2026-06-17T20:05:00.000Z") })],
+    });
+    expect(resolved.state).toBe("stopped");
+    if (resolved.state !== "stopped") return;
+    expect(resolved.stopFingerprint).not.toBe(beforeInteraction.stopFingerprint);
+  });
+
+  it("stays live through sibling churn while a pending interaction remains", () => {
+    const waitingLeaf = issue({ id: childId, identifier: "PAP-2", parentId: sourceId, status: "in_review" });
+    const siblingId = "child-2";
+    const pendingInteractions = [
+      { companyId, issueId: childId, id: "interaction-1", status: "pending" },
+    ];
+
+    const beforeChurn = classify({
+      issues: [
+        issue({ status: "done" }),
+        waitingLeaf,
+        issue({ id: siblingId, identifier: "PAP-3", parentId: sourceId, status: "blocked" }),
+      ],
+      pendingInteractions,
+    });
+    const afterChurn = classify({
+      issues: [
+        issue({ status: "done" }),
+        waitingLeaf,
+        issue({
+          id: siblingId,
+          identifier: "PAP-3",
+          parentId: sourceId,
+          status: "blocked",
+          updatedAt: new Date("2026-06-17T20:10:00.000Z"),
+        }),
+      ],
+      pendingInteractions,
+    });
+
+    expect(beforeChurn).toMatchObject({ state: "live", liveIssueIds: [childId] });
+    expect(afterChurn).toMatchObject({ state: "live", liveIssueIds: [childId] });
   });
 
   it("suppresses an unchanged stopped fingerprint once the watchdog reviewed it", () => {

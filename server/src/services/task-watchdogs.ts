@@ -320,15 +320,24 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
 
   const includedIds = included.map((issue) => issue.id);
   const includedIdSet = new Set(includedIds);
+  const nonTerminalIncludedIds = new Set(
+    included.filter((issue) => !isTerminalIssueStatus(issue.status)).map((issue) => issue.id),
+  );
+  const waitingIssueIds = [
+    ...pathIssueIds(input.pendingInteractions, input.watchdog.companyId),
+    ...pathIssueIds(input.pendingApprovals, input.watchdog.companyId),
+  ].filter((issueId) => nonTerminalIncludedIds.has(issueId));
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
     ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...waitingIssueIds,
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
     return {
       state: "live",
-      reason: "At least one issue in the watched subtree has a live run, queued wake, or scheduled retry.",
+      reason:
+        "At least one issue in the watched subtree has a live run, queued wake, scheduled retry, scheduled monitor, or pending board interaction/approval.",
       includedIssueIds: includedIds,
       liveIssueIds: uniqueLiveIssueIds,
     };

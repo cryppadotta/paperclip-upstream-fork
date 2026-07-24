@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueThreadInteractions,
   issueWorkProducts,
   issues,
   issueWatchdogs,
@@ -45,6 +46,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueWatchdogs);
@@ -342,6 +344,46 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
     expect(watchdogIssues).toHaveLength(0);
+  });
+
+  it("does not trigger while a subtree leaf has a pending interaction, then triggers after resolution", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INTERACTION", status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "in_review" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const [interaction] = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId,
+        issueId: childId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        payload: { version: 1, prompt: "Proceed?" },
+      })
+      .returning();
+    const { service, wakes } = createService();
+
+    const waiting = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(waiting).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(wakes).toHaveLength(0);
+
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "accepted",
+        result: { version: 1, outcome: "accepted" },
+        resolvedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(issueThreadInteractions.id, interaction!.id));
+
+    const stopped = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(stopped).toMatchObject({ checked: 1, triggered: 1, live: 0 });
+    expect(wakes).toHaveLength(1);
   });
 
   it("does not keep the source live for runs under a nested task-watchdog issue", async () => {
