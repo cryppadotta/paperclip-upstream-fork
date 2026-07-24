@@ -114,7 +114,22 @@ function compileDescription(card: StatusCardRow, generationIssueId: string | nul
   const payload = compilePayload(card, generationIssueId, hash);
   return `Compile this status-card interest prompt into structured Paperclip company-search queries, then continue in the same run and write the first full summary.
 
-Use the bundled \`status-card-query\` skill. Resolve named projects and labels to ids. Keep queries narrow, cap limits, and preserve union semantics across the query array.
+Use the bundled \`status-card-query\` skill when it is available. Resolve named projects and labels to ids. Keep queries narrow, cap limits, and preserve union semantics across the query array.
+
+## Query contract
+
+Each entry in \`queries\` is a CompanySearchQuery object. Only these fields are accepted — any other key is rejected with a validation error:
+
+- \`q\`: short free-text search terms (not the whole prompt)
+- \`scope\`: use \`"issues"\`
+- \`status\`: issue-status array; \`priority\`: issue-priority array
+- \`assigneeAgentId\` / \`assigneeUserId\`: one resolved assignee id
+- \`projectId\` / \`labelId\`: one resolved UUID each (use separate query objects for multiple projects or labels)
+- \`updatedWithin\`: bounded duration like \`24h\`, \`7d\`, \`4w\`, \`3m\`
+- \`sort\`: \`relevance\` | \`updated\` | \`created\` | \`priority\`
+- \`limit\`: 1–50 (prefer 20); \`offset\`: 0
+
+Every query must include a non-empty \`q\` or at least one structured filter; a blank query matches nothing and is rejected.
 
 ${UNTRUSTED_PROMPT_RULE}
 

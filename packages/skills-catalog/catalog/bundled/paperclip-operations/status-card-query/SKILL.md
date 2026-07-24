@@ -75,6 +75,8 @@ Each object accepts these fields:
 - `limit`: 1–50. Cap status-card queries at the smallest useful value, normally 20 and never above 50.
 - `offset`: normally 0.
 
+These are the only accepted fields. The query write endpoint rejects unknown keys, and every query must include a non-empty `q` or at least one structured filter — a blank query matches nothing and fails validation.
+
 Resolve project and label names to ids before writing the query. Do not put human-readable names into `projectId` or `labelId`. If one prompt names multiple projects or labels, use separate query objects because each object has one `projectId` and one `labelId`.
 
 ## Compilation guidance

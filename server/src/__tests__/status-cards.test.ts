@@ -789,6 +789,43 @@ describeEmbeddedPostgres("status card routes", () => {
     expect((await request(createApp(db, agentActor(company.id, summarizer.id, randomUUID()))).put(`/api/status-cards/${created.body.id}/query`).send(payload)).status).toBe(403);
   });
 
+  it("rejects blank and unknown-shape compiled queries instead of persisting them", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const created = await request(createApp(db, localBoardActor()))
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    const generationIssueId = created.body.generatingIssueId as string;
+    const run = await seedRun(company.id, summarizer.id);
+    await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, generationIssueId));
+    const writerApp = createApp(db, agentActor(company.id, summarizer.id, run.id));
+    const base = { title: "Recent launch blockers", changeSummary: "Compiled one bounded blocker query.", generationIssueId };
+
+    // A query with no free text and no structured filter matches nothing.
+    const blank = await request(writerApp)
+      .put(`/api/status-cards/${created.body.id}/query`)
+      .send({ ...base, queries: [{ scope: "issues", sort: "updated", limit: 20, offset: 0 }] });
+    expect(blank.status).toBe(400);
+
+    // A summarizer that invents a different query shape must fail loudly, not
+    // have its unknown keys stripped down to an empty catch-all query.
+    const invented = await request(writerApp)
+      .put(`/api/status-cards/${created.body.id}/query`)
+      .send({
+        ...base,
+        queries: [{ label: "Launch work", projectIds: [randomUUID()], keywords: ["launch"], statuses: ["blocked"], orderBy: "updatedAt", direction: "desc", limit: 50 }],
+      });
+    expect(invented.status).toBe(400);
+
+    // Filter-only and q-only queries both stay valid.
+    const valid = await request(writerApp)
+      .put(`/api/status-cards/${created.body.id}/query`)
+      .send({ ...base, queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }, { q: "launch", scope: "issues", limit: 20, offset: 0 }] });
+    expect(valid.status).toBe(200);
+    expect(valid.body.queries).toHaveLength(2);
+  });
+
   it("routes generation tasks to a per-card summarizer override and lets it write", async () => {
     const company = await seedCompany();
     const foreignCompany = await seedCompany();

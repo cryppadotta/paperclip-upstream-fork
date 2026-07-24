@@ -170,8 +170,31 @@ export const refreshStatusCardSchema = z.object({
   full: z.boolean().default(false),
 });
 
+// The compile write-back must fail loudly instead of degrading: the search
+// parser strips unknown keys and blank-fills `q`, so a summarizer that invents
+// a different query shape would otherwise persist queries that match nothing.
+export const statusCardWatchQuerySchema = companySearchQuerySchema
+  .strict()
+  .superRefine((query, ctx) => {
+    const hasStructuredFilter = query.status.length > 0
+      || query.priority.length > 0
+      || query.assigneeAgentId !== undefined
+      || query.assigneeUserId !== undefined
+      || query.projectId !== undefined
+      || query.labelId !== undefined
+      || query.updatedWithin !== undefined
+      || query.updatedAfter !== undefined;
+    if (query.q.length === 0 && !hasStructuredFilter) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "each query needs a non-empty q or at least one structured filter (status, priority, assignee, project, label, updatedWithin, updatedAfter)",
+      });
+    }
+  });
+
 export const writeStatusCardQuerySchema = z.object({
-  queries: z.array(companySearchQuerySchema).min(1).max(10),
+  queries: z.array(statusCardWatchQuerySchema).min(1).max(10),
   title: z.string().trim().min(1).max(300),
   changeSummary: z.string().trim().min(1).max(2_000),
   generationIssueId: z.string().uuid(),
