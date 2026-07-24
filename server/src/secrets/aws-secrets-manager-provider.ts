@@ -264,6 +264,7 @@ function configuredAwsSecretsManagerDescriptor() {
     requiresExternalRef: false,
     supportsManagedValues: true,
     supportsExternalReferences: true,
+    supportsExternalValueWrites: true,
     configured: canLoadAwsSecretsManagerConfig(),
   };
 }
@@ -1178,6 +1179,36 @@ export function createAwsSecretsManagerProvider(
       const config = resolveConfig(input.providerConfig);
       assertNotManagedNamespaceExternalRef(config, input.externalRef);
       return createExternalReferenceMaterial(input.externalRef, input.providerVersionRef ?? null);
+    },
+    async updateExternalSecretValue(input) {
+      const config = resolveConfig(input.providerConfig);
+      const gateway = resolveGateway(config);
+      const secretId = input.externalRef.trim();
+
+      try {
+        // No VersionStages: the new version becomes AWSCURRENT so every consumer of the
+        // referenced secret (not just Paperclip) picks up the new value.
+        const created = await gateway.putSecretValue({
+          SecretId: secretId,
+          SecretString: input.value,
+        });
+        const normalizedSecretId = created.ARN ?? created.Name ?? secretId;
+        // Material keeps versionId null so resolution keeps tracking AWSCURRENT and
+        // out-of-band rotations done directly in AWS still flow through.
+        const prepared = createExternalReferenceMaterial(normalizedSecretId, null);
+        const valueSha256 = sha256Hex(input.value);
+        return {
+          ...prepared,
+          material: {
+            ...prepared.material,
+            lastWrittenVersionId: created.VersionId ?? null,
+          },
+          valueSha256,
+          fingerprintSha256: valueSha256,
+        };
+      } catch (error) {
+        normalizeAwsError("updateExternalSecretValue", error);
+      }
     },
     async listRemoteSecrets(input): Promise<RemoteSecretListResult> {
       const config = resolveConfig(input.providerConfig);

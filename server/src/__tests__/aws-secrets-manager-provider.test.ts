@@ -386,6 +386,71 @@ describe("awsSecretsManagerProvider", () => {
     ).rejects.toThrow(/Paperclip-managed namespace/i);
   });
 
+  it("writes new values through to externally referenced AWS secrets as AWSCURRENT", async () => {
+    const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
+    const provider = createAwsSecretsManagerProvider({
+      config: {
+        region: "us-east-1",
+        endpoint: "https://secretsmanager.us-east-1.amazonaws.com",
+        deploymentId: "prod-use1",
+        prefix: "paperclip",
+        kmsKeyId: "arn:aws:kms:us-east-1:123456789012:key/test",
+        environmentTag: "production",
+        providerOwnerTag: "paperclip",
+        deleteRecoveryWindowDays: 30,
+      },
+      gateway: {
+        async createSecret() {
+          throw new Error("not used");
+        },
+        async putSecretValue(input) {
+          calls.push({ op: "putSecretValue", input });
+          return {
+            ARN: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/external",
+            VersionId: "aws-version-9",
+          };
+        },
+        async getSecretValue() {
+          throw new Error("not used");
+        },
+        async deleteSecret() {
+          throw new Error("not used");
+        },
+      },
+    });
+
+    const prepared = await provider.updateExternalSecretValue!({
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/external",
+      value: "written-through-value",
+      context: {
+        companyId: "company-1",
+        secretKey: "neon-admin-api-key",
+        secretName: "paperclip-cloud/prod/provider/neon/admin-api-key",
+        version: 2,
+      },
+    });
+
+    // No VersionStages: the write must become AWSCURRENT for all consumers.
+    expect(calls).toEqual([
+      {
+        op: "putSecretValue",
+        input: {
+          SecretId: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/external",
+          SecretString: "written-through-value",
+        },
+      },
+    ]);
+    expect(JSON.stringify(prepared.material)).not.toContain("written-through-value");
+    expect(prepared.externalRef).toBe(
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/external",
+    );
+    // Resolution keeps tracking AWSCURRENT rather than pinning the written version.
+    expect(prepared.providerVersionRef).toBeNull();
+    expect(prepared.material.versionId).toBeNull();
+    expect(prepared.material.lastWrittenVersionId).toBe("aws-version-9");
+    expect(prepared.material.source).toBe("external_reference");
+  });
+
   it("lists remote AWS secrets with metadata only and never resolves plaintext", async () => {
     const calls: Array<{ op: string; input: Record<string, unknown> }> = [];
     const provider = createAwsSecretsManagerProvider({
