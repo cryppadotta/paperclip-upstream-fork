@@ -466,7 +466,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });
 
-  it("renders and patches the Status Cards experimental toggle", async () => {
+  it("enables Summaries when enabling the Status Cards experimental toggle", async () => {
     await renderPage();
 
     expect(container.textContent).toContain("Status Cards");
@@ -480,8 +480,38 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     });
     await flushReact();
 
-    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableStatusCards: true });
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: true,
+      enableStatusCards: true,
+    });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    expect(
+      container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("disables Status Cards when disabling Summaries", async () => {
+    currentExperimentalSettings = {
+      ...currentExperimentalSettings,
+      enableSummaries: true,
+      enableStatusCards: true,
+    };
+    await renderPage();
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    await act(async () => {
+      summariesToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableSummaries: false,
+      enableStatusCards: false,
+    });
+    expect(summariesToggle?.getAttribute("aria-checked")).toBe("false");
+    expect(
+      container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR)?.getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
   it("renders and patches the Server Info Debug View experimental toggle", async () => {
@@ -659,6 +689,40 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+  });
+
+  it("locks Status Cards when managed Summaries is disabled", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: {
+        enableSummaries: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const statusCardsToggle = container.querySelector<HTMLButtonElement>(STATUS_CARDS_TOGGLE_SELECTOR);
+    expect(statusCardsToggle?.disabled).toBe(true);
+
+    await act(() => statusCardsToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
+  it("locks Summaries on when managed Status Cards is enabled", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      enableSummaries: true,
+      enableStatusCards: true,
+      managedKeys: {
+        enableStatusCards: { managed: true, managedBy: "paperclip-cloud" },
+      },
+    });
+
+    const summariesToggle = container.querySelector<HTMLButtonElement>(SUMMARIES_TOGGLE_SELECTOR);
+    expect(summariesToggle?.disabled).toBe(true);
+
+    await act(() => summariesToggle?.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("locks the managed auto-recovery toggle without opening the preview dialog", async () => {

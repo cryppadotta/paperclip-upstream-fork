@@ -373,6 +373,10 @@ export function InstanceExperimentalSettings() {
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableSummaries = experimentalQuery.data?.enableSummaries === true;
   const enableStatusCards = experimentalQuery.data?.enableStatusCards === true;
+  const summariesManaged = managedKeys.enableSummaries?.managed === true;
+  const statusCardsManaged = managedKeys.enableStatusCards?.managed === true;
+  const statusCardsBlockedByManagedSummaries = summariesManaged && !enableSummaries;
+  const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
@@ -558,9 +562,16 @@ export function InstanceExperimentalSettings() {
       <ExperimentalToggleCard
         title="Summaries"
         description="Show Summarizer-generated status slots on project and workspace pages, with on-demand refresh and revision history. Existing summary data is kept when this is disabled."
+        footnote="Status Cards requires Summaries. Disabling Summaries also disables Status Cards."
         checked={enableSummaries}
-        onCheckedChange={(checked) => toggleMutation.mutate({ enableSummaries: checked })}
-        disabled={toggleMutation.isPending}
+        onCheckedChange={(checked) =>
+          toggleMutation.mutate(
+            checked || !enableStatusCards
+              ? { enableSummaries: checked }
+              : { enableSummaries: false, enableStatusCards: false },
+          )
+        }
+        disabled={toggleMutation.isPending || summariesRequiredByManagedStatusCards}
         managed={managedKeys.enableSummaries}
         ariaLabel="Toggle summaries experimental setting"
       />
@@ -578,9 +589,16 @@ export function InstanceExperimentalSettings() {
       <ExperimentalToggleCard
         title="Status Cards"
         description="Enable the experimental shared status-card board and its gated API. Existing card data is kept when this is disabled."
+        footnote="Enabling Status Cards also enables Summaries."
         checked={enableStatusCards}
-        onCheckedChange={(checked) => toggleMutation.mutate({ enableStatusCards: checked })}
-        disabled={toggleMutation.isPending}
+        onCheckedChange={(checked) =>
+          toggleMutation.mutate(
+            checked
+              ? { enableSummaries: true, enableStatusCards: true }
+              : { enableStatusCards: false },
+          )
+        }
+        disabled={toggleMutation.isPending || statusCardsBlockedByManagedSummaries}
         managed={managedKeys.enableStatusCards}
         ariaLabel="Toggle status cards experimental setting"
       />
