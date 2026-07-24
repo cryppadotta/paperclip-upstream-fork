@@ -812,7 +812,7 @@ export function statusCardService(
         }
         for (const issueId of mentionedIssueIds) {
           const entry = watchedNow[issueId];
-          if (!snapshot[issueId] && entry) snapshot[issueId] = entry;
+          if (entry) snapshot[issueId] = entry;
         }
       } else {
         snapshot = watchedNow;
