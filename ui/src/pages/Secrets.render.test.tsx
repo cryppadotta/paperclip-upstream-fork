@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { createRoot } from "react-dom/client";
+import { createRoot as createReactRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -160,12 +160,29 @@ const providerConfigs = [
   },
 ] satisfies Partial<CompanySecretProviderConfig>[];
 
+const activeRoots = new Set<Root>();
+
 async function act(callback: () => void | Promise<void>) {
   let result: void | Promise<void> = undefined;
   flushSync(() => {
     result = callback();
   });
   await result;
+}
+
+function createRoot(container: Element | DocumentFragment) {
+  const root = createReactRoot(container);
+  const unmount = root.unmount.bind(root);
+  root.unmount = () => {
+    if (!activeRoots.delete(root)) return;
+    unmount();
+  };
+  activeRoots.add(root);
+  return root;
+}
+
+function unmountActiveRoots() {
+  for (const root of [...activeRoots]) root.unmount();
 }
 
 async function flushReact() {
@@ -369,6 +386,7 @@ describe("Secrets page layout", () => {
   });
 
   afterEach(() => {
+    unmountActiveRoots();
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
@@ -1613,6 +1631,7 @@ describe("Secrets folder view (PAP-14698)", () => {
   });
 
   afterEach(() => {
+    unmountActiveRoots();
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();

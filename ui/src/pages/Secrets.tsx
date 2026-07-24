@@ -2189,7 +2189,7 @@ export function Secrets() {
       <Sheet
         open={Boolean(selectedSecret || selectedDefinition)}
         onOpenChange={(open) => {
-          if (!open) setDetailSelection(null);
+          if (!open && (selectedSecret || selectedDefinition)) setDetailSelection(null);
         }}
       >
         <SheetContent className="w-full sm:max-w-xl flex flex-col gap-0">
