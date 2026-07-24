@@ -444,6 +444,50 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(wakes.length).toBe(2);
   });
 
+  it("suppresses a shrink-only stop after review when the snapshot round-trips through jsonb", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-SHRINK", status: "in_review" });
+    const waitingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_review" });
+    const siblingLeafId = await seedIssue(companyId, { parentId: sourceId, status: "in_progress" });
+    const agentId = await seedAgent(companyId);
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId: waitingLeafId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: { version: 1, prompt: "Confirm the stop." },
+      createdByAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+
+    const [triggeredWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, triggeredWatchdog!.watchdogIssueId!));
+    const reviewed = await service.reconcileTaskWatchdogs({ companyId });
+    expect(reviewed).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    const [reviewedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(reviewedWatchdog?.lastReviewedStopSnapshot).not.toBeNull();
+
+    // The sibling completing shrinks the material leaf set while the wait set
+    // is unchanged; the reviewed snapshot loaded back from jsonb (which does
+    // not preserve object key order) must still suppress the wake.
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, siblingLeafId));
+    const afterShrink = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(afterShrink).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+  });
+
   it("does not let an old terminal watchdog review mark a newer observed fingerprint reviewed", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-STALE", status: "done" });

@@ -342,15 +342,29 @@ function parseStopSnapshot(value: unknown): TaskWatchdogStopSnapshot | null {
   return candidate as TaskWatchdogStopSnapshot;
 }
 
+// Snapshots loaded from jsonb columns come back with Postgres's normalized key
+// order, so equality checks against freshly built snapshots must not depend on
+// object key order.
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(
+        Object.entries(val as Record<string, unknown>).sort(([left], [right]) =>
+          left < right ? -1 : left > right ? 1 : 0
+        ),
+      )
+      : val);
+}
+
 function isShrinkOfReviewedSnapshot(
   current: TaskWatchdogStopSnapshot,
   reviewed: TaskWatchdogStopSnapshot | null | undefined,
 ) {
-  if (!reviewed || JSON.stringify(current.waitsByIssueId) !== JSON.stringify(reviewed.waitsByIssueId)) return false;
+  if (!reviewed || canonicalJson(current.waitsByIssueId) !== canonicalJson(reviewed.waitsByIssueId)) return false;
   const reviewedLeaves = new Map(reviewed.materialLeaves.map((leaf) => [leaf.issueId, leaf]));
   return current.materialLeaves.every((leaf) => {
     const previous = reviewedLeaves.get(leaf.issueId);
-    return previous != null && JSON.stringify(previous) === JSON.stringify(leaf);
+    return previous != null && canonicalJson(previous) === canonicalJson(leaf);
   });
 }
 
@@ -1272,7 +1286,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       : null;
     if (
       watchdog.lastReviewedFingerprint === reviewedFingerprint &&
-      JSON.stringify(parseStopSnapshot(watchdog.lastReviewedStopSnapshot)) === JSON.stringify(reviewedStopSnapshot)
+      canonicalJson(parseStopSnapshot(watchdog.lastReviewedStopSnapshot)) === canonicalJson(reviewedStopSnapshot)
     ) return watchdog;
     const [updated] = await db
       .update(issueWatchdogs)
@@ -1469,7 +1483,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       if (
         watchdog.watchdogIssueId !== existingWatchdogIssue!.id ||
         watchdog.lastObservedFingerprint !== classification.stopFingerprint ||
-        JSON.stringify(parseStopSnapshot(watchdog.lastObservedStopSnapshot)) !== JSON.stringify(classification.stopSnapshot)
+        canonicalJson(parseStopSnapshot(watchdog.lastObservedStopSnapshot)) !== canonicalJson(classification.stopSnapshot)
       ) {
         await db
           .update(issueWatchdogs)
