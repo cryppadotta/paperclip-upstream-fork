@@ -239,6 +239,40 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     ]);
   });
 
+  it("denies direct and cascade approval after a proposal expires", async () => {
+    const fixture = await seedRun();
+    const secretProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/expired/token",
+        value: "expired-secret",
+        justification: "Needed before the retention window elapsed",
+      });
+    const bindingProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretProposalId: secretProposal.body.id,
+        configPath: "env.EXPIRED_TOKEN",
+        justification: "Inject the proposed secret",
+      });
+    await db.update(companySecretProposals)
+      .set({ expiresAt: new Date(Date.now() - 1_000) })
+      .where(eq(companySecretProposals.id, secretProposal.body.id));
+
+    const directApproval = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${secretProposal.body.id}/approve`)
+      .send({});
+    expect(directApproval.status).toBe(409);
+
+    const cascadeApproval = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${bindingProposal.body.id}/approve`)
+      .send({ cascade: true });
+    expect(cascadeApproval.status).toBe(409);
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+  });
+
   it("returns 409 without mutation when the current org graph no longer permits the stored binding target", async () => {
     const fixture = await seedRun();
     const targetAgentId = randomUUID();

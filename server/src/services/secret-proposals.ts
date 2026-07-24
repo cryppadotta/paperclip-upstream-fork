@@ -79,6 +79,12 @@ export function createSecretProposalsService(db: Db) {
     return proposal;
   }
 
+  function assertNotExpired(proposal: Proposal) {
+    if (proposal.expiresAt.getTime() <= Date.now()) {
+      throw conflict("Expired proposals cannot be approved");
+    }
+  }
+
   async function assertCreationQuota(input: { companyId: string; agentId: string; runId: string; issueId: string | null }) {
     const [pending, recent] = await Promise.all([
       db.select({ value: count() }).from(companySecretProposals).where(and(
@@ -427,6 +433,7 @@ export function createSecretProposalsService(db: Db) {
     overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
   }) {
     const proposal = await requirePending(companyId, proposalId);
+    assertNotExpired(proposal);
     if (proposal.kind === "binding" && proposal.secretProposalId && !input.cascade) {
       throw conflict(`Binding proposal requires pending secret proposal ${proposal.secretProposalId}; retry with cascade=true`);
     }
@@ -451,6 +458,7 @@ export function createSecretProposalsService(db: Db) {
           }
           secretId = dependency.createdSecretId;
         } else {
+          assertNotExpired(dependency);
           const created = await applySecretApproval(txDb, dependency, input);
           await markApproved(txDb, dependency, {
             resolvedByUserId: input.resolvedByUserId,
