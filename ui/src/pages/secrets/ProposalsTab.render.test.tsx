@@ -135,7 +135,10 @@ function findButton(label: string): HTMLButtonElement | undefined {
 let activeRoot: ReturnType<typeof createRoot> | null = null;
 let activeContainer: HTMLDivElement | null = null;
 
-async function renderTab(companyId = "company-1") {
+async function renderTab(
+  companyId = "company-1",
+  configs: CompanySecretProviderConfig[] = providerConfigs as CompanySecretProviderConfig[],
+) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -148,7 +151,7 @@ async function renderTab(companyId = "company-1") {
         <MemoryRouter>
           <ProposalsTab
             companyId={companyId}
-            providerConfigs={providerConfigs as CompanySecretProviderConfig[]}
+            providerConfigs={configs}
           />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -234,6 +237,28 @@ describe("ProposalsTab", () => {
         name: "dev/github/client-secret",
         description: null,
         providerConfigId: "vault-local",
+      },
+    });
+  });
+
+  it("does not preselect a non-local default vault for secret approval", async () => {
+    mockSecretsApi.listProposals.mockResolvedValue([makeSecretProposal()]);
+    await renderTab("company-1", [
+      { ...providerConfigs[0], id: "vault-aws", provider: "aws_secrets_manager" },
+      { ...providerConfigs[0], isDefault: false },
+    ] as CompanySecretProviderConfig[]);
+    await waitForReact(() => Boolean(findButton("Approve")));
+
+    await act(async () => findButton("Approve")?.click());
+    await flushReact();
+    await act(async () => findButton("Approve & create")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+
+    expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-secret-1", {
+      overrides: {
+        name: "dev/github/token",
+        description: null,
+        providerConfigId: null,
       },
     });
   });

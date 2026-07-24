@@ -303,7 +303,10 @@ export function useProposalReview(
         leaf,
         description: proposal.proposedDescription ?? "",
         // "" = deployment default vault; the dialog dropdown lets the approver pick one.
-        providerConfigId: providerConfigs.find((config) => config.isDefault)?.id ?? "",
+        providerConfigId:
+          providerConfigs.find(
+            (config) => config.provider === "local_encrypted" && config.isDefault,
+          )?.id ?? "",
         // A binding on a still-pending secret proposal REQUIRES cascade to land.
         cascade: Boolean(proposal.secretProposalId),
       });
