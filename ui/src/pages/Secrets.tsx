@@ -344,9 +344,12 @@ function modeLabel(managedMode: SecretManagedMode) {
   return managedMode === "paperclip_managed" ? "Paperclip-managed" : "Linked external";
 }
 
-function modeDescription(managedMode: SecretManagedMode) {
-  return managedMode === "paperclip_managed"
-    ? "Paperclip owns create and rotation writes for this provider secret."
+function modeDescription(managedMode: SecretManagedMode, canWriteExternalValue = false) {
+  if (managedMode === "paperclip_managed") {
+    return "Paperclip owns create and rotation writes for this provider secret.";
+  }
+  return canWriteExternalValue
+    ? "Paperclip resolves this provider reference and can write new values to it via Update value."
     : "Paperclip resolves this provider reference but does not rotate the provider value.";
 }
 
@@ -4612,7 +4615,14 @@ function SecretDetailsTab({
       <DetailRow label="Last rotated">{formatRelative(secret.lastRotatedAt)}</DetailRow>
       <DetailRow label="Last resolved">{formatRelative(secret.lastResolvedAt)}</DetailRow>
       <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-(length:--text-micro) text-amber-700 dark:text-amber-300">
-        {modeDescription(secret.managedMode)} Paperclip never re-displays stored values.
+        {modeDescription(
+          secret.managedMode,
+          Boolean(
+            secret.externalRef &&
+              providers.find((provider) => provider.id === secret.provider)?.supportsExternalValueWrites,
+          ),
+        )}{" "}
+        Paperclip never re-displays stored values.
       </div>
     </dl>
   );
