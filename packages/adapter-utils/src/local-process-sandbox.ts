@@ -61,6 +61,8 @@ const SYSTEM_READ_PATHS = [
 
 const PROXY_ENV_KEYS = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"] as const;
 const SANDBOX_PROXY_PORT = 31_337;
+const UNIX_SOCKET_PATH_MAX_BYTES = 107;
+const NETWORK_PROXY_TEMP_PREFIX = "paperclip-network-sandbox-";
 
 function normalizeAbsolutePath(candidate: string, label: string): string {
   const trimmed = candidate.trim();
@@ -156,6 +158,35 @@ function isNetworkTargetAllowed(hostname: string, port: string, rules: NetworkAl
   return rules.some((rule) => rule.hostname === normalizedHostname && (rule.port === null || rule.port === port));
 }
 
+function assertUnixSocketPathLength(socketPath: string): void {
+  const pathBytes = Buffer.byteLength(socketPath);
+  if (pathBytes > UNIX_SOCKET_PATH_MAX_BYTES) {
+    throw new Error(
+      `Paperclip sandbox proxy socket path is ${pathBytes} bytes, exceeding the Linux limit of ${UNIX_SOCKET_PATH_MAX_BYTES}: ${socketPath}`,
+    );
+  }
+}
+
+async function createNetworkProxyTempDir(): Promise<string> {
+  const candidates = Array.from(new Set(["/tmp", os.tmpdir()]));
+  let lastError: unknown;
+  for (const baseDir of candidates) {
+    try {
+      const tempDir = await fs.mkdtemp(path.join(baseDir, NETWORK_PROXY_TEMP_PREFIX));
+      try {
+        assertUnixSocketPathLength(path.join(tempDir, "proxy.sock"));
+        return tempDir;
+      } catch (error) {
+        await fs.rm(tempDir, { recursive: true, force: true });
+        lastError = error;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error("Unable to create a Linux-safe Paperclip sandbox proxy socket directory.", { cause: lastError });
+}
+
 function parseTrustedNetworkUrl(value: string): NetworkAllowlistRule | null {
   try {
     const parsed = new URL(value);
@@ -194,6 +225,7 @@ async function startNetworkAllowlistProxy(
   trustedUrls: string[],
   socketPath: string,
 ): Promise<NetworkAllowlistProxy> {
+  assertUnixSocketPathLength(socketPath);
   const rules = [
     ...allowlist.map(parseNetworkAllowlistEntry),
     ...trustedUrls.map(parseTrustedNetworkUrl).filter((rule): rule is NetworkAllowlistRule => rule !== null),
@@ -356,7 +388,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
     await mount(workspaceDir, "rw");
 
     if (networkScope === "allowlist") {
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-sandbox-"));
+      const tempDir = await createNetworkProxyTempDir();
       const socketPath = path.join(tempDir, "proxy.sock");
       const bridgePath = path.join(tempDir, "bridge.cjs");
       await fs.writeFile(bridgePath, await createNetworkProxyBridge(), { mode: 0o500 });
@@ -379,7 +411,7 @@ export async function buildLocalProcessSandboxSpawnTarget(input: {
   } else {
     args.push("--bind", "/", "/");
     if (networkScope === "allowlist") {
-      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-network-sandbox-"));
+      const tempDir = await createNetworkProxyTempDir();
       const socketPath = path.join(tempDir, "proxy.sock");
       const bridgePath = path.join(tempDir, "bridge.cjs");
       await fs.writeFile(bridgePath, await createNetworkProxyBridge(), { mode: 0o500 });
