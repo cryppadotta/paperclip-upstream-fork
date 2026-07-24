@@ -208,7 +208,8 @@ describeEmbeddedPostgres("status card routes", () => {
 
     const restored = await request(app).patch(`/api/status-cards/${created.body.id}`).send({ archived: false });
     expect(restored.status).toBe(200);
-    expect(restored.body.archivedAt).toBeNull();
+    expect(restored.body).toMatchObject({ archivedAt: null, nextEvalAt: null });
+    expect(await statusCardService(db).tickDueStatusCards(new Date())).toMatchObject({ evaluated: 0, enqueued: [] });
     expect((await request(app).get(`/api/companies/${company.id}/status-cards`)).body).toHaveLength(1);
 
     const updates = await request(app).get(`/api/status-cards/${created.body.id}/updates`);
@@ -229,7 +230,7 @@ describeEmbeddedPostgres("status card routes", () => {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
         instructionsMode: "none",
-        refreshPolicy: defaultStatusCardRefreshPolicy,
+        refreshPolicy: { mode: "manual" },
       },
       { agentId: null, userId: "board-user" },
     );
@@ -268,7 +269,7 @@ describeEmbeddedPostgres("status card routes", () => {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
         instructionsMode: "none",
-        refreshPolicy: defaultStatusCardRefreshPolicy,
+        refreshPolicy: { mode: "manual" },
       },
       { agentId: null, userId: "board-user" },
     );
@@ -423,7 +424,7 @@ describeEmbeddedPostgres("status card routes", () => {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
         instructionsMode: "none",
-        refreshPolicy: { mode: "manual" },
+        refreshPolicy: defaultStatusCardRefreshPolicy,
       },
       { agentId: null, userId: "board-user" },
     );
@@ -460,7 +461,7 @@ describeEmbeddedPostgres("status card routes", () => {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
         instructionsMode: "none",
-        refreshPolicy: { mode: "manual" },
+        refreshPolicy: defaultStatusCardRefreshPolicy,
       },
       { agentId: null, userId: "board-user" },
     );
@@ -488,6 +489,53 @@ describeEmbeddedPostgres("status card routes", () => {
       finishedAt: expect.any(Date),
       error: expect.stringContaining("cancelled"),
     });
+  });
+
+  it("cancels a refresh task when its optimistic claim loses to archival", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const realIssuesSvc = issueService(db);
+    const card = await statusCardService(db).create(
+      company.id,
+      {
+        interestPrompt: "Recently updated launch tasks",
+        titlePinned: false,
+        instructionsMode: "none",
+        refreshPolicy: defaultStatusCardRefreshPolicy,
+      },
+      { agentId: null, userId: "board-user" },
+    );
+    const staleIssue = await realIssuesSvc.create(company.id, {
+      title: "Stale status-card update",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: summarizer.id,
+      createdByUserId: "board-user",
+    });
+    await db.update(statusCards).set({
+      state: "active",
+      queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }] as typeof card.queries,
+      generatingIssueId: staleIssue.id,
+    }).where(eq(statusCards.id, card.id));
+
+    const racingIssuesSvc = {
+      ...realIssuesSvc,
+      update: async (...args: Parameters<typeof realIssuesSvc.update>) => {
+        const updated = await realIssuesSvc.update(...args);
+        if (args[1].description && args[0] !== staleIssue.id) {
+          await db.update(statusCards).set({ archivedAt: new Date(), generatingIssueId: null }).where(eq(statusCards.id, card.id));
+        }
+        return updated;
+      },
+    };
+
+    await expect(statusCardService(db, { issuesSvc: racingIssuesSvc }).requestRefresh(card.id, {
+      actor: { agentId: null, userId: "board-user" },
+    })).rejects.toMatchObject({ status: 409 });
+
+    const refreshIssue = await db.select().from(issues).where(eq(issues.title, "Rebuild status card: Recently updated launch tasks")).then((rows) => rows[0]!);
+    expect(refreshIssue).toMatchObject({ status: "cancelled" });
   });
 
   it("finalizes cancelled generation tasks as failed ledger entries", async () => {

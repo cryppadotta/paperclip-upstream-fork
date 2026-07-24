@@ -145,9 +145,12 @@ function parseGenerationPayload(description: string | null) {
   }
 }
 
-export function statusCardService(db: Db) {
+export function statusCardService(
+  db: Db,
+  deps: { issuesSvc?: ReturnType<typeof issueService> } = {},
+) {
   const builtIns = builtInAgentService(db);
-  const issuesSvc = issueService(db);
+  const issuesSvc = deps.issuesSvc ?? issueService(db);
   const searchSvc = companySearchService(db);
 
   async function readWatchedIssueCount(card: StatusCardRow) {
@@ -280,7 +283,14 @@ export function statusCardService(db: Db) {
         ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null }
         : {}),
       ...(archiveChanged && !input.archived
-        ? { archivedAt: null, archivedByAgentId: null, archivedByUserId: null, lastChangeAt: now, lastUpdateRunKind: null, nextEvalAt: now }
+        ? {
+            archivedAt: null,
+            archivedByAgentId: null,
+            archivedByUserId: null,
+            lastChangeAt: now,
+            lastUpdateRunKind: null,
+            nextEvalAt: card.queries.length > 0 ? now : null,
+          }
         : {}),
     };
     const next = await db.update(statusCards).set({
@@ -647,7 +657,12 @@ export function statusCardService(db: Db) {
     }).where(and(eq(statusCards.id, card.id), isNull(statusCards.archivedAt), or(isNull(statusCards.generatingIssueId), priorGenerationPredicate))).returning();
     if (!next) {
       const winner = await getById(card.id);
-      if (!winner?.generatingIssueId) throw conflict("Status-card refresh claim was lost");
+      if (!winner?.generatingIssueId) {
+        if (!TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
+          await issuesSvc.update(generationIssue!.id, { status: "cancelled" });
+        }
+        throw conflict("Status-card refresh claim was lost");
+      }
       if (generationIssue!.id !== winner.generatingIssueId && !TERMINAL_ISSUE_STATUSES.has(generationIssue!.status)) {
         await issuesSvc.update(generationIssue!.id, { status: "cancelled" });
       }
