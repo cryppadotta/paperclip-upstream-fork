@@ -13,7 +13,6 @@ function isValidTimeZone(timezone: string) {
   }
 }
 
-export const statusCardInstructionsModeSchema = z.enum(["none", "append", "replace"]);
 export const statusCardStateSchema = z.enum(["compiling", "active", "error", "paused_budget", "paused_hours"]);
 export const statusCardUpdateKindSchema = z.enum(["compile", "full", "incremental"]);
 export const statusCardUpdateTriggerSchema = z.enum(["manual", "interval", "reactive", "restore"]);
@@ -79,8 +78,6 @@ export const statusCardSchema = z.object({
   queryVersion: z.number().int().nonnegative(),
   queryCompiledAt: z.string().datetime().nullable(),
   queryCompiledByAgentId: z.string().uuid().nullable(),
-  instructionsMode: statusCardInstructionsModeSchema,
-  instructions: z.string().nullable(),
   agentId: z.string().uuid().nullable(),
   refreshPolicy: statusCardRefreshPolicySchema,
   state: statusCardStateSchema,
@@ -154,8 +151,7 @@ export const createStatusCardSchema = z.object({
   interestPrompt: z.string().trim().min(1).max(20_000),
   title: z.string().trim().min(1).max(300).optional(),
   titlePinned: z.boolean().default(false),
-  instructionsMode: statusCardInstructionsModeSchema.default("none"),
-  instructions: z.string().max(50_000).nullable().optional(),
+  agentId: z.string().uuid().nullable().optional(),
   refreshPolicy: statusCardRefreshPolicySchema.default(defaultStatusCardRefreshPolicy),
 });
 
@@ -164,8 +160,6 @@ export const patchStatusCardSchema = z
     interestPrompt: z.string().trim().min(1).max(20_000).optional(),
     title: z.string().trim().min(1).max(300).nullable().optional(),
     titlePinned: z.boolean().optional(),
-    instructionsMode: statusCardInstructionsModeSchema.optional(),
-    instructions: z.string().max(50_000).nullable().optional(),
     agentId: z.string().uuid().nullable().optional(),
     refreshPolicy: statusCardRefreshPolicySchema.optional(),
     archived: z.boolean().optional(),

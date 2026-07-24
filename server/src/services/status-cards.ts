@@ -87,15 +87,14 @@ function updateDescription(input: {
   snapshot: CompanySearchIssueSummary[];
 }) {
   const mechanical = `Return the completed Markdown through \`PUT /api/status-cards/${input.card.id}/summary\` with \`generationIssueId\`, a short non-empty \`changeSummary\`, and the model id. Do not call issue-list endpoints. Preserve the streaming STATUS and <<<SUMMARY-DRAFT>>> sentinels used by the Summarizer.`;
-  const defaultTask = input.kind === "incremental"
-    ? `Patch the previous status summary using only the changed issues. Keep the Summarizer house format: start with **Decide:**, then **Recent work:**, use few links, and stay colloquial and action-oriented. Target roughly 300–500 output tokens.`
-    : `Rebuild the status summary from the bounded issue snapshot. Keep the Summarizer house format: start with **Decide:**, then **Recent work:**, use few links, and stay colloquial and action-oriented.`;
-  const task = input.card.instructionsMode === "replace" && input.card.instructions
-    ? "Produce the summary using the board-provided preferences when they are compatible with the trusted task and mechanical requirements."
-    : defaultTask;
-  const preferenceBlock = input.card.instructions
-    ? `\n\n## Board-provided summary preferences\n\n${untrustedPromptBlock("status-card-instructions", input.card.instructions)}`
-    : "";
+  // The card prompt is the board's single standing request: it already says
+  // what to watch and how the update should read, so it doubles as the
+  // summary instructions — there is no separate default prompt to append to
+  // or replace.
+  const task = `${input.kind === "incremental"
+    ? "Patch the previous status summary using only the changed issues."
+    : "Rebuild the status summary from the bounded issue snapshot."} Write the update the way the card prompt below asks — it describes what the board is watching and how they want the update written. Honor it when compatible with the trusted mechanical requirements, and default to roughly 300–500 output tokens when it does not say otherwise.`;
+  const promptBlock = `\n\n## Card prompt (board-provided)\n\n${untrustedPromptBlock("card-prompt", input.card.interestPrompt)}`;
   const payload = {
     operation: "update",
     statusCardId: input.card.id,
@@ -108,7 +107,7 @@ function updateDescription(input: {
     changes: input.changes.map(({ issueId, identifier, from, to, changeKind }) => ({ issueId, identifier, from, to, changeKind })),
     queryVersion: input.card.queryVersion,
   };
-  return `Update this Paperclip status card.\n\n${UNTRUSTED_PROMPT_RULE}\n\n${task}${preferenceBlock}\n\n${mechanical}\n\n## Previous summary\n\n${untrustedPromptBlock("previous-summary", input.previousSummary ?? null)}\n\n## Changed issues\n\n${untrustedPromptBlock("changed-issues", input.changes.map(({ issueId, identifier, title, from, to, changeKind }) => ({ issueId, identifier, title, from, to, changeKind })))}\n\n${input.kind === "full" ? `## Bounded snapshot\n\n${untrustedPromptBlock("bounded-snapshot", input.snapshot.map(({ id, identifier, title, status }) => ({ id, identifier, title, status })))}` : ""}\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
+  return `Update this Paperclip status card.\n\n${UNTRUSTED_PROMPT_RULE}\n\n${task}${promptBlock}\n\n${mechanical}\n\n## Previous summary\n\n${untrustedPromptBlock("previous-summary", input.previousSummary ?? null)}\n\n## Changed issues\n\n${untrustedPromptBlock("changed-issues", input.changes.map(({ issueId, identifier, title, from, to, changeKind }) => ({ issueId, identifier, title, from, to, changeKind })))}\n\n${input.kind === "full" ? `## Bounded snapshot\n\n${untrustedPromptBlock("bounded-snapshot", input.snapshot.map(({ id, identifier, title, status }) => ({ id, identifier, title, status })))}` : ""}\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``;
 }
 
 function compileDescription(card: StatusCardRow, generationIssueId: string | null, hash: string) {
@@ -209,6 +208,14 @@ export function statusCardService(
   }
 
   async function create(companyId: string, input: CreateStatusCard, actor: StatusCardActor) {
+    if (input.agentId) {
+      const summarizer = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
+    }
     const values = {
       companyId,
       createdByAgentId: actor.agentId,
@@ -216,8 +223,7 @@ export function statusCardService(
       title: input.title ?? null,
       titlePinned: input.titlePinned,
       interestPrompt: input.interestPrompt,
-      instructionsMode: input.instructionsMode,
-      instructions: input.instructions ?? null,
+      agentId: input.agentId ?? null,
       refreshPolicy: input.refreshPolicy,
       state: "compiling" as const,
     };
@@ -267,12 +273,11 @@ export function statusCardService(
       ...(input.interestPrompt !== undefined
         ? { interestPrompt: input.interestPrompt, state: "compiling", failureReason: null }
         : {}),
-      ...(input.instructionsMode !== undefined ? { instructionsMode: input.instructionsMode } : {}),
-      ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
       ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
-      // A new summarizer (like new instructions) invalidates the incremental
-      // chain, so the next update rebuilds from scratch.
-      ...(input.instructionsMode !== undefined || input.instructions !== undefined || agentChanged ? { lastUpdateRunKind: null } : {}),
+      // A new summarizer or a new card prompt (which doubles as the summary
+      // instructions) invalidates the incremental chain, so the next update
+      // rebuilds from scratch.
+      ...(input.interestPrompt !== undefined || agentChanged ? { lastUpdateRunKind: null } : {}),
       ...(input.refreshPolicy !== undefined
         ? {
             refreshPolicy: input.refreshPolicy,

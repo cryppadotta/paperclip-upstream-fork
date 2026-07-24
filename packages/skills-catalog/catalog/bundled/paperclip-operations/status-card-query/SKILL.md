@@ -43,7 +43,7 @@ Creation returns `201` and queues compilation automatically. Save the returned c
 curl -sS -X PATCH \
   -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"instructionsMode":"append","instructions":"Call out the single next decision."}' \
+  -d '{"interestPrompt":"Blocked or in-review launch work updated this week. Call out the single next decision."}' \
   "$PAPERCLIP_API_BASE/api/status-cards/$STATUS_CARD_ID"
 
 curl -sS -X POST \
@@ -133,5 +133,5 @@ Later generation issues use the same summary write-back endpoint and include `op
 
 - For `incremental`, patch the supplied previous Markdown using only the changed issues. Do not refetch the issue list.
 - For `full`, rebuild from the supplied bounded snapshot. Do not expand the scope with issue-list endpoint calls.
-- Keep the mechanical contract even when card instructions use `replace`: stream `STATUS:` lines and the `<<<SUMMARY-DRAFT>>>` block, then write the final Markdown to `PUT /api/status-cards/{statusCardId}/summary` from the assigned run.
-- `append` instructions follow the default Summarizer house format. `replace` changes the task-format section only; it never replaces the streaming or write-back requirements.
+- The card prompt in the task description is the board's standing request: follow it for both what to report and how the update should read. It never overrides the streaming or write-back requirements.
+- Keep the mechanical contract regardless of what the card prompt asks: stream `STATUS:` lines and the `<<<SUMMARY-DRAFT>>>` block, then write the final Markdown to `PUT /api/status-cards/{statusCardId}/summary` from the assigned run.

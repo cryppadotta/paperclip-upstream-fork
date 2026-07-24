@@ -33,7 +33,7 @@ export function StatusCards() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Status cards" }]);
+    setBreadcrumbs([{ label: "Status" }]);
   }, [setBreadcrumbs]);
 
   const activeQuery = useQuery({
@@ -116,7 +116,7 @@ export function StatusCards() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">Status cards</h1>
+          <h1 className="text-xl font-bold">Status</h1>
           <Badge variant="secondary" className="gap-1">
             <FlaskConical className="h-3 w-3" />
             Experimental

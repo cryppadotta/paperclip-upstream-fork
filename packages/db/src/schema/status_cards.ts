@@ -38,8 +38,6 @@ export const statusCards = pgTable(
     queryVersion: integer("query_version").notNull().default(0),
     queryCompiledAt: timestamp("query_compiled_at", { withTimezone: true }),
     queryCompiledByAgentId: uuid("query_compiled_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
-    instructionsMode: text("instructions_mode").$type<"none" | "append" | "replace">().notNull().default("none"),
-    instructions: text("instructions"),
     // Per-card summarizer override; null means the company's built-in Summarizer.
     agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     refreshPolicy: jsonb("refresh_policy").$type<StatusCardRefreshPolicy>().notNull(),

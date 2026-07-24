@@ -183,9 +183,9 @@ describeEmbeddedPostgres("status card routes", () => {
 
     const patched = await request(app)
       .patch(`/api/status-cards/${created.body.id}`)
-      .send({ title: "Launch health", titlePinned: true, instructionsMode: "append", instructions: "Call out blockers." });
+      .send({ title: "Launch health", titlePinned: true });
     expect(patched.status).toBe(200);
-    expect(patched.body).toMatchObject({ title: "Launch health", titlePinned: true, instructionsMode: "append" });
+    expect(patched.body).toMatchObject({ title: "Launch health", titlePinned: true });
 
     const scheduled = await request(app)
       .patch(`/api/status-cards/${created.body.id}`)
@@ -266,7 +266,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: { mode: "manual" },
       },
       { agentId: null, userId: "board-user" },
@@ -305,7 +304,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: { mode: "manual" },
       },
       { agentId: null, userId: "board-user" },
@@ -339,7 +337,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: defaultStatusCardRefreshPolicy,
       },
       { agentId: null, userId: "board-user" },
@@ -460,7 +457,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: defaultStatusCardRefreshPolicy,
       },
       { agentId: null, userId: "board-user" },
@@ -485,6 +481,12 @@ describeEmbeddedPostgres("status card routes", () => {
       trigger: "restore",
       generationIssueId: restored.body.generatingIssueId,
     });
+
+    // The card's single prompt doubles as the update instructions.
+    const updateIssue = await db.select().from(issues).where(eq(issues.id, restored.body.generatingIssueId)).then((rows) => rows[0]!);
+    expect(updateIssue.description).toContain('<untrusted-data name="card-prompt">');
+    expect(updateIssue.description).toContain("Recently updated launch tasks");
+    expect(updateIssue.description).not.toContain("Board-provided summary preferences");
   });
 
   it("cancels refresh tasks when assignment wakeup fails", async () => {
@@ -497,7 +499,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: defaultStatusCardRefreshPolicy,
       },
       { agentId: null, userId: "board-user" },
@@ -538,7 +539,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: defaultStatusCardRefreshPolicy,
       },
       { agentId: null, userId: "board-user" },
@@ -585,7 +585,6 @@ describeEmbeddedPostgres("status card routes", () => {
       {
         interestPrompt: "Recently updated launch tasks",
         titlePinned: false,
-        instructionsMode: "none",
         refreshPolicy: { mode: "manual" },
       },
       { agentId: null, userId: "board-user" },
@@ -811,6 +810,18 @@ describeEmbeddedPostgres("status card routes", () => {
       .send({ interestPrompt: "Blocked launch tasks" });
     expect(created.status).toBe(201);
     expect(created.body.agentId).toBeNull();
+
+    expect((await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks", agentId: foreignAgent.id })).status).toBe(422);
+
+    const createdWithAgent = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Launch tasks owned by Fable", agentId: override.id });
+    expect(createdWithAgent.status).toBe(201);
+    expect(createdWithAgent.body.agentId).toBe(override.id);
+    const setupIssue = await db.select().from(issues).where(eq(issues.id, createdWithAgent.body.generatingIssueId)).then((rows) => rows[0]!);
+    expect(setupIssue.assigneeAgentId).toBe(override.id);
 
     expect((await request(app).patch(`/api/status-cards/${created.body.id}`).send({ agentId: foreignAgent.id })).status).toBe(422);
 

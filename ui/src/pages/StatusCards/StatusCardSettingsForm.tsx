@@ -1,27 +1,20 @@
 import type { StatusCardRefreshPolicy } from "@paperclipai/shared";
-import { Check, ChevronDown } from "lucide-react";
-
-type StatusCardInstructionsMode = "none" | "append" | "replace";
+import { ChevronDown } from "lucide-react";
 
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { estimateStatusCardCost } from "./format";
 
 export interface StatusCardSettingsValue {
-  instructionsMode: StatusCardInstructionsMode;
-  instructions: string;
   refreshPolicy: StatusCardRefreshPolicy;
 }
 
 export function defaultSettingsValue(): StatusCardSettingsValue {
   return {
-    instructionsMode: "none",
-    instructions: "",
     refreshPolicy: {
       mode: "manual",
       triggers: {
@@ -37,16 +30,6 @@ export function defaultSettingsValue(): StatusCardSettingsValue {
 
 const INTERVAL_OPTIONS = [5, 15, 30, 60];
 const DEBOUNCE_OPTIONS = [30, 60, 120, 300];
-
-/**
- * The house-format instructions the Summarizer runs with by default (mirrors
- * the server-side compile/update prompt). Shown read-only so the board can see
- * what "Append" adds to, or "Replace" swaps out, without being able to edit it.
- */
-const DEFAULT_SUMMARY_PROMPT =
-  "Rebuild the status summary from the matched issues (or patch the previous summary for incremental updates). " +
-  "Keep the Summarizer house format: start with **Decide:**, then **Recent work:**. " +
-  "Use few links, stay colloquial and action-oriented, and target roughly 300–500 output tokens.";
 
 type TriggerKey = keyof StatusCardRefreshPolicy["triggers"];
 
@@ -98,11 +81,9 @@ function RadioRow({
 export function StatusCardSettingsForm({
   value,
   onChange,
-  showInstructions = true,
 }: {
   value: StatusCardSettingsValue;
   onChange: (next: StatusCardSettingsValue) => void;
-  showInstructions?: boolean;
 }) {
   const { refreshPolicy: policy } = value;
   // Change triggers, active-hours, and the daily token cap only govern
@@ -137,55 +118,6 @@ export function StatusCardSettingsForm({
 
   return (
     <div className="space-y-6">
-      {showInstructions ? (
-        <section className="space-y-2">
-          <h3 className="text-sm font-semibold">Extra instructions for the summarizer</h3>
-          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Instruction mode">
-            {(
-              [
-                { mode: "append" as const, label: "Append to the default prompt" },
-                { mode: "replace" as const, label: "Replace the default prompt" },
-                { mode: "none" as const, label: "No extra instructions" },
-              ]
-            ).map((option) => {
-              const selected = value.instructionsMode === option.mode;
-              return (
-                <button
-                  key={option.mode}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => onChange({ ...value, instructionsMode: option.mode })}
-                  className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors",
-                    selected ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:bg-accent/40",
-                  )}
-                >
-                  {selected ? <Check className="h-3 w-3" /> : null}
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-          <Textarea
-            value={value.instructions}
-            onChange={(event) => onChange({ ...value, instructions: event.target.value })}
-            placeholder={'e.g. Always end with "what should Dotta do next". Keep it under 8 bullets.'}
-            disabled={value.instructionsMode === "none"}
-            rows={3}
-            className="text-sm"
-          />
-          {value.instructionsMode !== "none" ? (
-            <div className="rounded-md border border-border bg-muted/40 px-3 py-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                {value.instructionsMode === "append" ? "Added on top of the default prompt:" : "Replaces the default prompt:"}
-              </p>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">{DEFAULT_SUMMARY_PROMPT}</p>
-            </div>
-          ) : null}
-        </section>
-      ) : null}
-
       <section className="space-y-2">
         <h3 className="text-sm font-semibold">Auto-update policy</h3>
         <div className="space-y-2">

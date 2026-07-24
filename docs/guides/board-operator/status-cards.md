@@ -3,7 +3,7 @@ title: Status Cards
 summary: Experimental watched-query summaries, refresh policies, costs, and agent authoring
 ---
 
-Status cards are an experimental company-wide board of persistent summaries. Each card starts with an interest prompt such as “blocked launch work updated this week.” Paperclip's Summarizer compiles that prose into bounded company-search queries, stores the effective query set, and produces a Markdown summary.
+Status cards are an experimental company-wide board of persistent summaries. Each card is set up with a single message such as “blocked launch work updated this week — tell me the next decision.” The card's agent (the built-in Summarizer by default, or a per-card override chosen at creation or in settings) compiles that prose into bounded company-search queries, stores the effective query set, and follows the same message as the instructions for every summary it writes. There is no separate summarization prompt to append to or replace.
 
 Enable **Status Cards** from **Instance Settings > Experimental**. When `enableStatusCards` is off, the UI routes and REST API return not found; the feature does not leak into non-enabled instances.
 
@@ -17,7 +17,7 @@ Status cards use SQL change detection before spending model tokens. Paperclip re
 - **Active hours** batch changes outside the configured window into a later update.
 - **Daily token caps** pause automatic work when the card reaches its budget. Manual refresh remains available.
 
-Incremental updates receive the previous summary and only the changed tasks. Paperclip uses a full rebuild after query or instruction changes, large deltas, periodic drift guards, restore from archive, or an explicit full refresh. Archived cards are disarmed; restoring one leaves it stale and schedules a full refresh rather than silently resuming the old schedule.
+Incremental updates receive the previous summary and only the changed tasks. Paperclip uses a full rebuild after prompt or agent changes, large deltas, periodic drift guards, restore from archive, or an explicit full refresh. Archived cards are disarmed; restoring one leaves it stale and schedules a full refresh rather than silently resuming the old schedule.
 
 ## Cost model
 

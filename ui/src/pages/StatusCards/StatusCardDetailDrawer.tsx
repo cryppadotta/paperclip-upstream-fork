@@ -5,10 +5,6 @@ import type { CompanySearchIssueSummary, StatusCardUpdate, SummarySlotIssueRef }
 import { AlertTriangle, ChevronDown, ExternalLink, History, Loader2, RefreshCw, Wand2 } from "lucide-react";
 
 import { statusCardsApi, type StatusCardDryRun } from "@/api/statusCards";
-import { agentsApi } from "@/api/agents";
-import { AgentIcon } from "@/components/AgentIconPicker";
-import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
-import { isAgentTaskTarget } from "@/lib/company-members";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { Badge } from "@/components/ui/badge";
@@ -33,6 +29,7 @@ import {
   defaultSettingsValue,
   type StatusCardSettingsValue,
 } from "./StatusCardSettingsForm";
+import { SummarizerAgentSelect } from "./SummarizerAgentSelect";
 import {
   formatCents,
   formatTokens,
@@ -72,11 +69,7 @@ export function StatusCardDetailDrawer({
 
   useEffect(() => {
     if (card) {
-      setSettings({
-        instructionsMode: card.instructionsMode,
-        instructions: card.instructions ?? "",
-        refreshPolicy: card.refreshPolicy,
-      });
+      setSettings({ refreshPolicy: card.refreshPolicy });
       setTitle(card.title ?? "");
       setInterest(card.interestPrompt);
       setSummarizerAgentId(card.agentId ?? "");
@@ -107,27 +100,6 @@ export function StatusCardDetailDrawer({
     queryFn: () => statusCardsApi.dryRun(card!.id),
     enabled: Boolean(card && open && tab === "watched" && card.queries.length > 0),
   });
-  const agentsQuery = useQuery({
-    queryKey: card ? queryKeys.agents.list(card.companyId) : ["agents", "none"],
-    queryFn: () => agentsApi.list(card!.companyId),
-    enabled: Boolean(card && open),
-  });
-  const agentById = useMemo(
-    () => new Map((agentsQuery.data ?? []).map((agent) => [agent.id, agent])),
-    [agentsQuery.data],
-  );
-  const agentOptions = useMemo<InlineEntityOption[]>(
-    () =>
-      (agentsQuery.data ?? [])
-        .filter(isAgentTaskTarget)
-        .map((agent) => ({
-          id: `agent:${agent.id}`,
-          label: agent.name,
-          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
-        })),
-    [agentsQuery.data],
-  );
-
   const lifecycle = card ? deriveStatusCardLifecycle(card) : "fresh";
   const generatingIssue = useMemo<SummarySlotIssueRef | null>(
     () =>
@@ -182,10 +154,8 @@ export function StatusCardDetailDrawer({
         // clearing it hands naming back to the compiler.
         title: trimmedTitle || null,
         titlePinned: trimmedTitle.length > 0,
-        // Editing the interest text ("query") triggers a server-side recompile.
+        // Editing the card prompt triggers a server-side recompile.
         ...(interestChanged ? { interestPrompt: trimmedInterest } : {}),
-        instructionsMode: settings.instructionsMode,
-        instructions: settings.instructionsMode === "none" ? null : settings.instructions.trim() || null,
         agentId: summarizerAgentId || null,
         refreshPolicy: settings.refreshPolicy,
       });
@@ -477,52 +447,27 @@ export function StatusCardDetailDrawer({
               </section>
 
               <section className="space-y-2">
-                <h3 className="text-sm font-semibold">What this card watches</h3>
+                <h3 className="text-sm font-semibold">What this card watches & reports</h3>
                 <Textarea
                   value={interest}
                   onChange={(event) => setInterest(event.target.value)}
                   rows={3}
                   className="text-sm"
-                  aria-label="What this card watches"
+                  aria-label="What this card watches & reports"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Editing this updates what the card watches and refreshes the summary.
+                  This one message drives the whole card: the agent compiles the watch query from it
+                  and follows it as the instructions for every update. Editing it rebuilds the card.
                 </p>
               </section>
 
               <section className="space-y-2">
-                <h3 className="text-sm font-semibold">Summarizer agent</h3>
-                <InlineEntitySelector
-                  value={summarizerAgentId ? `agent:${summarizerAgentId}` : ""}
-                  options={agentOptions}
-                  placeholder="Summarizer (default)"
-                  noneLabel="Summarizer (default)"
-                  searchPlaceholder="Search agents..."
-                  emptyMessage="No agents found."
-                  onChange={(next) =>
-                    setSummarizerAgentId(next.startsWith("agent:") ? next.slice("agent:".length) : "")
-                  }
-                  className="h-8 text-sm"
-                  renderTriggerValue={(option) => {
-                    if (!option) return <span>Summarizer (default)</span>;
-                    const agent = option.id.startsWith("agent:") ? agentById.get(option.id.slice("agent:".length)) : null;
-                    return (
-                      <>
-                        {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                        <span className="truncate">{option.label}</span>
-                      </>
-                    );
-                  }}
-                  renderOption={(option) => {
-                    if (!option.id) return <span className="truncate">{option.label}</span>;
-                    const agent = option.id.startsWith("agent:") ? agentById.get(option.id.slice("agent:".length)) : null;
-                    return (
-                      <>
-                        {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
-                        <span className="truncate">{option.label}</span>
-                      </>
-                    );
-                  }}
+                <h3 className="text-sm font-semibold">Agent</h3>
+                <SummarizerAgentSelect
+                  companyId={card.companyId}
+                  value={summarizerAgentId}
+                  onChange={setSummarizerAgentId}
+                  enabled={open}
                 />
               </section>
 

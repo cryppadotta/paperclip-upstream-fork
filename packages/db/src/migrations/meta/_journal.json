@@ -1317,6 +1317,13 @@
       "when": 1784840937101,
       "tag": "0189_status_card_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1784916885226,
+      "tag": "0190_status_card_single_prompt",
+      "breakpoints": true
     }
   ]
 }

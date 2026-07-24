@@ -40,8 +40,6 @@ function baseCard(overrides: Partial<StatusCardView>): StatusCardView {
     queryVersion: 1,
     queryCompiledAt: "2026-07-22T10:00:00.000Z",
     queryCompiledByAgentId: null,
-    instructionsMode: "none",
-    instructions: null,
     agentId: null,
     refreshPolicy: {
       mode: "interval",
