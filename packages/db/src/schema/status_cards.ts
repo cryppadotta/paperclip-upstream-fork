@@ -40,6 +40,8 @@ export const statusCards = pgTable(
     queryCompiledByAgentId: uuid("query_compiled_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     instructionsMode: text("instructions_mode").$type<"none" | "append" | "replace">().notNull().default("none"),
     instructions: text("instructions"),
+    // Per-card summarizer override; null means the company's built-in Summarizer.
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     refreshPolicy: jsonb("refresh_policy").$type<StatusCardRefreshPolicy>().notNull(),
     state: text("state").$type<"compiling" | "active" | "error" | "paused_budget" | "paused_hours">().notNull().default("compiling"),
     pendingChangeCount: integer("pending_change_count").notNull().default(0),

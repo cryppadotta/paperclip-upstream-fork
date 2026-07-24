@@ -81,6 +81,7 @@ export const statusCardSchema = z.object({
   queryCompiledByAgentId: z.string().uuid().nullable(),
   instructionsMode: statusCardInstructionsModeSchema,
   instructions: z.string().nullable(),
+  agentId: z.string().uuid().nullable(),
   refreshPolicy: statusCardRefreshPolicySchema,
   state: statusCardStateSchema,
   pendingChangeCount: z.number().int().nonnegative(),
@@ -165,6 +166,7 @@ export const patchStatusCardSchema = z
     titlePinned: z.boolean().optional(),
     instructionsMode: statusCardInstructionsModeSchema.optional(),
     instructions: z.string().max(50_000).nullable().optional(),
+    agentId: z.string().uuid().nullable().optional(),
     refreshPolicy: statusCardRefreshPolicySchema.optional(),
     archived: z.boolean().optional(),
   })

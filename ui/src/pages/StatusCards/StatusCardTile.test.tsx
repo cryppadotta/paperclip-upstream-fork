@@ -42,6 +42,7 @@ function baseCard(overrides: Partial<StatusCardView>): StatusCardView {
     queryCompiledByAgentId: null,
     instructionsMode: "none",
     instructions: null,
+    agentId: null,
     refreshPolicy: {
       mode: "interval",
       intervalMinutes: 15,

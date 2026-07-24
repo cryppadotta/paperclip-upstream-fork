@@ -247,6 +247,15 @@ export function statusCardService(db: Db) {
 
   async function update(card: StatusCardRow, input: PatchStatusCard, actor: StatusCardActor) {
     const now = new Date();
+    if (input.agentId) {
+      const summarizer = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, card.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
+    }
+    const agentChanged = input.agentId !== undefined && input.agentId !== card.agentId;
     const archiveChanged = input.archived !== undefined && input.archived !== Boolean(card.archivedAt);
     const values: Partial<typeof statusCards.$inferInsert> = {
       updatedAt: now,
@@ -257,7 +266,10 @@ export function statusCardService(db: Db) {
         : {}),
       ...(input.instructionsMode !== undefined ? { instructionsMode: input.instructionsMode } : {}),
       ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
-      ...(input.instructionsMode !== undefined || input.instructions !== undefined ? { lastUpdateRunKind: null } : {}),
+      ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+      // A new summarizer (like new instructions) invalidates the incremental
+      // chain, so the next update rebuilds from scratch.
+      ...(input.instructionsMode !== undefined || input.instructions !== undefined || agentChanged ? { lastUpdateRunKind: null } : {}),
       ...(input.refreshPolicy !== undefined
         ? {
             refreshPolicy: input.refreshPolicy,
@@ -308,10 +320,20 @@ export function statusCardService(db: Db) {
       .orderBy(desc(documentRevisions.revisionNumber));
   }
 
-  async function requestCompile(cardId: string, actor: StatusCardActor) {
-    const card = await getById(cardId);
-    if (!card) throw notFound("Status card not found");
-    if (card.archivedAt) throw unprocessable("Archived status cards cannot be compiled");
+  /**
+   * The agent that runs this card's generation tasks: the per-card override
+   * when one is set (and still exists in the company), otherwise the built-in
+   * Summarizer.
+   */
+  async function resolveSummarizerAgentId(card: StatusCardRow): Promise<string> {
+    if (card.agentId) {
+      const override = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, card.agentId), eq(agents.companyId, card.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (override) return override.id;
+    }
     const builtIn = await builtIns.get(card.companyId, SUMMARIZER_BUILT_IN_KEY);
     if (builtIn.status !== "ready" || !builtIn.agentId) {
       throw unprocessable("Summarizer built-in agent is not configured", {
@@ -319,6 +341,14 @@ export function statusCardService(db: Db) {
         status: builtIn.status,
       });
     }
+    return builtIn.agentId;
+  }
+
+  async function requestCompile(cardId: string, actor: StatusCardActor) {
+    const card = await getById(cardId);
+    if (!card) throw notFound("Status card not found");
+    if (card.archivedAt) throw unprocessable("Archived status cards cannot be compiled");
+    const summarizerAgentId = await resolveSummarizerAgentId(card);
 
     const hash = promptHash(card.interestPrompt);
     if (card.generatingIssueId) {
@@ -340,7 +370,7 @@ export function statusCardService(db: Db) {
       description: compileDescription(card, null, hash),
       status: "todo",
       priority: "medium",
-      assigneeAgentId: builtIn.agentId,
+      assigneeAgentId: summarizerAgentId,
       createdByAgentId: actor.agentId,
       createdByUserId: actor.userId,
       hiddenAt: createdAt,
@@ -353,7 +383,7 @@ export function statusCardService(db: Db) {
     // covers idempotency-key hits that resolve to a terminal task (done/cancelled)
     // as well as a `blocked` one that a manual re-kick is reviving.
     const reopened = deduplicated && (TERMINAL_ISSUE_STATUSES.has(created.status) || created.status === "blocked")
-      ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: builtIn.agentId })
+      ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: summarizerAgentId })
       : created;
     const generationIssue = await issuesSvc.update(reopened!.id, {
       description: compileDescription(card, reopened!.id, hash),
@@ -374,10 +404,14 @@ export function statusCardService(db: Db) {
   }
 
   async function assertSummarizerWriter(card: StatusCardRow, generationIssueId: string, actor: StatusCardWriter) {
-    if (!actor.agentId) throw forbidden("Only the Summarizer built-in agent may write status cards");
+    if (!actor.agentId) throw forbidden("Only the card's summarizer agent may write status cards");
     const agent = await db.select().from(agents).where(eq(agents.id, actor.agentId)).then((rows) => rows[0] ?? null);
-    if (!agent || agent.companyId !== card.companyId || readBuiltInAgentMarker(agent.metadata)?.key !== SUMMARIZER_BUILT_IN_KEY) {
-      throw forbidden("Only the Summarizer built-in agent may write status cards");
+    // The card's designated agent (when overridden) or the built-in Summarizer
+    // may write. Both stay eligible so a generation task created before an
+    // agent switch can still land its result.
+    const isCardAgent = Boolean(card.agentId && agent?.id === card.agentId);
+    if (!agent || agent.companyId !== card.companyId || (!isCardAgent && readBuiltInAgentMarker(agent.metadata)?.key !== SUMMARIZER_BUILT_IN_KEY)) {
+      throw forbidden("Only the card's summarizer agent may write status cards");
     }
     if (!card.generatingIssueId || card.generatingIssueId !== generationIssueId) {
       throw forbidden("Status-card write does not match the active generation task");
@@ -575,8 +609,7 @@ export function statusCardService(db: Db) {
       configurationChanged: card.lastUpdateRunKind === null && Boolean(card.lastGeneratedAt),
       restoreRefresh: trigger === "restore",
     });
-    const builtIn = await builtIns.get(card.companyId, SUMMARIZER_BUILT_IN_KEY);
-    if (builtIn.status !== "ready" || !builtIn.agentId) throw unprocessable("Summarizer built-in agent is not configured");
+    const summarizerAgentId = await resolveSummarizerAgentId(card);
     const previousSummary = card.documentId
       ? await db.select().from(documents).where(eq(documents.id, card.documentId)).then((rows) => rows[0]?.latestBody ?? null)
       : null;
@@ -587,7 +620,7 @@ export function statusCardService(db: Db) {
       description: updateDescription({ card, generationIssueId: null, fingerprint, changes, kind, trigger, previousSummary, snapshot }),
       status: "todo",
       priority: "medium",
-      assigneeAgentId: builtIn.agentId,
+      assigneeAgentId: summarizerAgentId,
       createdByAgentId: input.actor?.agentId ?? null,
       createdByUserId: input.actor?.userId ?? null,
       hiddenAt: now,
@@ -595,7 +628,7 @@ export function statusCardService(db: Db) {
       onDeduplicated: (reason) => { deduplicated = reason === "idempotency_key"; },
     });
     const reopened = deduplicated && TERMINAL_ISSUE_STATUSES.has(created.status)
-      ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: builtIn.agentId })
+      ? await issuesSvc.update(created.id, { status: "todo", assigneeAgentId: summarizerAgentId })
       : created;
     const generationIssue = await issuesSvc.update(reopened!.id, {
       description: updateDescription({ card, generationIssueId: reopened!.id, fingerprint, changes, kind, trigger, previousSummary, snapshot }),

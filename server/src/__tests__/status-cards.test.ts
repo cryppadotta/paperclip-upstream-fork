@@ -705,6 +705,59 @@ describeEmbeddedPostgres("status card routes", () => {
     expect((await request(createApp(db, agentActor(company.id, summarizer.id, randomUUID()))).put(`/api/status-cards/${created.body.id}/query`).send(payload)).status).toBe(403);
   });
 
+  it("routes generation tasks to a per-card summarizer override and lets it write", async () => {
+    const company = await seedCompany();
+    const foreignCompany = await seedCompany();
+    await enableStatusCards();
+    await seedSummarizer(company.id);
+    const foreignAgent = await seedSummarizer(foreignCompany.id);
+    const override = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Fable",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const app = createApp(db, localBoardActor());
+
+    const created = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({ interestPrompt: "Blocked launch tasks" });
+    expect(created.status).toBe(201);
+    expect(created.body.agentId).toBeNull();
+
+    expect((await request(app).patch(`/api/status-cards/${created.body.id}`).send({ agentId: foreignAgent.id })).status).toBe(422);
+
+    const patched = await request(app).patch(`/api/status-cards/${created.body.id}`).send({ agentId: override.id });
+    expect(patched.status).toBe(200);
+    expect(patched.body.agentId).toBe(override.id);
+
+    const recompiled = await request(app)
+      .patch(`/api/status-cards/${created.body.id}`)
+      .send({ interestPrompt: "Blocked launch tasks, updated" });
+    expect(recompiled.status).toBe(200);
+    const generationIssueId = recompiled.body.generatingIssueId as string;
+    const generationIssue = await db.select().from(issues).where(eq(issues.id, generationIssueId)).then((rows) => rows[0]!);
+    expect(generationIssue.assigneeAgentId).toBe(override.id);
+
+    const run = await seedRun(company.id, override.id);
+    await db.update(issues).set({ checkoutRunId: run.id }).where(eq(issues.id, generationIssueId));
+    const write = await request(createApp(db, agentActor(company.id, override.id, run.id)))
+      .put(`/api/status-cards/${created.body.id}/query`)
+      .send({
+        queries: [{ scope: "issues", status: ["blocked"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+        title: "Recent launch blockers",
+        changeSummary: "Compiled one bounded blocker query.",
+        generationIssueId,
+      });
+    expect(write.status).toBe(200);
+
+    const cleared = await request(app).patch(`/api/status-cards/${created.body.id}`).send({ agentId: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.agentId).toBeNull();
+  });
+
   it("rejects status-card writes after the generation issue is cancelled", async () => {
     const company = await seedCompany();
     await enableStatusCards();

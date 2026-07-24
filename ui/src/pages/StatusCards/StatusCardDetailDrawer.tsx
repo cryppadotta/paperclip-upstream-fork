@@ -5,6 +5,10 @@ import type { CompanySearchIssueSummary, StatusCardUpdate, SummarySlotIssueRef }
 import { AlertTriangle, ChevronDown, ExternalLink, History, Loader2, RefreshCw, Wand2 } from "lucide-react";
 
 import { statusCardsApi, type StatusCardDryRun } from "@/api/statusCards";
+import { agentsApi } from "@/api/agents";
+import { AgentIcon } from "@/components/AgentIconPicker";
+import { InlineEntitySelector, type InlineEntityOption } from "@/components/InlineEntitySelector";
+import { isAgentTaskTarget } from "@/lib/company-members";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSummaryDraftStream } from "@/components/useSummaryDraftStream";
 import { Badge } from "@/components/ui/badge";
@@ -57,6 +61,8 @@ export function StatusCardDetailDrawer({
   // Rename + interest ("query") are edited in Settings alongside the policy.
   const [title, setTitle] = useState("");
   const [interest, setInterest] = useState("");
+  // "" → the built-in Summarizer; otherwise the id of the override agent.
+  const [summarizerAgentId, setSummarizerAgentId] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
   // A short confirmation after a build/refresh is queued (the state dot + badge
   // also update, but a card that finishes fast can look like "nothing happened").
@@ -73,6 +79,7 @@ export function StatusCardDetailDrawer({
       });
       setTitle(card.title ?? "");
       setInterest(card.interestPrompt);
+      setSummarizerAgentId(card.agentId ?? "");
       setActionError(null);
       setActionNote(null);
       setSelectedRevisionId(null);
@@ -100,6 +107,26 @@ export function StatusCardDetailDrawer({
     queryFn: () => statusCardsApi.dryRun(card!.id),
     enabled: Boolean(card && open && tab === "watched" && card.queries.length > 0),
   });
+  const agentsQuery = useQuery({
+    queryKey: card ? queryKeys.agents.list(card.companyId) : ["agents", "none"],
+    queryFn: () => agentsApi.list(card!.companyId),
+    enabled: Boolean(card && open),
+  });
+  const agentById = useMemo(
+    () => new Map((agentsQuery.data ?? []).map((agent) => [agent.id, agent])),
+    [agentsQuery.data],
+  );
+  const agentOptions = useMemo<InlineEntityOption[]>(
+    () =>
+      (agentsQuery.data ?? [])
+        .filter(isAgentTaskTarget)
+        .map((agent) => ({
+          id: `agent:${agent.id}`,
+          label: agent.name,
+          searchText: `${agent.name} ${agent.role} ${agent.title ?? ""}`,
+        })),
+    [agentsQuery.data],
+  );
 
   const lifecycle = card ? deriveStatusCardLifecycle(card) : "fresh";
   const generatingIssue = useMemo<SummarySlotIssueRef | null>(
@@ -159,6 +186,7 @@ export function StatusCardDetailDrawer({
         ...(interestChanged ? { interestPrompt: trimmedInterest } : {}),
         instructionsMode: settings.instructionsMode,
         instructions: settings.instructionsMode === "none" ? null : settings.instructions.trim() || null,
+        agentId: summarizerAgentId || null,
         refreshPolicy: settings.refreshPolicy,
       });
     },
@@ -460,6 +488,42 @@ export function StatusCardDetailDrawer({
                 <p className="text-xs text-muted-foreground">
                   Editing this updates what the card watches and refreshes the summary.
                 </p>
+              </section>
+
+              <section className="space-y-2">
+                <h3 className="text-sm font-semibold">Summarizer agent</h3>
+                <InlineEntitySelector
+                  value={summarizerAgentId ? `agent:${summarizerAgentId}` : ""}
+                  options={agentOptions}
+                  placeholder="Summarizer (default)"
+                  noneLabel="Summarizer (default)"
+                  searchPlaceholder="Search agents..."
+                  emptyMessage="No agents found."
+                  onChange={(next) =>
+                    setSummarizerAgentId(next.startsWith("agent:") ? next.slice("agent:".length) : "")
+                  }
+                  className="h-8 text-sm"
+                  renderTriggerValue={(option) => {
+                    if (!option) return <span>Summarizer (default)</span>;
+                    const agent = option.id.startsWith("agent:") ? agentById.get(option.id.slice("agent:".length)) : null;
+                    return (
+                      <>
+                        {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                  renderOption={(option) => {
+                    if (!option.id) return <span className="truncate">{option.label}</span>;
+                    const agent = option.id.startsWith("agent:") ? agentById.get(option.id.slice("agent:".length)) : null;
+                    return (
+                      <>
+                        {agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+                        <span className="truncate">{option.label}</span>
+                      </>
+                    );
+                  }}
+                />
               </section>
 
               <StatusCardSettingsForm value={settings} onChange={setSettings} />
