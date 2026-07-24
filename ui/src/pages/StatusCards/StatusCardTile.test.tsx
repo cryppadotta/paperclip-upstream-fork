@@ -155,6 +155,8 @@ describe("StatusCardTile lifecycle rendering", () => {
     render(tile(baseCard({ generatingIssueId: "issue-9", pendingChangeCount: 3 })));
     expect(container.querySelector('[data-lifecycle="updating"]')).toBeTruthy();
     expect(container.textContent).toContain("Integrating 3 changes");
+    const link = container.querySelector('a[href="/issues/issue-9"]');
+    expect(link?.textContent).toContain("View update task");
     expect(container.querySelector('[data-testid="markdown-body"]')?.textContent).toContain("All on track");
   });
 

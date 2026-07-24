@@ -13,6 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { createIssueDetailPath } from "@/lib/issueDetailBreadcrumb";
 import { cn, relativeTime } from "@/lib/utils";
 import {
   deriveStatusCardLifecycle,
@@ -187,12 +188,22 @@ export function StatusCardTile({
           <div className="rounded-md bg-muted px-3 py-2 text-xs text-foreground" role="status" aria-live="polite">
             <div className="flex items-center gap-2">
               <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-              <span className="truncate" title={draftStream.statusLine ?? undefined}>
+              <span className="min-w-0 flex-1 truncate" title={draftStream.statusLine ?? undefined}>
                 {draftStream.statusLine
                   ?? (card.pendingChangeCount > 0
                     ? `Integrating ${card.pendingChangeCount} ${card.pendingChangeCount === 1 ? "change" : "changes"}…`
                     : "Updating now…")}
               </span>
+              {card.generatingIssueId ? (
+                <Link
+                  to={createIssueDetailPath(card.generatingIssueId)}
+                  onClick={(event) => event.stopPropagation()}
+                  className="inline-flex shrink-0 items-center gap-1 font-medium underline-offset-2 hover:underline"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" />
+                  View update task
+                </Link>
+              ) : null}
             </div>
           </div>
         ) : null}
