@@ -37,9 +37,10 @@ async function loadRunContext(db: Db, context: Pick<ProposalRunContext, "company
   return { run, originIssueId: issue?.id ?? null };
 }
 
-async function ancestorIds(db: Db, companyId: string, agentId: string) {
-  const rows = await db.select({ id: agents.id, reportsTo: agents.reportsTo }).from(agents)
+async function ancestorIds(db: Db, companyId: string, agentId: string, lockForUpdate = false) {
+  const query = db.select({ id: agents.id, reportsTo: agents.reportsTo }).from(agents)
     .where(eq(agents.companyId, companyId));
+  const rows = lockForUpdate ? await query.for("update") : await query;
   const byId = new Map(rows.map((row) => [row.id, row.reportsTo]));
   if (!byId.has(agentId)) throw notFound("Agent not found");
   const result: string[] = [];
@@ -284,11 +285,16 @@ export function createSecretProposalsService(db: Db) {
     return Promise.all(rows.map(enrich));
   }
 
-  async function assertBindingSnapshotCurrent(proposal: Proposal) {
+  async function assertBindingSnapshotCurrent(proposal: Proposal, dbClient: Db = db, lockForUpdate = false) {
     if (proposal.kind !== "binding" || !proposal.targetId) return;
     const snapshotAllowed = proposal.bindingTargetPolicySnapshot === "self_and_reports"
       && bindingTargetAllowed(proposal.proposedByAgentId, proposal.targetId, proposal.targetAncestorIdsSnapshot ?? []);
-    const currentTargetAncestors = await ancestorIds(db, proposal.companyId, proposal.targetId);
+    const currentTargetAncestors = await ancestorIds(
+      dbClient,
+      proposal.companyId,
+      proposal.targetId,
+      lockForUpdate,
+    );
     const currentAllowed = bindingTargetAllowed(proposal.proposedByAgentId, proposal.targetId, currentTargetAncestors);
     if (!snapshotAllowed || !currentAllowed) {
       throw conflict("Binding proposal target is no longer allowed by its proposal-time and current chain-of-command policy");
@@ -416,12 +422,12 @@ export function createSecretProposalsService(db: Db) {
     overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
   }) {
     const proposal = await requirePending(companyId, proposalId);
-    await assertBindingSnapshotCurrent(proposal);
     if (proposal.kind === "binding" && proposal.secretProposalId && !input.cascade) {
       throw conflict(`Binding proposal requires pending secret proposal ${proposal.secretProposalId}; retry with cascade=true`);
     }
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      await assertBindingSnapshotCurrent(proposal, txDb, true);
       if (proposal.kind === "secret") {
         const created = await applySecretApproval(txDb, proposal, input);
         return markApproved(txDb, proposal, {

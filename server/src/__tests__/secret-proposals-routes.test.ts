@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -263,5 +263,107 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(response.status).toBe(409);
     expect(await db.select().from(companySecrets)).toHaveLength(0);
     expect((await db.select().from(companySecretProposals)).every((proposal) => proposal.status === "pending")).toBe(true);
+  });
+
+  it("holds the org graph stable until binding approval commits", async () => {
+    const fixture = await seedRun();
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId: fixture.companyId,
+      name: "Concurrent report",
+      role: "engineer",
+      reportsTo: fixture.agentId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      status: "idle",
+    });
+    const secretProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/concurrent-reorg/token",
+        value: "concurrent-reorg-secret",
+        justification: "Needed by report",
+      });
+    const bindingProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretProposalId: secretProposal.body.id,
+        targetAgentId,
+        configPath: "access.CONCURRENT_REORG_TOKEN",
+        justification: "Give the report API access",
+      });
+    expect(bindingProposal.status).toBe(201);
+
+    const advisoryLockKey = 147460185;
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION paperclip_test_pause_secret_approval()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+        PERFORM pg_sleep(1);
+        RETURN NEW;
+      END
+      $function$;
+      CREATE TRIGGER paperclip_test_pause_secret_approval
+      BEFORE INSERT ON company_secrets
+      FOR EACH ROW EXECUTE FUNCTION paperclip_test_pause_secret_approval();
+    `));
+
+    try {
+      const approvalPromise = request(createBoardApp(fixture))
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${bindingProposal.body.id}/approve`)
+        .send({ cascade: true })
+        .then((response) => response);
+
+      let approvalPaused = false;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const lockAvailable = await db.transaction(async (tx) => {
+          const [result] = await tx.execute<{ acquired: boolean }>(
+            sql`SELECT pg_try_advisory_lock(${advisoryLockKey}) AS acquired`,
+          );
+          if (result?.acquired) {
+            await tx.execute(sql`SELECT pg_advisory_unlock(${advisoryLockKey})`);
+          }
+          return result?.acquired ?? false;
+        });
+        if (!lockAvailable) {
+          approvalPaused = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(approvalPaused).toBe(true);
+
+      let reorgFinished = false;
+      const reorgPromise = db.update(agents)
+        .set({ reportsTo: null })
+        .where(eq(agents.id, targetAgentId))
+        .then(() => {
+          reorgFinished = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(reorgFinished).toBe(false);
+
+      const approval = await approvalPromise;
+      expect(approval.status).toBe(200);
+      await reorgPromise;
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS paperclip_test_pause_secret_approval ON company_secrets;
+        DROP FUNCTION IF EXISTS paperclip_test_pause_secret_approval();
+      `));
+    }
+
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({ targetId: targetAgentId, configPath: "access.CONCURRENT_REORG_TOKEN" }),
+    ]);
+    expect(await db.select({ reportsTo: agents.reportsTo }).from(agents).where(eq(agents.id, targetAgentId)))
+      .toEqual([{ reportsTo: null }]);
   });
 });
