@@ -205,6 +205,11 @@ export function createSecretProposalsService(db: Db) {
     if (input.secretProposalId) {
       const dependency = await getById(context.companyId, input.secretProposalId);
       if (!dependency || dependency.kind !== "secret") throw notFound("Secret proposal not found");
+      if (dependency.status !== "pending") {
+        throw unprocessable(
+          "Prerequisite secret proposal is no longer pending; use secretId to reference an approved secret",
+        );
+      }
     }
     const proposal = await db.insert(companySecretProposals).values({
       companyId: context.companyId,

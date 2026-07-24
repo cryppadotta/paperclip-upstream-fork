@@ -265,6 +265,38 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect((await db.select().from(companySecretProposals)).every((proposal) => proposal.status === "pending")).toBe(true);
   });
 
+
+  it("rejects bindings that reference terminal secret proposals", async () => {
+    const fixture = await seedRun();
+    const secretProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/withdrawn/token",
+        value: "withdrawn-secret",
+        justification: "No longer needed",
+      });
+    expect(secretProposal.status).toBe(201);
+
+    const withdrawn = await request(createAgentApp(fixture))
+      .delete(`/api/agents/me/secret-proposals/${secretProposal.body.id}`);
+    expect(withdrawn.status).toBe(200);
+    expect(withdrawn.body.status).toBe("withdrawn");
+
+    const bindingProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretProposalId: secretProposal.body.id,
+        configPath: "env.WITHDRAWN_TOKEN",
+        justification: "Reference a terminal dependency",
+      });
+    expect(bindingProposal.status).toBe(422);
+    expect(bindingProposal.body.error).toContain("no longer pending");
+    expect(await db.select().from(companySecretProposals)).toEqual([
+      expect.objectContaining({ id: secretProposal.body.id, status: "withdrawn" }),
+    ]);
+  });
   it("holds the org graph stable until binding approval commits", async () => {
     const fixture = await seedRun();
     const targetAgentId = randomUUID();
