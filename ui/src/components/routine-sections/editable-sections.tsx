@@ -740,7 +740,7 @@ export function DeliverySection() {
           disabled={!hasScheduleTrigger}
         />
         {!hasScheduleTrigger ? (
-          <p className="text-(length:--text-micro) text-muted-foreground/60">
+          <p className="text-xs text-muted-foreground">
             Add a schedule trigger to gate runs on activity. Webhook, manual, and API fires always
             run.
           </p>
