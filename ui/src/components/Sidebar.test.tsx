@@ -323,6 +323,8 @@ describe("Sidebar", () => {
     const statusLink = primaryNavLinks.find((anchor) => anchor.getAttribute("href") === "/status");
 
     expect(statusLink?.textContent).toContain("Status");
+    expect(statusLink?.textContent).toContain("beta");
+    expect(statusLink?.textContent).not.toContain("exp");
     expect(statusLink?.textContent).not.toContain("cards");
     expect(primaryNavLinks.indexOf(statusLink!)).toBe(primaryNavLinks.indexOf(decisionsLink!) + 1);
 
