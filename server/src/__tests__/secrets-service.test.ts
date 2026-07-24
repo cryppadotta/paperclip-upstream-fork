@@ -2822,6 +2822,59 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(current)).not.toContain("new-admin-key");
   });
 
+  it("restores the provider current version when external value rotation persistence fails", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/rollback";
+    const secret = await svc.create(companyId, {
+      name: "External rollback",
+      key: "external-rollback",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+    const prepared = {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: null,
+        source: "external_reference",
+        lastWrittenVersionId: "aws-version-2",
+        previousCurrentVersionId: "aws-version-1",
+      },
+      valueSha256: "a".repeat(64),
+      fingerprintSha256: "a".repeat(64),
+      externalRef,
+      providerVersionRef: null,
+    };
+    vi.spyOn(awsSecretsManagerProvider, "updateExternalSecretValue").mockResolvedValueOnce(prepared);
+    const rollbackSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
+
+    await expect(svc.rotate(secret.id, { value: "new-value" })).rejects.toThrow(
+      "db rotate failed",
+    );
+
+    expect(rollbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      material: prepared.material,
+      externalRef,
+      mode: "archive",
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: "external-rollback",
+        secretName: "External rollback",
+        version: 2,
+      },
+    }));
+  });
+
   it("rejects external value rotations that also retarget or pin versions", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

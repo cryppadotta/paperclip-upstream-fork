@@ -3687,7 +3687,7 @@ export function secretService(db: Db) {
           createdByUserId: actor?.userId ?? null,
         });
       } catch (error) {
-        if (secret.managedMode !== "external_reference") {
+        if (secret.managedMode !== "external_reference" || externalValueWrite) {
           await cleanupPreparedProviderWrite({
             provider,
             prepared,
@@ -3734,7 +3734,7 @@ export function secretService(db: Db) {
           return updated;
         });
       } catch (error) {
-        if (secret.managedMode !== "external_reference") {
+        if (secret.managedMode !== "external_reference" || externalValueWrite) {
           const cleaned = await cleanupPreparedProviderWrite({
             provider,
             prepared,

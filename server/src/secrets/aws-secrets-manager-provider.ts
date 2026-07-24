@@ -36,6 +36,8 @@ interface AwsSecretsManagerMaterial extends StoredSecretVersionMaterial {
   secretId: string;
   versionId: string | null;
   source: "managed" | "external_reference";
+  lastWrittenVersionId?: string | null;
+  previousCurrentVersionId?: string | null;
 }
 
 interface AwsSecretsManagerConfig {
@@ -1182,10 +1184,15 @@ export function createAwsSecretsManagerProvider(
     },
     async updateExternalSecretValue(input) {
       const config = resolveConfig(input.providerConfig);
+      assertNotManagedNamespaceExternalRef(config, input.externalRef);
       const gateway = resolveGateway(config);
       const secretId = input.externalRef.trim();
 
       try {
+        const previous = await gateway.getSecretValue({
+          SecretId: secretId,
+          VersionStage: DEFAULT_VERSION_STAGE,
+        });
         // No VersionStages: the new version becomes AWSCURRENT so every consumer of the
         // referenced secret (not just Paperclip) picks up the new value.
         const created = await gateway.putSecretValue({
@@ -1202,6 +1209,7 @@ export function createAwsSecretsManagerProvider(
           material: {
             ...prepared.material,
             lastWrittenVersionId: created.VersionId ?? null,
+            previousCurrentVersionId: previous.VersionId ?? null,
           },
           valueSha256,
           fingerprintSha256: valueSha256,
@@ -1308,10 +1316,31 @@ export function createAwsSecretsManagerProvider(
           ? asAwsSecretsManagerMaterial(input.material)
           : null;
 
-      if (material?.source !== "managed") return;
-
       const config = resolveConfig(input.providerConfig);
       const gateway = resolveGateway(config);
+
+      if (material?.source === "external_reference") {
+        if (
+          input.mode === "archive" &&
+          material.lastWrittenVersionId &&
+          material.previousCurrentVersionId &&
+          gateway.updateSecretVersionStage
+        ) {
+          try {
+            await gateway.updateSecretVersionStage({
+              SecretId: material.secretId,
+              VersionStage: DEFAULT_VERSION_STAGE,
+              MoveToVersionId: material.previousCurrentVersionId,
+              RemoveFromVersionId: material.lastWrittenVersionId,
+            });
+          } catch (error) {
+            normalizeAwsError("updateSecretVersionStage", error);
+          }
+        }
+        return;
+      }
+      if (material?.source !== "managed") return;
+
       const secretId = resolveManagedSecretRef({
         config,
         context: input.context,
