@@ -220,6 +220,9 @@ export function Sidebar() {
               badgeLabel="decisions"
             />
           ) : null}
+          {showStatusCards ? (
+            <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="exp" />
+          ) : null}
           {conferenceRoomChatEnabled ? (
             <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
@@ -233,9 +236,6 @@ export function Sidebar() {
           <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           {showPipelines ? (
             <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
-          ) : null}
-          {showStatusCards ? (
-            <SidebarNavItem to="/status" label="Status cards" icon={LayoutGrid} textBadge="exp" />
           ) : null}
           {showGoalsLink ? (
             <SidebarNavItem to="/goals" label="Goals" icon={Target} />
