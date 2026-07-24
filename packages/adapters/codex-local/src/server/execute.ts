@@ -495,15 +495,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       )
     : [];
   const runtimePrimaryUrl = asString(context.paperclipRuntimePrimaryUrl, "");
-  const configuredCwd = asString(config.cwd, "");
-  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
-  const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
-  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
-  const envConfig = parseObject(config.env);
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
+  const targetWorkspaceRealization = executionTarget?.workspaceRealization ?? null;
+  const configuredCwd = asString(config.cwd, "");
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const effectiveWorkspaceCwd = targetWorkspaceRealization?.mode === "in_place"
+    ? targetWorkspaceRealization.authoritativeRoot
+    : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
+  const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
@@ -511,7 +514,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : null;
   const codexSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
@@ -620,8 +625,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       asNumber(config.timeoutSec, 0),
     );
     const graceSec = asNumber(config.graceSec, 20);
-    let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-    const preparedExecutionTargetRuntime = executionTargetIsRemote
+    let effectiveExecutionCwd = targetWorkspaceRealization?.mode === "in_place"
+      ? targetWorkspaceRealization.authoritativeRoot
+      : adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+    const preparedExecutionTargetRuntime = executionTargetIsRemote && targetWorkspaceRealization?.mode !== "in_place"
       ? await (async () => {
           await onLog(
             "stdout",
@@ -770,6 +777,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionTargetIsRemote,
       executionCwd: effectiveExecutionCwd,
     });
+    if (targetWorkspaceRealization) {
+      env.PAPERCLIP_WORKSPACE_REALIZATION_MODE = targetWorkspaceRealization.mode;
+      env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT = targetWorkspaceRealization.authoritativeRoot;
+    }
     if (runtimeServiceIntents.length > 0) {
       env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);
     }
@@ -812,6 +823,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             filesystemScope,
             managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
             extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            pathAliases: targetWorkspaceRealization?.mode === "copy"
+              ? targetWorkspaceRealization.pathAliases
+              : [],
+            outboundRestorePaths: targetWorkspaceRealization?.outboundRestorePaths ?? [],
             homeDir: filesystemScope ? effectiveCodexHome : null,
             networkScope,
             networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
