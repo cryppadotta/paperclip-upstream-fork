@@ -68,13 +68,12 @@ export function diffStatusCardFingerprint(previous: StatusCardFingerprint | null
 }
 
 export function filterStatusCardChanges(changes: StatusCardDeltaChange[], policy: StatusCardRefreshPolicy) {
-  const terminalTransitions = new Set(["blocked", "in_review", "done", "cancelled"]);
   return changes.filter((change) => {
     if (policy.triggers.anyUpdate) return true;
     if ((change.changeKind === "new" || change.changeKind === "removed") && policy.triggers.membershipChanges) return true;
     if (change.changeKind === "assignee" && policy.triggers.assigneeChanges) return true;
     if (change.changeKind === "human_comment" && policy.triggers.humanComments) return true;
-    if (change.changeKind === "status" && policy.triggers.statusTransitions && change.to && terminalTransitions.has(change.to)) return true;
+    if (change.changeKind === "status" && policy.triggers.statusTransitions) return true;
     return false;
   });
 }

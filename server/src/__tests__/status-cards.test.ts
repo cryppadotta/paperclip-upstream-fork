@@ -220,6 +220,43 @@ describeEmbeddedPostgres("status card routes", () => {
     expect((await request(app).get(`/api/status-cards/${created.body.id}`)).status).toBe(404);
   });
 
+  it("continues evaluating due cards after one scheduled refresh fails", async () => {
+    const company = await seedCompany();
+    const now = new Date("2026-07-24T12:00:00.000Z");
+    const refreshPolicy = { ...defaultStatusCardRefreshPolicy, mode: "interval" as const, intervalMinutes: 15 };
+    await db.insert(statusCards).values([
+      {
+        companyId: company.id,
+        createdByUserId: "board-user",
+        interestPrompt: "Malformed saved query",
+        queries: [{ scope: "invalid" } as never],
+        queryVersion: 1,
+        refreshPolicy,
+        state: "active",
+        fingerprint: {},
+        nextEvalAt: new Date(now.getTime() - 1000),
+      },
+      {
+        companyId: company.id,
+        createdByUserId: "board-user",
+        interestPrompt: "Valid saved query",
+        queries: [{ scope: "issues", status: ["blocked", "done"], updatedWithin: "7d", sort: "updated", limit: 20, offset: 0 }],
+        queryVersion: 1,
+        refreshPolicy,
+        state: "active",
+        fingerprint: {},
+        nextEvalAt: new Date(now.getTime() - 1000),
+      },
+    ]);
+
+    const tick = await statusCardService(db).tickDueStatusCards(now);
+
+    expect(tick).toMatchObject({ evaluated: 2, enqueued: [] });
+    const cards = await db.select().from(statusCards);
+    const valid = cards.find((card) => card.interestPrompt === "Valid saved query")!;
+    expect(valid.nextEvalAt).toEqual(new Date("2026-07-24T12:15:00.000Z"));
+  });
+
   it("normalizes legacy saved queries when hydrating watched-issue counts", async () => {
     const company = await seedCompany();
     await enableStatusCards();

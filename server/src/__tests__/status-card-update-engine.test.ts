@@ -13,9 +13,9 @@ import {
 describe("status card update engine", () => {
   const defaultPolicy = statusCardRefreshPolicySchema.parse({ mode: "interval", intervalMinutes: 15 });
 
-  it("filters in-progress churn while retaining terminal transitions and membership changes", () => {
+  it("retains non-terminal and terminal status transitions plus membership changes", () => {
     const changes = diffStatusCardFingerprint({
-      churn: { status: "in_progress", updatedAt: "2026-07-23T10:00:00.000Z", identifier: "PAP-1", title: "Churn" },
+      churn: { status: "todo", updatedAt: "2026-07-23T10:00:00.000Z", identifier: "PAP-1", title: "Churn" },
       done: { status: "in_progress", updatedAt: "2026-07-23T10:00:00.000Z", identifier: "PAP-2", title: "Done" },
       removed: { status: "blocked", updatedAt: "2026-07-23T10:00:00.000Z", identifier: "PAP-3", title: "Removed" },
     }, {
@@ -25,6 +25,7 @@ describe("status card update engine", () => {
     });
 
     expect(filterStatusCardChanges(changes, defaultPolicy).map((change) => [change.identifier, change.changeKind])).toEqual([
+      ["PAP-1", "status"],
       ["PAP-2", "status"],
       ["PAP-4", "new"],
       ["PAP-3", "removed"],

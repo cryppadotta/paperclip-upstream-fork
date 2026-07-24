@@ -694,8 +694,15 @@ export function statusCardService(
         .returning();
       if (!claimed) continue;
       evaluated += 1;
-      const result = await requestRefresh(claimed.id, { trigger: claimed.refreshPolicy.mode === "reactive" ? "reactive" : "interval", now });
-      if (result.enqueued && result.generatingIssue) enqueued.push({ cardId: claimed.id, generatingIssue: result.generatingIssue });
+      try {
+        const result = await requestRefresh(claimed.id, { trigger: claimed.refreshPolicy.mode === "reactive" ? "reactive" : "interval", now });
+        if (result.enqueued && result.generatingIssue) enqueued.push({ cardId: claimed.id, generatingIssue: result.generatingIssue });
+      } catch (err) {
+        logger.warn(
+          { err, cardId: claimed.id, companyId: claimed.companyId },
+          "status card scheduled refresh failed",
+        );
+      }
     }
     return { evaluated, enqueued };
   }
