@@ -487,6 +487,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const [reviewedWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(reviewedWatchdog?.lastReviewedFingerprint).toBe(oldFingerprint);
     expect(reviewedWatchdog?.lastReviewedFingerprint).not.toBe(newerFingerprint);
+    expect(reviewedWatchdog?.lastReviewedStopSnapshot).toBeNull();
     const [reopenedWatchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
     expect(reopenedWatchdogIssue).toMatchObject({
       status: "todo",
