@@ -297,6 +297,14 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
 }
 
+export function redactSuccessfulRunHandoffEvidence(
+  value: string | null,
+  currentUserRedactionOptions?: CurrentUserRedactionOptions,
+) {
+  if (!value) return null;
+  return redactSensitiveText(redactCurrentUserText(value, currentUserRedactionOptions));
+}
+
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
@@ -7891,7 +7899,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function buildDetectedSuccessfulRunProgressSummary(run: typeof heartbeatRuns.$inferSelect) {
+  function buildDetectedSuccessfulRunProgressSummary(
+    run: typeof heartbeatRuns.$inferSelect,
+    currentUserRedactionOptions: CurrentUserRedactionOptions,
+  ) {
     const resultJson = parseObject(run.resultJson);
     const candidates = [
       hasUnmanagedBackgroundTaskEvidence(resultJson) ? UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON : null,
@@ -7905,7 +7916,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!summary) return null;
     return redactDetectedSuccessfulRunProgressSummaryForBoard(
       summary,
-      await getCurrentUserRedactionOptions(),
+      currentUserRedactionOptions,
     );
   }
 
@@ -7972,14 +7983,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       : null;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const detectedProgressSummary = buildDetectedSuccessfulRunProgressSummary(
+      run,
+      currentUserRedactionOptions,
+    );
     const resultJson = parseObject(run.resultJson);
-    const finalReport = [
-      readNonEmptyString(resultJson.summary),
-      readNonEmptyString(resultJson.result),
-      readNonEmptyString(resultJson.message),
-    ].find((value): value is string => Boolean(value)) ?? null;
-    const nextAction = readNonEmptyString(run.nextAction);
+    const finalReport = redactSuccessfulRunHandoffEvidence(
+      [
+        readNonEmptyString(resultJson.summary),
+        readNonEmptyString(resultJson.result),
+        readNonEmptyString(resultJson.message),
+      ].find((value): value is string => Boolean(value)) ?? null,
+      currentUserRedactionOptions,
+    );
+    const nextAction = redactSuccessfulRunHandoffEvidence(
+      readNonEmptyString(run.nextAction),
+      currentUserRedactionOptions,
+    );
 
     const [
       activeExecutionPath,

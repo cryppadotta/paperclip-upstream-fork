@@ -102,6 +102,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
+  redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
 import {
   readHotRestartIntent,
@@ -3011,13 +3012,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(redactedDetectedSummary).toContain("***REDACTED***");
     expect(redactedDetectedSummary).not.toContain(bearerSecret);
     expect(redactedDetectedSummary).not.toContain(apiKeySecret);
+    expect(
+      redactSuccessfulRunHandoffEvidence(
+        `Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+        { enabled: false },
+      ),
+    ).toBe("Authorization: Bearer ***REDACTED*** OPENAI_API_KEY=***REDACTED***");
 
     mockAdapterExecute.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: "Made progress but left the issue open.",
+      summary: `Made progress but left the issue open. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
       resultJson: {
         message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
       },
