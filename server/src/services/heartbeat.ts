@@ -7971,7 +7971,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       : null;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
+    const [detectedProgressSummary, livenessInput] = await Promise.all([
+      buildDetectedSuccessfulRunProgressSummary(run),
+      buildRunLivenessInput(run, parseObject(run.resultJson)),
+    ]);
 
     const [
       activeExecutionPath,
@@ -8131,6 +8134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       livenessState: run.livenessState as RunLivenessState | null,
       detectedProgressSummary,
+      evidence: livenessInput.evidence ?? null,
       taskKey,
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issues } from "@paperclipai/db";
 import type { IssueCommentMetadata, IssueCommentPresentation, RunLivenessState } from "@paperclipai/shared";
 import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
+import { hasConcreteActionEvidence, type RunLivenessEvidenceInput } from "../run-liveness.js";
 
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
@@ -33,13 +34,6 @@ const UNVERIFIED_WORK_RE = new RegExp([
   String.raw`\b(?:tests?|verification|validation|compilation|build)\s+(?:could not|couldn't|cannot|can't)\s+(?:be\s+)?(?:run|completed|performed|verified)\b`,
   String.raw`\b(?:not installed|missing dependency|missing toolchain)\b.{0,120}\b(?:test|verify|validation|build|run)\b`,
 ].join("|"), "i");
-
-const PRODUCTIVE_SUCCESS_LIVENESS_STATES = new Set<RunLivenessState>([
-  "advanced",
-  "completed",
-  "blocked",
-  "needs_followup",
-]);
 
 const IDEMPOTENT_HANDOFF_WAKE_STATUSES = [
   "queued",
@@ -331,7 +325,10 @@ export function successfulRunHandoffDoneGateReason(contextSnapshot: unknown, iss
   const contextIssueId = readString(context.issueId) ?? readString(context.taskId);
   if (issueId && contextIssueId !== issueId) return null;
   if (context.doneDispositionAllowed !== false) return null;
-  const disposition = readString(context.sourceReportedDisposition) ?? "non_done";
+  const disposition = readString(context.sourceReportedDisposition);
+  if (!disposition) {
+    return "Source run lacks affirmative structured completion and verification evidence; corrective handoff cannot mark the issue done";
+  }
   const dispositionLabel = disposition.replace(/_/g, " ");
   return `Source run reported ${dispositionLabel} work; corrective handoff cannot mark the issue done`;
 }
@@ -357,21 +354,22 @@ function isCommentDrivenWake(run: HeartbeatRunRow) {
     wakeReason === "issue_reopened_via_comment";
 }
 
-function isProductiveSuccessfulRun(input: {
+export function hasAffirmativeSuccessfulRunCompletionEvidence(input: {
   livenessState: RunLivenessState | null;
-  detectedProgressSummary: string | null;
+  evidence: Partial<RunLivenessEvidenceInput> | null;
 }) {
-  if (input.livenessState && PRODUCTIVE_SUCCESS_LIVENESS_STATES.has(input.livenessState)) return true;
-  return Boolean(input.detectedProgressSummary);
+  if (input.livenessState !== "advanced" && input.livenessState !== "completed") return false;
+  return hasConcreteActionEvidence(input.evidence);
 }
 
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   sourceRunId: string;
   sourceReportedDisposition?: SuccessfulRunReportedDisposition;
+  doneDispositionAllowed: boolean;
 }) {
   const issueLabel = input.issueIdentifier ?? "this issue";
-  const doneAllowed = input.sourceReportedDisposition == null;
+  const doneAllowed = input.doneDispositionAllowed;
   return [
     `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
     ...(doneAllowed
@@ -382,7 +380,7 @@ export function buildSuccessfulRunHandoffInstruction(input: {
           ? "The source run reported that work is blocked. You must not mark this issue `done`; record a valid blocked or continuation disposition."
           : input.sourceReportedDisposition === "unverified"
             ? "The source run reported that verification could not be completed. You must not mark this issue `done`; keep it active or blocked until verification can occur."
-            : "The source run produced no durable control-plane evidence. You must not mark this issue `done`; keep it active or blocked and record a verifiable continuation path.",
+            : "The source run lacks affirmative structured completion and verification evidence. You must not mark this issue `done`; keep it active or blocked and record a verifiable continuation path.",
       ]),
     "",
     "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
@@ -419,6 +417,7 @@ export function decideSuccessfulRunHandoff(input: {
   agent: AgentRow | null;
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
+  evidence: Partial<RunLivenessEvidenceInput> | null;
   taskKey: string | null;
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
@@ -457,9 +456,6 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasActiveRoutineContinuation) {
     return { kind: "skip", reason: "active routine continuation owns the next action" };
   }
-  if (!isProductiveSuccessfulRun(input)) {
-    return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
-  }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
   if (input.hasPendingInteractionOrApproval) {
@@ -475,7 +471,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
 
   const sourceReportedDisposition = classifySuccessfulRunReportedDisposition(input);
-  const doneDispositionAllowed = sourceReportedDisposition == null;
+  const doneDispositionAllowed = hasAffirmativeSuccessfulRunCompletionEvidence(input);
   const validDispositionOptions = doneDispositionAllowed
     ? [...SUCCESSFUL_RUN_HANDOFF_OPTIONS]
     : SUCCESSFUL_RUN_HANDOFF_OPTIONS.filter((option) => option !== "mark_done");
@@ -484,6 +480,7 @@ export function decideSuccessfulRunHandoff(input: {
     issueIdentifier: issue.identifier,
     sourceRunId: run.id,
     sourceReportedDisposition,
+    doneDispositionAllowed,
   });
   const payload = withRecoveryModelProfileHint({
     issueId: issue.id,
@@ -497,7 +494,9 @@ export function decideSuccessfulRunHandoff(input: {
     detectedProgressSummary: input.detectedProgressSummary,
     sourceReportedDisposition,
     doneDispositionAllowed,
-    verificationEvidenceStatus: sourceReportedDisposition === "unverified"
+    verificationEvidenceStatus: doneDispositionAllowed
+      ? "affirmative"
+      : sourceReportedDisposition === "unverified"
       ? "reported_missing"
       : sourceReportedDisposition === "no_control_plane_evidence"
         ? "control_plane_evidence_missing"

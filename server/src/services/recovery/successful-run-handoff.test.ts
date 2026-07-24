@@ -9,6 +9,7 @@ import {
   buildSuccessfulRunHandoffRequiredNotice,
   classifySuccessfulRunReportedDisposition,
   decideSuccessfulRunHandoff,
+  hasAffirmativeSuccessfulRunCompletionEvidence,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isSuccessfulRunHandoffRequiredNoticeBody,
@@ -49,6 +50,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     agent,
     livenessState: "advanced",
     detectedProgressSummary: "Run produced concrete action evidence: 1 issue comment(s)",
+    evidence: { workProductsCreated: 1 },
     taskKey: "issue-1",
     hasActiveExecutionPath: false,
     hasQueuedWake: false,
@@ -88,7 +90,7 @@ describe("successful run handoff decision", () => {
       resumeRequiresNormalModel: true,
       sourceReportedDisposition: null,
       doneDispositionAllowed: true,
-      verificationEvidenceStatus: "not_recorded",
+      verificationEvidenceStatus: "affirmative",
     });
     expect(decision.contextSnapshot).toMatchObject({
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -132,7 +134,7 @@ describe("successful run handoff decision", () => {
 
   it("gates done when the source final message says verification could not run", () => {
     const detectedProgressSummary = "coqc is not installed, so local compilation could not run.";
-    const decision = decide({ detectedProgressSummary });
+    const decision = decide({ detectedProgressSummary, evidence: null });
 
     expect(classifySuccessfulRunReportedDisposition({
       livenessState: "advanced",
@@ -154,6 +156,7 @@ describe("successful run handoff decision", () => {
     const decision = decide({
       livenessState: "needs_followup",
       detectedProgressSummary: "Implemented the change locally.",
+      evidence: null,
     });
 
     expect(decision.kind).toBe("enqueue");
@@ -170,6 +173,78 @@ describe("successful run handoff decision", () => {
     );
   });
 
+  it("gates done for confident completion prose without structured evidence", () => {
+    const decision = decide({
+      livenessState: "needs_followup",
+      detectedProgressSummary: "Completed. The certificate files are correct and ready to ship.",
+      evidence: null,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      doneDispositionAllowed: false,
+      verificationEvidenceStatus: "control_plane_evidence_missing",
+    });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+  });
+
+  it("gates done when verification failed and left no durable evidence", () => {
+    const decision = decide({
+      livenessState: "needs_followup",
+      detectedProgressSummary: "Verifier finished with 0/3 checks passing.",
+      evidence: null,
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({ doneDispositionAllowed: false });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+  });
+
+  it("allows done only with affirmative structured evidence and completion-capable liveness", () => {
+    expect(hasAffirmativeSuccessfulRunCompletionEvidence({
+      livenessState: "advanced",
+      evidence: { workProductsCreated: 1 },
+    })).toBe(true);
+    expect(hasAffirmativeSuccessfulRunCompletionEvidence({
+      livenessState: "blocked",
+      evidence: { workProductsCreated: 1 },
+    })).toBe(false);
+
+    const decision = decide({
+      livenessState: "advanced",
+      detectedProgressSummary: "Created the verified release artifact.",
+      evidence: { workProductsCreated: 1, toolOrActionEventsCreated: 2 },
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      doneDispositionAllowed: true,
+      verificationEvidenceStatus: "affirmative",
+    });
+    expect(decision.payload.validDispositionOptions).toContain("mark_done");
+  });
+
+  it("gates done when all control-plane writes failed", () => {
+    const decision = decide({
+      livenessState: "needs_followup",
+      detectedProgressSummary: "Completed, but every control-plane write failed.",
+      evidence: {
+        issueCommentsCreated: 0,
+        documentRevisionsCreated: 0,
+        workProductsCreated: 0,
+        activityEventsCreated: 0,
+        toolOrActionEventsCreated: 0,
+      },
+    });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({ doneDispositionAllowed: false });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
+  });
   it("does not gate done for an intentional non-verification statement with durable evidence", () => {
     expect(classifySuccessfulRunReportedDisposition({
       livenessState: "advanced",
@@ -262,11 +337,16 @@ describe("successful run handoff decision", () => {
     });
   });
 
-  it("does not queue when a successful run has no progress signal", () => {
-    expect(decide({ livenessState: null, detectedProgressSummary: null })).toEqual({
-      kind: "skip",
-      reason: "successful run did not produce handoff-relevant progress",
+  it("queues a non-done handoff when a clean run has no disposition or evidence", () => {
+    const decision = decide({ livenessState: null, detectedProgressSummary: null, evidence: null });
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.payload).toMatchObject({
+      doneDispositionAllowed: false,
+      verificationEvidenceStatus: "not_recorded",
     });
+    expect(decision.payload.validDispositionOptions).not.toContain("mark_done");
   });
 
   it("does not treat adapter or runtime failures as missing-disposition handoffs", () => {
