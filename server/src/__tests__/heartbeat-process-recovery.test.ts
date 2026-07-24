@@ -1169,6 +1169,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: issueId,
       companyId,
       title: "Retry transient Codex failure without blocking",
+      description: "Verify the successful-run handoff and choose an honest disposition.",
       status: "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
@@ -2780,6 +2781,23 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resumeIntent: true,
       resumeFromRunId: runId,
     });
+    const handoffPayload = handoffWakeups[0]?.payload as Record<string, unknown>;
+    for (const key of [
+      "modelProfile",
+      "recoveryIntent",
+      "allowDeliverableWork",
+      "allowDocumentUpdates",
+      "resumeRequiresNormalModel",
+    ]) {
+      expect(handoffPayload).not.toHaveProperty(key);
+    }
+    expect(handoffPayload.instruction).toContain("Retry transient Codex failure without blocking");
+    expect(handoffPayload.instruction).toContain(
+      "Verify the successful-run handoff and choose an honest disposition.",
+    );
+    expect(handoffPayload.instruction).toContain(
+      "> Implemented the backend detector, but did not choose a final issue state.",
+    );
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     const handoffComment = comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY);

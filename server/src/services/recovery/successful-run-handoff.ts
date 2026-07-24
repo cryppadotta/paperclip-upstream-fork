@@ -45,7 +45,15 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = Pick<
   typeof issues.$inferSelect,
-  "id" | "companyId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId" | "executionState"
+  | "id"
+  | "companyId"
+  | "identifier"
+  | "title"
+  | "description"
+  | "status"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "executionState"
 >;
 type AgentRow = Pick<typeof agents.$inferSelect, "id" | "companyId" | "status">;
 type NoticeIssue = Pick<typeof issues.$inferSelect, "id" | "identifier" | "title" | "status">;
@@ -302,6 +310,15 @@ function readString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function ellipsize(value: string | null, maxLength: number) {
+  if (!value || value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
+function blockquote(value: string) {
+  return value.split("\n").map((line) => `> ${line}`).join("\n");
+}
+
 function isCorrectiveHandoffRun(run: HeartbeatRunRow) {
   const context = readRecord(run.contextSnapshot);
   return context.handoffRequired === true ||
@@ -333,15 +350,32 @@ function isProductiveSuccessfulRun(input: {
 
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
+  issueTitle: string;
+  issueDescription: string | null;
   sourceRunId: string;
+  finalReport: string | null;
+  nextAction: string | null;
+  detectedProgressSummary: string | null;
 }) {
   const issueLabel = input.issueIdentifier ?? "this issue";
+  const description = ellipsize(readString(input.issueDescription), 1200);
+  const report = ellipsize(
+    readString(input.finalReport) ?? readString(input.detectedProgressSummary),
+    2000,
+  );
+  const nextAction = readString(input.nextAction);
   return [
-    `Your previous run on ${issueLabel} succeeded, but the issue is still in \`in_progress\` and Paperclip cannot identify a valid issue disposition.`,
+    "## What you were supposed to do",
+    `You are assigned ${issueLabel}: ${input.issueTitle}.`,
+    ...(description ? ["", description] : []),
     "",
-    "This is a status-only retry to the original agent. Record a disposition; do not start new work.",
+    "## What happened",
+    "Your last run on this issue ended successfully, but the issue is still `in_progress` and has no valid disposition — Paperclip cannot tell whether the work is finished, blocked, or unfinished.",
+    ...(report ? ["", "Here is your own final report from that run:", "", blockquote(report)] : []),
+    ...(nextAction ? ["", `Your recorded next action was: ${nextAction}`] : []),
     "",
-    "Resolve the missing disposition before creating or revising any new artifacts. Choose **exactly one** outcome and perform the matching Paperclip action:",
+    "## Your options",
+    "Choose **exactly one** outcome and perform the matching Paperclip action:",
     "",
     "**Is the issue finished?**",
     "1. Mark it `done` (scope complete) or `cancelled` (intentionally stopped).",
@@ -353,9 +387,12 @@ export function buildSuccessfulRunHandoffInstruction(input: {
     "3. Mark it `blocked` with first-class blockers (`blockedByIssueIds`) or a clearly named unblock owner/action.",
     "",
     "**Is there more work to do?**",
-    `4. Either delegate follow-up work (create/link a follow-up issue and block this one on it, or close this issue if its scope is independently complete) or record an explicit continuation path with \`resumeIntent: true\`, \`resumeFromRunId: ${input.sourceRunId}\`, and a concrete next action. Do not perform the remaining source work in this recovery run; the follow-up/resume wake must use the normal model lane.`,
+    `4. Either delegate follow-up work (create/link a follow-up issue and block this one on it, or close this issue if its scope is independently complete) or record an explicit continuation path with \`resumeIntent: true\`, \`resumeFromRunId: ${input.sourceRunId}\`, and a concrete next action.`,
     "",
-    "Comments, document revisions, work-product writes, and continuation summaries are supporting evidence only — they do not satisfy this handoff unless the issue state/path also records one valid disposition. If this wake is status-only recovery, document or plan updates are not allowed.",
+    "## What you need to do",
+    "Read your own report above and decide honestly. If it says blocked / could-not-verify / not-installed / not-mounted or similar, this issue is NOT done — mark it blocked (with the unblock owner/action) or continue the work now. Only mark `done` if you can point at concrete verification evidence (a passing test, an observed behavior, a confirmed artifact). If verification is missing, do the smallest verification now — you are on your normal model and allowed to work in this wake — and only then choose the disposition. Do not restate progress in a comment as a substitute for a disposition.",
+    "",
+    "Comments, document revisions, work-product writes, and continuation summaries are supporting evidence only — they do not satisfy this handoff unless the issue state/path also records one valid disposition.",
   ].join("\n");
 }
 
@@ -365,6 +402,8 @@ export function decideSuccessfulRunHandoff(input: {
   agent: AgentRow | null;
   livenessState: RunLivenessState | null;
   detectedProgressSummary: string | null;
+  finalReport: string | null;
+  nextAction: string | null;
   taskKey: string | null;
   hasActiveExecutionPath: boolean;
   hasQueuedWake: boolean;
@@ -422,7 +461,12 @@ export function decideSuccessfulRunHandoff(input: {
 
   const instruction = buildSuccessfulRunHandoffInstruction({
     issueIdentifier: issue.identifier,
+    issueTitle: issue.title,
+    issueDescription: issue.description,
     sourceRunId: run.id,
+    finalReport: input.finalReport,
+    nextAction: input.nextAction,
+    detectedProgressSummary: input.detectedProgressSummary,
   });
   const payload = withRecoveryModelProfileHint({
     issueId: issue.id,
@@ -441,7 +485,7 @@ export function decideSuccessfulRunHandoff(input: {
     resumeFromRunId: run.id,
     ...(input.taskKey ? { taskKey: input.taskKey } : {}),
     instruction,
-  }, "status_only");
+  }, "normal_model");
 
   return {
     kind: "enqueue",
@@ -456,6 +500,6 @@ export function decideSuccessfulRunHandoff(input: {
       ...payload,
       wakeReason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
       livenessState: input.livenessState,
-    }, "status_only"),
+    }, "normal_model"),
   };
 }
