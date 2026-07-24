@@ -321,7 +321,7 @@ export function createSecretProposalsService(db: Db) {
       proposal.companyId,
       {
         name,
-        key: normalizeSecretKey(name.split("/").at(-1) || proposal.proposedKey || ""),
+        key: proposal.proposedKey || normalizeSecretKey(name.split("/").at(-1) || ""),
         provider: "local_encrypted",
         providerConfigId: input.overrides?.providerConfigId ?? null,
         value,
@@ -495,7 +495,7 @@ export function createSecretProposalsService(db: Db) {
       }).where(and(eq(companySecretProposals.id, proposalId), eq(companySecretProposals.status, "pending")))
         .returning().then((rows) => rows[0] ?? null);
       if (!updated) throw conflict("Proposal is no longer pending");
-      const dependents = proposal.kind === "secret" && (status === "rejected" || status === "expired")
+      const dependents = proposal.kind === "secret" && (status === "rejected" || status === "expired" || status === "withdrawn")
         ? await tx.update(companySecretProposals).set({
             status: "rejected",
             resolvedByUserId: input.resolvedByUserId ?? null,

@@ -187,7 +187,13 @@ export function secretRoutes(db: Db) {
           companyId: context.companyId,
           heartbeatRunId: context.heartbeatRunId,
           registerForRedaction: (value) => runRedactions.register(context.companyId, context.heartbeatRunId, value),
-        }, { name: body.name, description: body.description, value: body.value, justification: body.justification })
+        }, {
+          name: body.name,
+          key: body.key,
+          description: body.description,
+          value: body.value,
+          justification: body.justification,
+        })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
             secretId: body.secretId, secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,

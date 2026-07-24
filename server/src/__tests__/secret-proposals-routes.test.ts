@@ -164,7 +164,13 @@ describeEmbeddedPostgres("secret proposal routes", () => {
 
     const secretResponse = await request(createAgentApp(fixture))
       .post("/api/agents/me/secret-proposals")
-      .send({ kind: "secret", name: "dev/vendor/token", value: "top-secret", justification: "Needed by task" });
+      .send({
+        kind: "secret",
+        name: "dev/vendor/token",
+        key: "VENDOR_TOKEN",
+        value: "top-secret",
+        justification: "Needed by task",
+      });
     expect(secretResponse.status).toBe(201);
     expect(JSON.stringify(secretResponse.body)).not.toContain("top-secret");
     expect(secretResponse.body).not.toHaveProperty("valueFingerprintSha256");
@@ -212,7 +218,12 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       expect.objectContaining({ id: bindingResponse.body.id, status: "approved" }),
     ]));
     const [secret] = await db.select().from(companySecrets);
-    expect(secret).toMatchObject({ name: "dev/vendor/token", createdByAgentId: fixture.agentId, createdByUserId: "board-user" });
+    expect(secret).toMatchObject({
+      name: "dev/vendor/token",
+      key: "vendor_token",
+      createdByAgentId: fixture.agentId,
+      createdByUserId: "board-user",
+    });
     expect(await db.select().from(companySecretBindings)).toEqual([
       expect.objectContaining({ secretId: secret.id, targetId: fixture.agentId, configPath: "env.VENDOR_TOKEN" }),
     ]);
@@ -297,6 +308,41 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       expect.objectContaining({ id: secretProposal.body.id, status: "withdrawn" }),
     ]);
   });
+
+  it("cascade-rejects pending binding proposals when their secret proposal is withdrawn", async () => {
+    const fixture = await seedRun();
+    const secretProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/cascade/token",
+        value: "cascade-secret",
+        justification: "Temporary access",
+      });
+    const bindingProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretProposalId: secretProposal.body.id,
+        configPath: "env.CASCADE_TOKEN",
+        justification: "Use the temporary secret",
+      });
+    expect(bindingProposal.status).toBe(201);
+
+    const withdrawn = await request(createAgentApp(fixture))
+      .delete(`/api/agents/me/secret-proposals/${secretProposal.body.id}`);
+    expect(withdrawn.status).toBe(200);
+
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: secretProposal.body.id, status: "withdrawn" }),
+      expect.objectContaining({
+        id: bindingProposal.body.id,
+        status: "rejected",
+        resolutionReason: `Dependent secret proposal ${secretProposal.body.id} was withdrawn`,
+      }),
+    ]));
+  });
+
   it("holds the org graph stable until binding approval commits", async () => {
     const fixture = await seedRun();
     const targetAgentId = randomUUID();
