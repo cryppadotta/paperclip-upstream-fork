@@ -218,10 +218,10 @@ describeEmbeddedPostgres("agent secret routes", () => {
 
     const denied = await request(createApp(fixture)).post("/api/agents/me/secrets/unbound_key/value");
     expect(denied.status).toBe(403);
-    expect(await db.select().from(secretAccessEvents)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ secretId: unboundSecret.id, outcome: "failure", errorCode: "binding_missing" }),
+    expect(await db.select().from(secretAccessEvents)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ secretId: unboundSecret.id }),
     ]));
-    expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
+    expect(await db.select().from(activityLog)).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ action: "secret.value.read", entityId: unboundSecret.id }),
     ]));
   });

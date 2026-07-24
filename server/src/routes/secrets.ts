@@ -280,23 +280,22 @@ export function secretRoutes(db: Db) {
     const context = agentSecretContext(req);
     const available = await svc.listAgentSecretAccess(context.companyId, context);
     const secret = available.find((entry) => entry.key === req.params.key);
-    const unresolvedSecret = secret ? null : await svc.getByKey(context.companyId, req.params.key);
-    if (!secret && !unresolvedSecret) throw forbidden("Secret access is not granted for this agent");
+    if (!secret) throw forbidden("Secret access is not granted for this agent");
     const resolution = await svc.resolveSecretValueForAgentAccess(
       context.companyId,
-      secret?.secretId ?? unresolvedSecret!.id,
-      secret?.versionSelector ?? "latest",
+      secret.secretId,
+      secret.versionSelector,
       {
         ...context,
-        configPath: secret?.configPath ?? `access.${req.params.key}`,
-        bindingId: secret?.bindingId ?? null,
+        configPath: secret.configPath,
+        bindingId: secret.bindingId,
         issueId: null,
         registerForRedaction: (value) => runRedactions.register(context.companyId, context.heartbeatRunId, value),
       },
     );
     res.set("Cache-Control", "no-store");
     res.json({
-      key: secret?.key ?? unresolvedSecret!.key,
+      key: secret.key,
       value: resolution.value,
       version: resolution.version,
     });
