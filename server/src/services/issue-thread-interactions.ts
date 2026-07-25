@@ -1230,19 +1230,6 @@ export function issueThreadInteractionService(db: Db) {
         }
       }
 
-      // A terminal issue must not regain pending actionable cards — terminal
-      // expiry would otherwise not run until a later interaction-list request.
-      // Idempotent reuse above stays allowed so retries of a pre-close create
-      // keep returning the (by now expired) original.
-      const issueRow = await db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-        .then((rows) => rows[0] ?? null);
-      if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
-        throw conflict("Cannot create an interaction on a closed issue");
-      }
-
       if (data.sourceCommentId) {
         const sourceComment = await db
           .select({
@@ -1284,24 +1271,42 @@ export function issueThreadInteractionService(db: Db) {
 
       let created: IssueThreadInteractionRow;
       try {
-        [created] = await db
-          .insert(issueThreadInteractions)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            kind: data.kind,
-            status: "pending",
-            continuationPolicy: data.continuationPolicy,
-            idempotencyKey: data.idempotencyKey ?? null,
-            sourceCommentId: data.sourceCommentId ?? null,
-            sourceRunId: data.sourceRunId ?? null,
-            title: data.title ?? null,
-            summary: data.summary ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            payload: data.payload,
-          })
-          .returning();
+        // A terminal issue must not regain pending actionable cards. FOR SHARE
+        // on the issue row serializes this insert against the terminal status
+        // transition's row lock: either the close committed first and this
+        // read rejects the create, or the insert commits before the close
+        // proceeds and the close's expiry sweep collects the new row.
+        // Idempotent reuse above stays allowed so retries of a pre-close
+        // create keep returning the (by now expired) original.
+        created = await db.transaction(async (tx) => {
+          const [issueRow] = await tx
+            .select({ status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+            .for("share");
+          if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
+            throw conflict("Cannot create an interaction on a closed issue");
+          }
+          const [row] = await tx
+            .insert(issueThreadInteractions)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              kind: data.kind,
+              status: "pending",
+              continuationPolicy: data.continuationPolicy,
+              idempotencyKey: data.idempotencyKey ?? null,
+              sourceCommentId: data.sourceCommentId ?? null,
+              sourceRunId: data.sourceRunId ?? null,
+              title: data.title ?? null,
+              summary: data.summary ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              payload: data.payload,
+            })
+            .returning();
+          return row;
+        });
       } catch (error) {
         if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
