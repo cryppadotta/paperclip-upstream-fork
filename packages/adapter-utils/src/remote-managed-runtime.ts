@@ -3,9 +3,11 @@ import { GIT_ARCHIVE_EXCLUDES } from "./git-workspace-sync.js";
 import {
   type SshRemoteExecutionSpec,
   prepareWorkspaceForSshExecution,
+  runSshCommand,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
+import type { SandboxManagedRuntimeAssetRestoreContext } from "./sandbox-managed-runtime.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
 
@@ -14,6 +16,7 @@ export interface RemoteManagedRuntimeAsset {
   localDir: string;
   followSymlinks?: boolean;
   exclude?: string[];
+  restore?: (ctx: SandboxManagedRuntimeAssetRestoreContext) => Promise<void>;
 }
 
 export interface PreparedRemoteManagedRuntime {
@@ -37,6 +40,17 @@ function asString(value: unknown): string {
 
 function asNumber(value: unknown): number {
   return typeof value === "number" ? value : Number(value);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string): Promise<Buffer> {
+  const result = await runSshCommand(spec, `base64 < ${shellQuote(remotePath)}`, {
+    maxBuffer: 1024 * 1024,
+  });
+  return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
 }
 
 export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec | null) {
@@ -141,15 +155,23 @@ export async function prepareRemoteManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
-      if (!preparedWorkspace || !baselineSnapshot) return;
-      await restoreWorkspaceFromSshExecution({
-        spec: input.spec,
-        localDir: input.workspaceLocalDir,
-        remoteDir: workspaceRemoteDir,
-        baselineSnapshot,
-        restoreGitHistory: preparedWorkspace.gitBacked,
-        onProgress,
-      });
+      if (preparedWorkspace && baselineSnapshot) {
+        await restoreWorkspaceFromSshExecution({
+          spec: input.spec,
+          localDir: input.workspaceLocalDir,
+          remoteDir: workspaceRemoteDir,
+          baselineSnapshot,
+          restoreGitHistory: preparedWorkspace.gitBacked,
+          onProgress,
+        });
+      }
+      for (const asset of input.assets ?? []) {
+        if (!asset.restore) continue;
+        await asset.restore({
+          assetDir: path.posix.join(runtimeRootDir, asset.key),
+          readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
+        });
+      }
     },
   };
 }
