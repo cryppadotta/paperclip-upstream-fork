@@ -56,6 +56,7 @@ import {
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
 type InteractionActor = {
@@ -1257,12 +1258,25 @@ export function issueThreadInteractionService(db: Db) {
           throw unprocessable("Tool-action confirmations cannot be addressed to agents");
         }
         const addressee = await db
-          .select({ companyId: agents.companyId })
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            reportsTo: agents.reportsTo,
+            status: agents.status,
+          })
           .from(agents)
           .where(eq(agents.id, normalizedData.addresseeAgentId))
           .then((rows) => rows[0] ?? null);
         if (!addressee || addressee.companyId !== issue.companyId) {
           throw unprocessable("addresseeAgentId must belong to the same company");
+        }
+        const invokability = await evaluateAgentInvokabilityFromDb(db, addressee);
+        if (!invokability.invokable) {
+          throw unprocessable("addresseeAgentId must reference an invokable agent", {
+            reason: invokability.reason,
+            ...invokability.details,
+          });
         }
       }
 

@@ -203,6 +203,109 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it.each(["paused", "pending_approval", "terminated"])(
+    "rejects %s interaction addressees",
+    async (status) => {
+      const { companyId, issueId } = await seedConfirmationIssue(`Reject ${status} addressee`);
+      const creatorAgentId = randomUUID();
+      const addresseeAgentId = randomUUID();
+      await db.insert(agents).values([
+        {
+          id: creatorAgentId,
+          companyId,
+          name: "Creator",
+          role: "engineer",
+          status: "active",
+        },
+        {
+          id: addresseeAgentId,
+          companyId,
+          name: "Unavailable addressee",
+          role: "engineer",
+          status,
+        },
+      ]);
+
+      await expect(interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions",
+          addresseeAgentId,
+          payload: {
+            version: 1,
+            questions: [{
+              id: "scope",
+              prompt: "Which scope?",
+              selectionMode: "single",
+              options: [{ id: "phase-1", label: "Phase 1" }],
+            }],
+          },
+        },
+        { agentId: creatorAgentId },
+      )).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("invokable agent"),
+        details: expect.objectContaining({ reason: status }),
+      });
+    },
+  );
+
+  it("rejects interaction addressees with an invalid reporting chain", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject uninvokable addressee chain");
+    const creatorAgentId = randomUUID();
+    const managerAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+      },
+      {
+        id: managerAgentId,
+        companyId,
+        name: "Terminated manager",
+        role: "manager",
+        status: "terminated",
+      },
+      {
+        id: addresseeAgentId,
+        companyId,
+        name: "Unavailable addressee",
+        role: "engineer",
+        status: "active",
+        reportsTo: managerAgentId,
+      },
+    ]);
+
+    await expect(interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        addresseeAgentId,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("invokable agent"),
+      details: expect.objectContaining({
+        reason: "manager_terminated",
+        managerId: managerAgentId,
+      }),
+    });
+  });
+
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
