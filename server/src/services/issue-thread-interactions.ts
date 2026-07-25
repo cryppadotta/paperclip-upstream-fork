@@ -1230,6 +1230,19 @@ export function issueThreadInteractionService(db: Db) {
         }
       }
 
+      // A terminal issue must not regain pending actionable cards — terminal
+      // expiry would otherwise not run until a later interaction-list request.
+      // Idempotent reuse above stays allowed so retries of a pre-close create
+      // keep returning the (by now expired) original.
+      const issueRow = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
+        throw conflict("Cannot create an interaction on a closed issue");
+      }
+
       if (data.sourceCommentId) {
         const sourceComment = await db
           .select({
