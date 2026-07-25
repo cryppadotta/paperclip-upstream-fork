@@ -411,7 +411,7 @@ function buildStaleTargetResult(
 
 function buildAdministrativeOutcomeResult(
   row: IssueThreadInteractionRow,
-  outcome: "withdrawn" | "issue_closed",
+  outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
   reason: string | null = null,
 ) {
   if (row.kind === "ask_user_questions") {
@@ -1229,6 +1229,50 @@ export function issueThreadInteractionService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       return row ? hydrateInteraction(row) : null;
+    },
+
+    cancelPendingForDeletedAddressee: async (companyId: string, addresseeAgentId: string) => {
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.addresseeAgentId, addresseeAgentId),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+      if (rows.length === 0) return [];
+
+      const now = new Date();
+      const cancelled: IssueThreadInteraction[] = [];
+      for (const row of rows) {
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: buildAdministrativeOutcomeResult(
+              row,
+              "addressee_deleted",
+              "Cancelled because the addressed agent was deleted",
+            ),
+            resolvedByAgentId: null,
+            resolvedByRunId: null,
+            resolvedByUserId: null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, row.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (updated) cancelled.push(hydrateInteraction(updated));
+      }
+
+      for (const issueId of new Set(cancelled.map((interaction) => interaction.issueId))) {
+        await touchIssue(db, issueId);
+      }
+      await emitResolvedInteractionsTelemetry(db, cancelled);
+      return cancelled;
     },
 
     create: async (

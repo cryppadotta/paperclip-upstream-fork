@@ -35,6 +35,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -627,20 +628,34 @@ describeEmbeddedPostgres("attention service", () => {
     });
   });
 
-  it("returns addressed interactions to board attention when the addressee is no longer invokable", async () => {
+  it("returns addressed interactions to board attention after addressee pause or termination", async () => {
     const { companyId, reviewerId } = await seedCompany("ATF");
     const pausedReviewerId = randomUUID();
-    await db.insert(agents).values({
-      id: pausedReviewerId,
-      companyId,
-      name: "Paused Reviewer",
-      role: "qa",
-      status: "paused",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {},
-      permissions: {},
-    });
+    const terminatedReviewerId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: pausedReviewerId,
+        companyId,
+        name: "Paused Reviewer",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: terminatedReviewerId,
+        companyId,
+        name: "Terminated Reviewer",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
     const issueId = await insertIssue({
       companyId,
       identifier: "ATF-1",
@@ -680,14 +695,32 @@ describeEmbeddedPostgres("attention service", () => {
         title: "Paused reviewer question",
         payload: { version: 1, questions: [] },
       },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        addresseeAgentId: terminatedReviewerId,
+        title: "Terminated reviewer question",
+        payload: { version: 1, questions: [] },
+      },
     ]);
+
+    await agentService(db).pause(pausedReviewerId);
+    await agentService(db).terminate(terminatedReviewerId);
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
     const interactionTitles = feed.items
       .filter((item) => item.sourceKind === "issue_thread_interaction")
       .map((item) => item.subject.title);
 
-    expect(interactionTitles).toEqual(expect.arrayContaining(["Board question", "Paused reviewer question"]));
+    expect(interactionTitles).toEqual(expect.arrayContaining([
+      "Board question",
+      "Paused reviewer question",
+      "Terminated reviewer question",
+    ]));
     expect(interactionTitles).not.toContain("Active reviewer question");
   });
 
