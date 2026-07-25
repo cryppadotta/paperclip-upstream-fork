@@ -3714,6 +3714,33 @@ export function issueRoutes(
     return false;
   }
 
+  async function rejectTaskWatchdogInteractionMutation(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      parentId?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") return false;
+    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (scope.kind === "none") return false;
+    const result = await taskWatchdogScopeAllowsIssueMutation(db, scope, issue);
+    if (result.kind === "invalid") {
+      res.status(403).json({
+        error: result.detail,
+        details: {
+          issueId: issue.id,
+          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+        },
+      });
+      return true;
+    }
+    res.status(403).json({ error: "Task-watchdog runs cannot mutate issue-thread interactions" });
+    return true;
+  }
+
   async function assertIssueThreadInteractionResolutionAllowed(
     req: Request,
     res: Response,
@@ -9411,6 +9438,7 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
@@ -9561,6 +9589,7 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
@@ -9620,6 +9649,7 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
@@ -9675,6 +9705,7 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
@@ -9747,6 +9778,7 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
 
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
