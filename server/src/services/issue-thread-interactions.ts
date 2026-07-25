@@ -2032,9 +2032,12 @@ export function issueThreadInteractionService(db: Db) {
         .returning();
       if (!updated) throw conflict("Interaction has already been resolved");
 
+      // "approved" is reachable while the card is still pending (the request can
+      // be approved from the tool review queue without resolving the card), so
+      // withdrawal must revoke approved-but-unconsumed requests too.
       await resolveLinkedToolActionRequests(db, current, {
         status: "cancelled",
-        fromStatuses: ["pending"],
+        fromStatuses: ["pending", "approved"],
         actor,
         now,
       });
