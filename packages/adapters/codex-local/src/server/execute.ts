@@ -628,11 +628,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let effectiveExecutionCwd = targetWorkspaceRealization?.mode === "in_place"
       ? targetWorkspaceRealization.authoritativeRoot
       : adapterExecutionTargetRemoteCwd(executionTarget, cwd);
-    const preparedExecutionTargetRuntime = executionTargetIsRemote && targetWorkspaceRealization?.mode !== "in_place"
+    const preparedExecutionTargetRuntime = executionTargetIsRemote
       ? await (async () => {
           await onLog(
             "stdout",
-            `[paperclip] Syncing workspace and CODEX_HOME to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+            `[paperclip] Syncing ${targetWorkspaceRealization?.mode === "in_place" ? "CODEX_HOME" : "workspace and CODEX_HOME"} to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
           );
           // Stage only the files Codex actually needs into a curated temp dir and
           // ship THAT as the `home` asset, instead of the whole managed
@@ -649,6 +649,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             adapterKey: "codex",
             timeoutSec,
             workspaceLocalDir: cwd,
+            workspaceRemoteDir:
+              targetWorkspaceRealization?.mode === "in_place"
+                ? targetWorkspaceRealization.authoritativeRoot
+                : undefined,
+            syncWorkspace: targetWorkspaceRealization?.mode !== "in_place",
             installCommand: SANDBOX_INSTALL_COMMAND,
             detectCommand: command,
             onProgress: (line) => onLog("stdout", line),

@@ -70,31 +70,40 @@ export async function prepareRemoteManagedRuntime(input: {
   adapterKey: string;
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   assets?: RemoteManagedRuntimeAsset[];
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
   onProgress?: RuntimeProgressSink;
 }): Promise<PreparedRemoteManagedRuntime> {
   const baseWorkspaceRemoteDir = input.workspaceRemoteDir ?? input.spec.remoteCwd;
-  const workspaceRemoteDir = path.posix.join(
-    baseWorkspaceRemoteDir,
-    ".paperclip-runtime",
-    "runs",
-    input.runId,
-    "workspace",
-  );
+  const syncWorkspace = input.syncWorkspace !== false;
+  const workspaceRemoteDir = syncWorkspace
+    ? path.posix.join(
+        baseWorkspaceRemoteDir,
+        ".paperclip-runtime",
+        "runs",
+        input.runId,
+        "workspace",
+      )
+    : baseWorkspaceRemoteDir;
   const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
 
-  const preparedWorkspace = await prepareWorkspaceForSshExecution({
-    spec: input.spec,
-    localDir: input.workspaceLocalDir,
-    remoteDir: workspaceRemoteDir,
-    onProgress: input.onProgress,
-  });
-  const restoreExclude = preparedWorkspace.gitBacked ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"] : [".paperclip-runtime"];
-  const baselineSnapshot = await captureDirectorySnapshot(input.workspaceLocalDir, {
-    exclude: restoreExclude,
-  });
+  const preparedWorkspace = syncWorkspace
+    ? await prepareWorkspaceForSshExecution({
+        spec: input.spec,
+        localDir: input.workspaceLocalDir,
+        remoteDir: workspaceRemoteDir,
+        onProgress: input.onProgress,
+      })
+    : null;
+  const baselineSnapshot = preparedWorkspace
+    ? await captureDirectorySnapshot(input.workspaceLocalDir, {
+        exclude: preparedWorkspace.gitBacked
+          ? [...GIT_ARCHIVE_EXCLUDES, ".paperclip-runtime"]
+          : [".paperclip-runtime"],
+      })
+    : null;
 
   const assetDirs: Record<string, string> = {};
   try {
@@ -112,14 +121,16 @@ export async function prepareRemoteManagedRuntime(input: {
       });
     }
   } catch (error) {
-    await restoreWorkspaceFromSshExecution({
-      spec: input.spec,
-      localDir: input.workspaceLocalDir,
-      remoteDir: workspaceRemoteDir,
-      baselineSnapshot,
-      restoreGitHistory: preparedWorkspace.gitBacked,
-      onProgress: input.onProgress,
-    });
+    if (preparedWorkspace && baselineSnapshot) {
+      await restoreWorkspaceFromSshExecution({
+        spec: input.spec,
+        localDir: input.workspaceLocalDir,
+        remoteDir: workspaceRemoteDir,
+        baselineSnapshot,
+        restoreGitHistory: preparedWorkspace.gitBacked,
+        onProgress: input.onProgress,
+      });
+    }
     throw error;
   }
 
@@ -130,6 +141,7 @@ export async function prepareRemoteManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
+      if (!preparedWorkspace || !baselineSnapshot) return;
       await restoreWorkspaceFromSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,

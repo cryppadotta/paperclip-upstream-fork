@@ -1102,6 +1102,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
@@ -1133,6 +1134,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      syncWorkspace: input.syncWorkspace,
       assets: input.assets,
       onProgress: input.onProgress,
     });
@@ -1160,6 +1162,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
