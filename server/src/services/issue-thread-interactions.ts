@@ -369,6 +369,15 @@ function buildAdministrativeOutcomeResult(
   return { version: 1, outcome, reason } as const;
 }
 
+// Rollback sentinel: the interaction was resolved by another actor between the
+// pending-rows read and the conditional update, so the enclosing transaction's
+// tool-action revocation must be undone.
+class InteractionResolvedConcurrentlyError extends Error {
+  constructor() {
+    super("Interaction was resolved concurrently");
+  }
+}
+
 // A request_confirmation card can govern a parked tool call via a linked
 // tool_action_requests row. Administrative resolutions (withdraw, terminal-issue
 // expiry) must settle that row too, or the parked call stays approvable under
@@ -1964,30 +1973,43 @@ export function issueThreadInteractionService(db: Db) {
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const row of rows) {
-        const [updated] = await db
-          .update(issueThreadInteractions)
-          .set({
-            status: "expired",
-            result: buildAdministrativeOutcomeResult(row, "issue_closed"),
-            resolvedByAgentId: actor.agentId ?? null,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedAt: now,
-            updatedAt: now,
-          })
-          .where(and(
-            eq(issueThreadInteractions.id, row.id),
-            eq(issueThreadInteractions.status, "pending"),
-          ))
-          .returning();
-        if (updated) {
-          expired.push(hydrateInteraction(updated));
-          await resolveLinkedToolActionRequests(db, row, {
+        // Same ordering as withdrawal: revoke the linked tool action before
+        // resolving the card, inside one transaction. A concurrent gateway
+        // claim (approved -> executing) blocks on the revocation's row lock
+        // and then aborts; if the card was concurrently resolved instead, the
+        // no-row update below rolls the revocation back. A claim that already
+        // committed is in flight and cannot be recalled — the card still
+        // expires and the execution result lands on it via the gateway's
+        // lifecycle reflection.
+        const updated = await db.transaction(async (tx) => {
+          await resolveLinkedToolActionRequests(tx, row, {
             status: "expired",
             fromStatuses: ["pending", "approved"],
             actor,
             now,
           });
-        }
+          const [resolved] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+              resolvedByAgentId: actor.agentId ?? null,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!resolved) throw new InteractionResolvedConcurrentlyError();
+          return resolved;
+        }).catch((err: unknown) => {
+          if (err instanceof InteractionResolvedConcurrentlyError) return null;
+          throw err;
+        });
+        if (updated) expired.push(hydrateInteraction(updated));
       }
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
