@@ -75,6 +75,9 @@ describe("paperclip skill utils", () => {
       expect(body).toContain("toolAction");
       expect(body).toContain("watchdog");
       expect(body).toContain("low-trust");
+      expect(body).toContain("addresseeAgentId");
+      expect(body).toContain("interaction_pending");
+      expect(body).toContain("attention feed");
     }
   });
 

@@ -134,7 +134,7 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
-import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -3722,6 +3722,7 @@ export function issueRoutes(
       createdByAgentId?: string | null;
       sourceRunId?: string | null;
       effectiveResolverPolicy: string;
+      addresseeAgentId?: string | null;
       kind: string;
       payload?: unknown;
     },
@@ -3740,7 +3741,11 @@ export function issueRoutes(
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
-    if (interaction.effectiveResolverPolicy !== "board_or_agents") {
+    if (interaction.addresseeAgentId && interaction.addresseeAgentId !== actorAgentId) {
+      res.status(403).json({ error: "Only the addressed agent or a board user may resolve this issue-thread interaction" });
+      return false;
+    }
+    if (!interaction.addresseeAgentId && interaction.effectiveResolverPolicy !== "board_or_agents") {
       res.status(403).json({ error: "This issue-thread interaction is board-only" });
       return false;
     }
@@ -9321,6 +9326,13 @@ export function issueRoutes(
     const actor = getActorInfo(req);
     const agentSourceRunId = req.actor.type === "agent" ? requireAgentRunId(req, res) : null;
     if (req.actor.type === "agent" && !agentSourceRunId) return;
+    if (
+      req.body.kind === "request_confirmation"
+      && req.body.addresseeAgentId
+      && req.body.payload?.toolAction !== undefined
+    ) {
+      throw badRequest("Tool-action confirmations cannot be addressed to agents");
+    }
     if (req.body.kind === "request_confirmation" && req.body.payload?.toolAction !== undefined) {
       throw unprocessable("payload.toolAction is server-owned metadata and cannot be supplied when creating an interaction");
     }
@@ -9348,10 +9360,45 @@ export function issueRoutes(
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
+        addresseeAgentId: interaction.addresseeAgentId ?? null,
         requestedResolverPolicy: interaction.requestedResolverPolicy,
         effectiveResolverPolicy: interaction.effectiveResolverPolicy,
       },
     });
+
+    if (interaction.addresseeAgentId) {
+      void heartbeat.wakeup(interaction.addresseeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: {
+          issueId: issue.id,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          sourceCommentId: interaction.sourceCommentId ?? null,
+          sourceRunId: interaction.sourceRunId ?? null,
+          mutation: "interaction",
+        },
+        idempotencyKey: `interaction-pending:${interaction.id}`,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          sourceCommentId: interaction.sourceCommentId ?? null,
+          sourceRunId: interaction.sourceRunId ?? null,
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      }).catch((err) => logger.warn({
+        err,
+        issueId: issue.id,
+        interactionId: interaction.id,
+        agentId: interaction.addresseeAgentId,
+      }, "failed to wake addressee on issue interaction creation"));
+    }
 
     res.status(201).json(interaction);
   });

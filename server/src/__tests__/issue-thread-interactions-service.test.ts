@@ -98,6 +98,111 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
+  it("persists addressees and restricts board-only interactions to the addressed agent", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
+    const creatorAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const unrelatedAgentId = randomUUID();
+    const addresseeRunId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    const agentRows = [
+      { id: creatorAgentId, name: "Creator" },
+      { id: addresseeAgentId, name: "Addressee" },
+      { id: unrelatedAgentId, name: "Unrelated" },
+    ].map((agent) => ({
+      ...agent,
+      companyId,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }));
+    await db.insert(agents).values(agentRows);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: addresseeRunId,
+        companyId,
+        agentId: addresseeAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-25T12:00:00.000Z"),
+      },
+      {
+        id: unrelatedRunId,
+        companyId,
+        agentId: unrelatedAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-25T12:01:00.000Z"),
+      },
+    ]);
+
+    const input = {
+      kind: "ask_user_questions" as const,
+      resolverPolicy: "board_only" as const,
+      addresseeAgentId,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single" as const,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    };
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      input,
+      { agentId: creatorAgentId },
+    );
+    expect(created).toMatchObject({
+      addresseeAgentId,
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
+    });
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: addresseeAgentId, runId: addresseeRunId },
+    );
+    expect(answered).toMatchObject({
+      status: "answered",
+      addresseeAgentId,
+      resolvedByAgentId: addresseeAgentId,
+      resolvedByRunId: addresseeRunId,
+    });
+
+    const second = await interactionsSvc.create(
+      { id: issueId, companyId },
+      { ...input, idempotencyKey: "addressed:second" },
+      { agentId: creatorAgentId },
+    );
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      second.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: unrelatedAgentId, runId: unrelatedRunId },
+    )).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("addressed agent"),
+    });
+
+    await expect(interactionsSvc.create(
+      { id: issueId, companyId },
+      { ...input, addresseeAgentId: creatorAgentId },
+      { agentId: creatorAgentId },
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("themselves"),
+    });
+  });
+
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

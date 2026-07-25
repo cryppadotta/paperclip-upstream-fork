@@ -110,7 +110,10 @@ export function resolveInteractionPolicy(args: {
 function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
   if (!actor.agentId) return;
   if (!actor.runId) throw forbidden("Agent run id required to resolve an issue-thread interaction");
-  if (current.effectiveResolverPolicy !== "board_or_agents") {
+  if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {
+    throw forbidden("Only the addressed agent or a board user may resolve this issue-thread interaction");
+  }
+  if (!current.addresseeAgentId && current.effectiveResolverPolicy !== "board_or_agents") {
     throw forbidden("This issue-thread interaction is board-only");
   }
   if (current.createdByAgentId === actor.agentId) {
@@ -192,6 +195,7 @@ function isEquivalentCreateRequest(
   return (
     row.kind === input.kind
     && row.requestedResolverPolicy === input.resolverPolicy
+    && (row.addresseeAgentId ?? null) === (input.addresseeAgentId ?? null)
     && row.continuationPolicy === input.continuationPolicy
     && (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null)
     && (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null)
@@ -236,6 +240,7 @@ function hydrateInteraction(
   const base = {
     ...row,
     idempotencyKey: row.idempotencyKey ?? null,
+    addresseeAgentId: row.addresseeAgentId ?? null,
     status: row.status as IssueThreadInteraction["status"],
     continuationPolicy: row.continuationPolicy as IssueThreadInteraction["continuationPolicy"],
     resolverPolicy: row.requestedResolverPolicy,
@@ -1244,6 +1249,23 @@ export function issueThreadInteractionService(db: Db) {
       });
       const normalizedData = { ...data, resolverPolicy: policy.requestedResolverPolicy };
 
+      if (normalizedData.addresseeAgentId) {
+        if (normalizedData.addresseeAgentId === actor.agentId) {
+          throw unprocessable("Agents cannot address issue-thread interactions to themselves");
+        }
+        if (normalizedData.kind === "request_confirmation" && normalizedData.payload.toolAction !== undefined) {
+          throw unprocessable("Tool-action confirmations cannot be addressed to agents");
+        }
+        const addressee = await db
+          .select({ companyId: agents.companyId })
+          .from(agents)
+          .where(eq(agents.id, normalizedData.addresseeAgentId))
+          .then((rows) => rows[0] ?? null);
+        if (!addressee || addressee.companyId !== issue.companyId) {
+          throw unprocessable("addresseeAgentId must belong to the same company");
+        }
+      }
+
       if (normalizedData.idempotencyKey) {
         const existing = await getIdempotentInteraction({
           issueId: issue.id,
@@ -1317,6 +1339,7 @@ export function issueThreadInteractionService(db: Db) {
             title: data.title ?? null,
             summary: data.summary ?? null,
             createdByAgentId: actor.agentId ?? null,
+            addresseeAgentId: data.addresseeAgentId ?? null,
             createdByUserId: actor.userId ?? null,
             payload: data.payload,
           })

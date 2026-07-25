@@ -683,6 +683,7 @@ export function attentionService(db: Db) {
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          isNull(issueThreadInteractions.addresseeAgentId),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
       const interactionIssueMap = await issueSummaryMap(db, companyId, interactionRows.map((row) => row.issueId));

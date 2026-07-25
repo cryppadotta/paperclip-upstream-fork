@@ -1345,6 +1345,13 @@
       "when": 1784989320377,
       "tag": "0193_interaction_resolver_governance",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1784990076426,
+      "tag": "0194_interaction_addressee",
+      "breakpoints": true
     }
   ]
 }

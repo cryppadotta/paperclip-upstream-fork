@@ -3,6 +3,7 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
+const UNRELATED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 const CREATED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -475,6 +476,91 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("wakes the addressed agent when an interaction is created", async () => {
+    mockInteractionService.create.mockResolvedValueOnce({
+      id: "interaction-addressed",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      addresseeAgentId: ASSIGNEE_AGENT_ID,
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: null,
+      payload: { version: 1, questions: [] },
+      result: null,
+      createdAt: "2026-07-25T12:00:00.000Z",
+      updatedAt: "2026-07-25T12:00:00.000Z",
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "ask_user_questions",
+        addresseeAgentId: ASSIGNEE_AGENT_ID,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        reason: "interaction_pending",
+        idempotencyKey: "interaction-pending:interaction-addressed",
+        payload: expect.objectContaining({
+          issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          interactionId: "interaction-addressed",
+        }),
+        contextSnapshot: expect.objectContaining({ wakeReason: "interaction_pending" }),
+      }),
+    );
+  });
+
+  it("returns 400 for agent-addressed tool-action confirmations", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .send({
+        kind: "request_confirmation",
+        addresseeAgentId: ASSIGNEE_AGENT_ID,
+        payload: {
+          version: 1,
+          prompt: "Run the tool?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "11111111-1111-4111-8111-111111111111",
+            invocationId: "22222222-2222-4222-8222-222222222222",
+            toolName: "send_email",
+            toolDisplayName: "Send email",
+            connectionId: "33333333-3333-4333-8333-333333333333",
+            applicationId: "44444444-4444-4444-8444-444444444444",
+            appDisplayName: "Gmail",
+            risk: "write",
+            previewMarkdown: "Send an email to the reviewed recipient.",
+            argumentsSummaryJson: '{"to":"recipient@example.com"}',
+            argumentsHash: "reviewed-arguments-hash",
+            expiresAt: "2026-07-25T16:00:00.000Z",
+          },
+        },
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("cannot be addressed");
+    expect(mockInteractionService.create).not.toHaveBeenCalled();
   });
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
@@ -1420,6 +1506,60 @@ describe.sequential("issue thread interaction routes", () => {
       runId: "run-2",
       details: expect.objectContaining({ resolutionActorKind: "agent" }),
     }));
+  });
+
+  it("allows only the addressed agent or board to resolve an addressed interaction", async () => {
+    const addressed = {
+      id: "interaction-addressed",
+      kind: "ask_user_questions",
+      createdByAgentId: CREATED_AGENT_ID,
+      addresseeAgentId: ASSIGNEE_AGENT_ID,
+      sourceRunId: "run-1",
+      requestedResolverPolicy: "board_only",
+      effectiveResolverPolicy: "board_only",
+      payload: { version: 1, questions: [] },
+    };
+    mockInteractionService.getForIssue
+      .mockResolvedValueOnce(addressed)
+      .mockResolvedValueOnce(addressed)
+      .mockResolvedValueOnce(addressed);
+    mockIssueService.getById
+      .mockResolvedValueOnce(createIssue({ status: "todo" }))
+      .mockResolvedValueOnce(createIssue({ status: "todo" }))
+      .mockResolvedValueOnce(createIssue({ status: "todo" }));
+
+    const addresseeApp = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+    const addressee = await request(addresseeApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-addressed/respond")
+      .send({ answers: [] });
+    expect(addressee.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ idempotencyKey: "interaction:interaction-2:answered" }),
+    );
+
+    const unrelatedApp = await createApp({
+      type: "agent",
+      agentId: UNRELATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-3",
+    });
+    const unrelated = await request(unrelatedApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-addressed/respond")
+      .send({ answers: [] });
+    expect(unrelated.status).toBe(403);
+    expect(unrelated.body.error).toContain("addressed agent");
+
+    const boardApp = await createApp();
+    const board = await request(boardApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-addressed/respond")
+      .send({ answers: [] });
+    expect(board.status).toBe(200);
   });
 
   it("blocks creator-agent self-resolution", async () => {
