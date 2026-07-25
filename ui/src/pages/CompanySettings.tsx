@@ -85,25 +85,46 @@ function GovernanceSelect({
   onChange,
   disabled,
   testId,
+  ariaLabel,
+  mobileLabel,
 }: {
   value: GovernanceSelectValue;
   onChange: (value: GovernanceSelectValue) => void;
   disabled?: boolean;
   testId?: string;
+  ariaLabel: string;
+  mobileLabel: string;
 }) {
   return (
-    <Select value={value} onValueChange={(v) => onChange(v as GovernanceSelectValue)} disabled={disabled}>
-      <SelectTrigger size="sm" className="w-(--sz-170px) text-xs" data-testid={testId}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {GOVERNANCE_POLICY_OPTIONS.map((option) => (
-          <SelectItem key={option.value} value={option.value} className="text-xs">
-            {option.label}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="min-w-0">
+      {/*
+       * Below `sm` the governance grid collapses to a single column (see the
+       * grid classes on the panel), detaching each select from its column
+       * header. Surface a mobile-only inline label so the control stays
+       * self-describing for sighted users, and always carry `aria-label` for
+       * screen-reader pairing. WCAG 2.1 SC 1.4.10 (Reflow) — design review R2.
+       */}
+      <span className="mb-1 block text-xs font-medium text-muted-foreground uppercase tracking-wide sm:hidden">
+        {mobileLabel}
+      </span>
+      <Select value={value} onValueChange={(v) => onChange(v as GovernanceSelectValue)} disabled={disabled}>
+        <SelectTrigger
+          size="sm"
+          aria-label={ariaLabel}
+          className="w-full min-w-0 text-xs sm:w-(--sz-170px)"
+          data-testid={testId}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {GOVERNANCE_POLICY_OPTIONS.map((option) => (
+            <SelectItem key={option.value} value={option.value} className="text-xs">
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }
 
@@ -489,29 +510,41 @@ export function CompanySettings() {
             require the board. Tool-approval confirmations always stay board-only
             regardless of these settings.
           </p>
-          <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-4 gap-y-2.5">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          {/*
+           * Responsive: below `sm` the row collapses to a single column so the
+           * two 170px selects never force horizontal overflow on a ~390px
+           * viewport (WCAG 2.1 SC 1.4.10 Reflow — design review R2). Each kind
+           * then stacks as: label → Default policy → Cap, each full-width with
+           * its own inline label. At `sm`+ it restores the aligned 3-col grid.
+           */}
+          <div className="grid grid-cols-1 gap-y-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-x-4 sm:gap-y-2.5">
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
               Kind
             </div>
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
               Default policy
             </div>
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
               Cap
             </div>
             {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
               const entry = governance[kind] ?? {};
+              const kindLabel = INTERACTION_KIND_LABELS[kind];
               return (
                 <Fragment key={kind}>
-                  <div className="text-sm">{INTERACTION_KIND_LABELS[kind]}</div>
+                  <div className="text-sm font-medium sm:font-normal">{kindLabel}</div>
                   <GovernanceSelect
                     testId={`governance-${kind}-default`}
+                    ariaLabel={`Default resolver policy for ${kindLabel}`}
+                    mobileLabel="Default policy"
                     value={toSelectValue(entry.defaultPolicy)}
                     disabled={governanceMutation.isPending}
                     onChange={(v) => handleGovernanceChange(kind, "defaultPolicy", v)}
                   />
                   <GovernanceSelect
                     testId={`governance-${kind}-cap`}
+                    ariaLabel={`Resolver cap for ${kindLabel}`}
+                    mobileLabel="Cap"
                     value={toSelectValue(entry.cap)}
                     disabled={governanceMutation.isPending}
                     onChange={(v) => handleGovernanceChange(kind, "cap", v)}

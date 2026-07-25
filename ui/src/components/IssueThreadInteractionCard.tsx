@@ -1386,13 +1386,17 @@ function RequestConfirmationResolution({
     const expiredByTargetChange = outcome === "stale_target";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-        <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment
-            ? "Expired by comment"
-            : expiredByIssueClosed
-              ? "Expired · issue closed"
-              : "Expired by target change"}
-        </div>
+        {/*
+         * issue_closed already carries its label in the header status badge
+         * ("Expired · issue closed"), so this eyebrow would duplicate it
+         * verbatim — only render the eyebrow for the states the header shows
+         * generically as "Expired".
+         */}
+        {expiredByIssueClosed ? null : (
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
+            {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          </div>
+        )}
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
@@ -3071,9 +3075,26 @@ export function IssueThreadInteractionCard({
   const resumeFailure = requestConfirmationResumeFailure(interaction);
   const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
   const activeStyles = toolActionStyles ?? planStyles;
-  const StatusIcon = activeStyles ? activeStyles.Icon : statusIcon(interaction.status);
+  const adminOutcome = getAdministrativeOutcome(interaction);
+  const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
+  // P4 (design review R2): a withdrawal is a neutral administrative retraction by
+  // the requester — NOT a board "no". It must not inherit the `cancelled` card's
+  // rose/red border + XCircle, which is pixel-identical to a rejected plan and
+  // mis-signals a denial to anyone scanning the thread. Give withdrawn its own
+  // inert lane (sibling to the calm `expired` state): muted border/badge +
+  // MinusCircle ("retracted"). This overrides the plan/tool-action/status styling
+  // so a withdrawn plan or confirmation reads "closed", not "changes requested".
+  const withdrawnStyles =
+    adminOutcome === "withdrawn"
+      ? { shell: "border-border bg-transparent", badge: "border-border bg-muted/60 text-muted-foreground" }
+      : null;
+  const StatusIcon = withdrawnStyles
+    ? MinusCircle
+    : activeStyles
+      ? activeStyles.Icon
+      : statusIcon(interaction.status);
   const iconSpin = toolActionStyles?.spin ?? false;
-  const styles = activeStyles ?? statusClasses(interaction.status);
+  const styles = withdrawnStyles ?? activeStyles ?? statusClasses(interaction.status);
   const createdByLabel = resolveActorLabel({
     agentId: interaction.createdByAgentId,
     userId: interaction.createdByUserId,
@@ -3093,8 +3114,6 @@ export function IssueThreadInteractionCard({
       : null;
   // P4: audit-visible distinction between agent and human resolution.
   const resolvedByAgent = Boolean(interaction.resolvedByAgentId);
-  const adminOutcome = getAdministrativeOutcome(interaction);
-  const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
   // P2: agents may resolve when the governance-capped policy allows it.
   const agentsMayResolve = interaction.effectiveResolverPolicy === "board_or_agents";
   // P3: interactions directed at a specific agent addressee.
@@ -3265,13 +3284,14 @@ export function IssueThreadInteractionCard({
             <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
           ) : null}
         </div>
-      ) : adminOutcome === "issue_closed" ? (
+      ) : adminOutcome === "issue_closed" && interaction.resolvedAt ? (
+        // The header badge + body already explain the issue-closed expiry;
+        // the footer is just the audit timestamp.
         <div
           className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
           data-testid="interaction-issue-closed-footer"
         >
-          Expired when the issue closed
-          {interaction.resolvedAt ? ` · ${formatShortDate(interaction.resolvedAt)}` : ""}
+          {formatShortDate(interaction.resolvedAt)}
         </div>
       ) : resolvedByLabel && !isToolAction ? (
         <div

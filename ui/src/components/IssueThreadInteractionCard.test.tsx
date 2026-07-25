@@ -760,6 +760,12 @@ describe("IssueThreadInteractionCard tool-action card", () => {
 
     // Header status reads "Withdrawn", not the raw "Cancelled" status.
     expect(host.textContent).toContain("Withdrawn");
+    // Withdrawn is a neutral administrative retraction — it must NOT wear the
+    // cancelled/rejected costume (rose/red border + XCircle). The shell is muted
+    // (border-border), never a rose/red alarm colour (design review R2).
+    const cardRoot = host.querySelector("div.rounded-lg.p-5.shadow-none");
+    expect(cardRoot?.className).toContain("border-border");
+    expect(cardRoot?.className).not.toMatch(/border-(rose|red)/);
     const footer = host.querySelector('[data-testid="interaction-withdrawn-footer"]');
     expect(footer?.textContent).toContain("Withdrawn by");
     expect(footer?.textContent).toContain("Plan superseded by a newer revision");
@@ -775,8 +781,16 @@ describe("IssueThreadInteractionCard tool-action card", () => {
       interaction: issueClosedRequestConfirmationInteraction,
     });
 
+    // Footer is trimmed to just the audit timestamp — the header status badge
+    // already carries the "Expired · issue closed" label, so the footer must
+    // not restate it.
     const footer = host.querySelector('[data-testid="interaction-issue-closed-footer"]');
-    expect(footer?.textContent).toContain("Expired when the issue closed");
-    expect(host.textContent).toContain("Expired · issue closed");
+    expect(footer?.textContent).toContain("Apr 20");
+    expect(footer?.textContent).not.toContain("Expired when the issue closed");
+    // The "Expired · issue closed" label survives exactly once (the header
+    // status badge); the duplicate body eyebrow was dropped.
+    const label = "Expired · issue closed";
+    const occurrences = (host.textContent ?? "").split(label).length - 1;
+    expect(occurrences).toBe(1);
   });
 });
