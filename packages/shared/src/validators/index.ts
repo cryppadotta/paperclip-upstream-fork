@@ -38,6 +38,7 @@ export {
 
 export {
   createCompanySchema,
+  interactionResolverGovernanceSchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
   type CreateCompany,

@@ -839,6 +839,7 @@ Create a confirmation:
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
+  "resolverPolicy": "board_only",
   "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
   "title": "Plan approval",
   "continuationPolicy": "wake_assignee",
@@ -858,6 +859,28 @@ POST /api/issues/{issueId}/interactions
       "key": "plan",
       "revisionId": "{latestRevisionId}",
       "revisionNumber": 3
+    }
+  }
+}
+```
+
+`resolverPolicy: "board_only" | "board_or_agents"`. If omitted, the company per-kind default applies: `ask_user_questions` defaults to `board_or_agents`, while all other kinds default to `board_only`. Company settings expose `interactionResolverGovernance`, keyed by interaction kind, with optional `defaultPolicy` and `cap`; a `board_only` cap always wins. The interaction response includes immutable `requestedResolverPolicy` and `effectiveResolverPolicy` snapshots, so later governance edits never widen an existing pending card.
+
+When `effectiveResolverPolicy` is `board_or_agents`, an eligible agent can call `accept`, `reject`, `respond`, or `verdicts`. Agent resolution requires authenticated run identity and standard `issue:mutate` scope. The resolver cannot be the creator agent or source run; low-trust and watchdog-scoped actors are denied; and `request_confirmation.payload.toolAction` is always board-only at both creation and resolution. Agent resolutions record `resolvedByAgentId` and `resolvedByRunId`, log an agent actor, and use deterministic continuation-wake idempotency.
+
+Company governance update example:
+
+```json
+PATCH /api/companies/{companyId}
+{
+  "interactionResolverGovernance": {
+    "ask_user_questions": {
+      "defaultPolicy": "board_or_agents",
+      "cap": "board_or_agents"
+    },
+    "request_confirmation": {
+      "defaultPolicy": "board_only",
+      "cap": "board_only"
     }
   }
 }

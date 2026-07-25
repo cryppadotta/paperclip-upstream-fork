@@ -28,6 +28,8 @@ const mockInteractionService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
 }));
+const mockResolveTaskWatchdogMutationScope = vi.hoisted(() => vi.fn(async () => ({ kind: "none" })));
+const mockResolveCoreTrustPreset = vi.hoisted(() => vi.fn(() => ({ kind: "standard" })));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
@@ -50,6 +52,17 @@ vi.mock("@paperclipai/shared/telemetry", () => ({
 
 vi.mock("../telemetry.js", () => ({
   getTelemetryClient: vi.fn(() => ({ track: vi.fn() })),
+}));
+
+vi.mock("../services/task-watchdog-scope.js", () => ({
+  TASK_WATCHDOG_ORIGIN_KIND: "task_watchdog",
+  resolveTaskWatchdogMutationScope: mockResolveTaskWatchdogMutationScope,
+  taskWatchdogScopeAllowsIssueMutation: vi.fn(async (_db, scope) => scope),
+}));
+
+vi.mock("../services/trust-preset-resolver.js", () => ({
+  LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH: 100,
+  resolveCoreTrustPreset: mockResolveCoreTrustPreset,
 }));
 
 function registerModuleMocks() {
@@ -186,15 +199,22 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockResolveTaskWatchdogMutationScope.mockResolvedValue({ kind: "none" });
+    mockResolveCoreTrustPreset.mockReturnValue({ kind: "standard" });
     mockIssueService.getById.mockResolvedValue(createIssue());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
     mockInteractionService.getForIssue.mockResolvedValue({
       id: "interaction-withdraw",
+      kind: "ask_user_questions",
       createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: "run-1",
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
       continuationPolicy: "wake_assignee",
       status: "pending",
+      payload: { version: 1, questions: [] },
     });
     mockInteractionService.withdrawInteraction.mockResolvedValue({
       id: "interaction-withdraw",
@@ -1368,5 +1388,168 @@ describe.sequential("issue thread interaction routes", () => {
         userId: null,
       },
     );
+  });
+
+  it("allows a different in-scope agent run to respond when policy permits", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [{ questionId: "scope", optionIds: ["phase-1"] }] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-2",
+      expect.anything(),
+      expect.objectContaining({ agentId: ASSIGNEE_AGENT_ID, runId: "run-2", userId: null }),
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({ idempotencyKey: "interaction:interaction-2:answered" }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      actorType: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      runId: "run-2",
+      details: expect.objectContaining({ resolutionActorKind: "agent" }),
+    }));
+  });
+
+  it("blocks creator-agent self-resolution", async () => {
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: CREATED_AGENT_ID,
+    }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-9",
+    });
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [] });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("created");
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
+  });
+
+  it("blocks same-run resolution and requires a resolver run id", async () => {
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-2",
+      kind: "ask_user_questions",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: "run-2",
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+      payload: { version: 1, questions: [] },
+    });
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const sameRunApp = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+    const sameRun = await request(sameRunApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [] });
+    expect(sameRun.status).toBe(403);
+    expect(sameRun.body.error).toContain("same run");
+
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const missingRunApp = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+    });
+    const missingRun = await request(missingRunApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [] });
+    expect(missingRun.status).toBe(401);
+  });
+
+  it("blocks board-only and tool-action interactions for agents", async () => {
+    mockInteractionService.getForIssue
+      .mockResolvedValueOnce({
+        id: "interaction-1",
+        kind: "request_confirmation",
+        createdByAgentId: CREATED_AGENT_ID,
+        sourceRunId: "run-1",
+        requestedResolverPolicy: "board_or_agents",
+        effectiveResolverPolicy: "board_only",
+        payload: { version: 1, prompt: "Proceed?" },
+      })
+      .mockResolvedValueOnce({
+        id: "interaction-tool",
+        kind: "request_confirmation",
+        createdByAgentId: CREATED_AGENT_ID,
+        sourceRunId: "run-1",
+        requestedResolverPolicy: "board_or_agents",
+        effectiveResolverPolicy: "board_or_agents",
+        payload: { version: 1, prompt: "Run?", toolAction: { actionRequestId: "action-1" } },
+      });
+    mockIssueService.getById
+      .mockResolvedValueOnce(createIssue({ status: "todo" }))
+      .mockResolvedValueOnce(createIssue({ status: "todo" }));
+    const app = await createApp({
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    });
+
+    const capped = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/accept")
+      .send({});
+    expect(capped.status).toBe(403);
+    expect(capped.body.error).toContain("board-only");
+
+    const toolAction = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool/accept")
+      .send({});
+    expect(toolAction.status).toBe(403);
+    expect(toolAction.body.error).toContain("Tool-action");
+  });
+
+  it("explicitly blocks watchdog-scoped and low-trust resolver agents", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+    const actor = {
+      type: "agent",
+      agentId: ASSIGNEE_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-2",
+    };
+
+    mockResolveTaskWatchdogMutationScope.mockResolvedValueOnce({
+      kind: "watchdog",
+      watchdogId: "watchdog-1",
+      companyId: "company-1",
+      watchedIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      watchdogIssueId: null,
+      stopFingerprint: "stop-1",
+    });
+    const watchdogApp = await createApp(actor);
+    const watchdog = await request(watchdogApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [] });
+    expect(watchdog.status).toBe(403);
+    expect(watchdog.body.error).toContain("watchdog");
+
+    mockResolveCoreTrustPreset.mockReturnValueOnce({ kind: "low_trust_review" });
+    const lowTrustApp = await createApp(actor);
+    const lowTrust = await request(lowTrustApp)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({ answers: [] });
+    expect(lowTrust.status).toBe(403);
+    expect(lowTrust.body.error).toContain("Low-trust");
+    expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
   });
 });

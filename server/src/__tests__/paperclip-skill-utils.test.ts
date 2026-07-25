@@ -64,6 +64,20 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("documents governed agent interaction resolution invariants", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+    const apiReference = await fs.readFile(path.resolve("skills/paperclip/references/api-reference.md"), "utf8");
+    const issueDocs = await fs.readFile(path.resolve("docs/api/issues.md"), "utf8");
+    for (const body of [skillBody, apiReference, issueDocs]) {
+      expect(body).toContain('resolverPolicy: "board_only" | "board_or_agents"');
+      expect(body).toContain("requestedResolverPolicy");
+      expect(body).toContain("effectiveResolverPolicy");
+      expect(body).toContain("toolAction");
+      expect(body).toContain("watchdog");
+      expect(body).toContain("low-trust");
+    }
+  });
+
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");

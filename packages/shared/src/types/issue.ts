@@ -24,6 +24,7 @@ import type {
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
+  IssueThreadInteractionResolverPolicy,
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
@@ -959,6 +960,7 @@ export interface IssueThreadInteractionActorFields {
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
   resolvedByAgentId?: string | null;
+  resolvedByRunId?: string | null;
   resolvedByUserId?: string | null;
 }
 
@@ -1222,6 +1224,9 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   summary?: string | null;
   status: IssueThreadInteractionStatus;
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  resolverPolicy: IssueThreadInteractionResolverPolicy;
+  requestedResolverPolicy: IssueThreadInteractionResolverPolicy;
+  effectiveResolverPolicy: IssueThreadInteractionResolverPolicy;
   createdAt: Date | string;
   updatedAt: Date | string;
   resolvedAt?: Date | string | null;

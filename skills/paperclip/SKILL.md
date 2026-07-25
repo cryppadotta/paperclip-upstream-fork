@@ -217,7 +217,7 @@ POST /api/companies/{companyId}/approvals
 
 ## Issue-Thread Interactions
 
-Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user response. Use them instead of asking the board to type yes/no or a checklist in markdown — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
+Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user or governed agent response. Use them instead of asking for hidden markdown conventions — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
 
 Five kinds are supported. Pick the smallest kind that fits the decision shape:
 
@@ -235,6 +235,9 @@ Key shared semantics:
 - **Target binding and staleness.** `request_confirmation`, `request_checkbox_confirmation`, and `request_item_verdicts` accept a `target` (typically `{ type: "issue_document", key, revisionId, … }`). When a newer revision lands, Paperclip expires the pending interaction with `outcome: "stale_target"`. Rebuild against the latest revision and create a fresh interaction.
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
 - **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` or `cancelled` expires all remaining pending interactions with `outcome: "issue_closed"` and never wakes the closed issue.
+- **Resolver policy.** Creators may set `resolverPolicy: "board_only" | "board_or_agents"`. Omitted policy uses the company per-kind default (`ask_user_questions` defaults to `board_or_agents`; every other kind defaults to `board_only`). The server snapshots `requestedResolverPolicy` and `effectiveResolverPolicy` at creation; a company per-kind cap can clamp the effective policy to `board_only`, and later governance edits do not widen existing pending cards.
+- **Agent-resolution hard invariants.** An agent resolver must have `issue:mutate` scope, an authenticated run id, and be neither the creator agent nor the source run. Low-trust and watchdog-scoped actors cannot resolve. `payload.toolAction` confirmations are always board-only regardless of policy. These checks are server-owned and cannot be changed by interaction text, company governance, or creator input.
+- **Agent resolve routes.** When the effective policy is `board_or_agents`, eligible agents use the same `accept`, `reject`, `respond`, and `verdicts` routes as board users. Resolution records agent and run attribution and uses the same continuation wake behavior.
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. The pending interaction is the explicit waiting path.
 

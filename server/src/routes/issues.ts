@@ -1953,7 +1953,7 @@ function queueResolvedInteractionContinuationWakeup(input: {
       ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
       mutation: "interaction",
     },
-    idempotencyKey: input.idempotencyKey ?? null,
+    idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
     requestedByActorType: input.actor.actorType,
     requestedByActorId: input.actor.actorId,
     contextSnapshot: {
@@ -3714,23 +3714,51 @@ export function issueRoutes(
     return false;
   }
 
-  async function rejectAgentIssueThreadInteractionResolution(
+  async function assertIssueThreadInteractionResolutionAllowed(
     req: Request,
     res: Response,
-    issue: {
-      id: string;
-      companyId: string;
-      parentId?: string | null;
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+    interaction: {
+      createdByAgentId?: string | null;
+      sourceRunId?: string | null;
+      effectiveResolverPolicy: string;
+      kind: string;
+      payload?: unknown;
     },
   ) {
-    if (req.actor.type !== "agent") return false;
-    if (
-      req.actor.runId &&
-      !(await assertTaskWatchdogIssueMutationAllowed(req, res, issue, { allowWatchdogIssue: false }))
-    ) {
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
       return true;
     }
-    res.status(403).json({ error: "Agent actors cannot resolve issue-thread interactions through this board-only route" });
+    const actorAgentId = req.actor.agentId;
+    const runId = requireAgentRunId(req, res);
+    if (!actorAgentId || !runId) return false;
+    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (watchdogScope.kind !== "none") {
+      res.status(403).json({ error: "Task-watchdog runs cannot resolve issue-thread interactions" });
+      return false;
+    }
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
+    if (interaction.effectiveResolverPolicy !== "board_or_agents") {
+      res.status(403).json({ error: "This issue-thread interaction is board-only" });
+      return false;
+    }
+    if (interaction.createdByAgentId === actorAgentId) {
+      res.status(403).json({ error: "Agents cannot resolve interactions they created" });
+      return false;
+    }
+    if (interaction.sourceRunId === runId) {
+      res.status(403).json({ error: "Agents cannot resolve interactions created by the same run" });
+      return false;
+    }
+    const payload = interaction.payload && typeof interaction.payload === "object"
+      ? interaction.payload as { toolAction?: unknown }
+      : null;
+    if (interaction.kind === "request_confirmation" && payload?.toolAction !== undefined) {
+      res.status(403).json({ error: "Tool-action confirmations are always board-only" });
+      return false;
+    }
     return true;
   }
 
@@ -9320,6 +9348,8 @@ export function issueRoutes(
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
+        requestedResolverPolicy: interaction.requestedResolverPolicy,
+        effectiveResolverPolicy: interaction.effectiveResolverPolicy,
       },
     });
 
@@ -9334,12 +9364,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
 
       const actor = getActorInfo(req);
-      const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
+      const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
+        runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
@@ -9399,6 +9431,9 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
+          resolutionActorKind: actor.actorType,
+          requestedResolverPolicy: interaction.requestedResolverPolicy,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           createdTaskCount:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.createdTasks?.length ?? 0)
@@ -9479,12 +9514,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).rejectInteraction(issue, interactionId, req.body, {
+      const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
+        runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
 
@@ -9504,6 +9541,9 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
+          resolutionActorKind: actor.actorType,
+          requestedResolverPolicy: interaction.requestedResolverPolicy,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           rejectionReason:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.rejectionReason ?? null)
@@ -9533,12 +9573,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).answerQuestions(issue, interactionId, req.body, {
+      const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
+        runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
 
@@ -9556,6 +9598,9 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
+          resolutionActorKind: actor.actorType,
+          requestedResolverPolicy: interaction.requestedResolverPolicy,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           answeredQuestionCount:
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.answers?.length ?? 0)
@@ -9583,16 +9628,18 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
 
       const actor = getActorInfo(req);
-      const { interaction, newlyResolvedItemIds } = await issueThreadInteractionService(db).submitItemVerdicts(
+      const { interaction, newlyResolvedItemIds } = await interactionSvc.submitItemVerdicts(
         issue,
         interactionId,
         req.body,
         {
           agentId: actor.agentId,
+          runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
         },
       );
@@ -9613,6 +9660,9 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
+          resolutionActorKind: actor.actorType,
+          requestedResolverPolicy: interaction.requestedResolverPolicy,
+          effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           submittedVerdictCount: Array.isArray(req.body?.verdicts) ? req.body.verdicts.length : 0,
           newlyResolvedItemCount: newlyResolvedItemIds.length,
           newlyResolvedItemIds,
@@ -9699,7 +9749,10 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
+      if (req.actor.type === "agent") {
+        res.status(403).json({ error: "Agent actors cannot cancel issue-thread interactions through this board-only route" });
+        return;
+      }
       assertBoard(req);
 
       const actor = getActorInfo(req);

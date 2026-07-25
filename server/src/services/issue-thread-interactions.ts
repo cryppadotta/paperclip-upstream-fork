@@ -3,6 +3,7 @@ import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   documents,
   heartbeatRuns,
   issueComments,
@@ -17,7 +18,10 @@ import type {
   AskUserQuestionsInteraction,
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
+  InteractionResolverGovernance,
   IssueThreadInteraction,
+  IssueThreadInteractionKind,
+  IssueThreadInteractionResolverPolicy,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -50,12 +54,13 @@ import {
   withdrawIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
 type InteractionActor = {
   agentId?: string | null;
+  runId?: string | null;
   userId?: string | null;
 };
 
@@ -77,6 +82,53 @@ type ResolvedInteractionResult = {
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
+
+const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<IssueThreadInteractionKind, IssueThreadInteractionResolverPolicy> = {
+  suggest_tasks: "board_only",
+  ask_user_questions: "board_or_agents",
+  request_confirmation: "board_only",
+  request_checkbox_confirmation: "board_only",
+  request_item_verdicts: "board_only",
+};
+
+export function resolveInteractionPolicy(args: {
+  kind: IssueThreadInteractionKind;
+  requested?: IssueThreadInteractionResolverPolicy;
+  governance: InteractionResolverGovernance;
+  hasToolAction: boolean;
+}) {
+  const kindGovernance = args.governance[args.kind];
+  const requestedResolverPolicy = args.requested
+    ?? kindGovernance?.defaultPolicy
+    ?? DEFAULT_RESOLVER_POLICY_BY_KIND[args.kind];
+  const effectiveResolverPolicy = args.hasToolAction || kindGovernance?.cap === "board_only"
+    ? "board_only"
+    : requestedResolverPolicy;
+  return { requestedResolverPolicy, effectiveResolverPolicy } as const;
+}
+
+function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
+  if (!actor.agentId) return;
+  if (!actor.runId) throw forbidden("Agent run id required to resolve an issue-thread interaction");
+  if (current.effectiveResolverPolicy !== "board_or_agents") {
+    throw forbidden("This issue-thread interaction is board-only");
+  }
+  if (current.createdByAgentId === actor.agentId) {
+    throw forbidden("Agents cannot resolve interactions they created");
+  }
+  if (current.sourceRunId && current.sourceRunId === actor.runId) {
+    throw forbidden("Agents cannot resolve interactions created by the same run");
+  }
+  if (
+    current.kind === "request_confirmation"
+    && current.payload
+    && typeof current.payload === "object"
+    && "toolAction" in current.payload
+    && current.payload.toolAction !== undefined
+  ) {
+    throw forbidden("Tool-action confirmations are always board-only");
+  }
+}
 
 type IssueResolutionContext = {
   id: string;
@@ -139,6 +191,7 @@ function isEquivalentCreateRequest(
 ) {
   return (
     row.kind === input.kind
+    && row.requestedResolverPolicy === input.resolverPolicy
     && row.continuationPolicy === input.continuationPolicy
     && (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null)
     && (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null)
@@ -185,6 +238,9 @@ function hydrateInteraction(
     idempotencyKey: row.idempotencyKey ?? null,
     status: row.status as IssueThreadInteraction["status"],
     continuationPolicy: row.continuationPolicy as IssueThreadInteraction["continuationPolicy"],
+    resolverPolicy: row.requestedResolverPolicy,
+    requestedResolverPolicy: row.requestedResolverPolicy,
+    effectiveResolverPolicy: row.effectiveResolverPolicy,
   };
 
   switch (row.kind) {
@@ -887,6 +943,7 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
         ...buildStaleTargetResult(args.row, target),
       },
       resolvedByAgentId: args.actor.agentId ?? null,
+      resolvedByRunId: args.actor.runId ?? null,
       resolvedByUserId: args.actor.userId ?? null,
       resolvedAt: now,
       updatedAt: now,
@@ -1028,6 +1085,7 @@ export function issueThreadInteractionService(db: Db) {
             ...(selectedOptionIds ? { selectedOptionIds } : {}),
           },
           resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByRunId: args.actor.runId ?? null,
           resolvedByUserId: args.actor.userId ?? null,
           resolvedAt: now,
           updatedAt: now,
@@ -1125,6 +1183,7 @@ export function issueThreadInteractionService(db: Db) {
           reason: reason || null,
         },
         resolvedByAgentId: args.actor.agentId ?? null,
+        resolvedByRunId: args.actor.runId ?? null,
         resolvedByUserId: args.actor.userId ?? null,
         resolvedAt: now,
         updatedAt: now,
@@ -1172,17 +1231,29 @@ export function issueThreadInteractionService(db: Db) {
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      const governance = await db
+        .select({ interactionResolverGovernance: companies.interactionResolverGovernance })
+        .from(companies)
+        .where(eq(companies.id, issue.companyId))
+        .then((rows) => rows[0]?.interactionResolverGovernance ?? {});
+      const policy = resolveInteractionPolicy({
+        kind: data.kind,
+        requested: data.resolverPolicy,
+        governance,
+        hasToolAction: data.kind === "request_confirmation" && data.payload.toolAction !== undefined,
+      });
+      const normalizedData = { ...data, resolverPolicy: policy.requestedResolverPolicy };
 
-      if (data.idempotencyKey) {
+      if (normalizedData.idempotencyKey) {
         const existing = await getIdempotentInteraction({
           issueId: issue.id,
           companyId: issue.companyId,
-          idempotencyKey: data.idempotencyKey,
+          idempotencyKey: normalizedData.idempotencyKey,
         });
         if (existing) {
-          if (!isEquivalentCreateRequest(existing, data, actor)) {
+          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
             throw conflict("Interaction idempotency key already exists for a different request", {
-              idempotencyKey: data.idempotencyKey,
+              idempotencyKey: normalizedData.idempotencyKey,
             });
           }
           return hydrateInteraction(existing);
@@ -1238,6 +1309,8 @@ export function issueThreadInteractionService(db: Db) {
             kind: data.kind,
             status: "pending",
             continuationPolicy: data.continuationPolicy,
+            requestedResolverPolicy: policy.requestedResolverPolicy,
+            effectiveResolverPolicy: policy.effectiveResolverPolicy,
             idempotencyKey: data.idempotencyKey ?? null,
             sourceCommentId: data.sourceCommentId ?? null,
             sourceRunId: data.sourceRunId ?? null,
@@ -1249,18 +1322,18 @@ export function issueThreadInteractionService(db: Db) {
           })
           .returning();
       } catch (error) {
-        if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
+        if (!normalizedData.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
         }
         const existing = await getIdempotentInteraction({
           issueId: issue.id,
           companyId: issue.companyId,
-          idempotencyKey: data.idempotencyKey,
+          idempotencyKey: normalizedData.idempotencyKey,
         });
         if (!existing) throw error;
-        if (!isEquivalentCreateRequest(existing, data, actor)) {
+        if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
           throw conflict("Interaction idempotency key already exists for a different request", {
-            idempotencyKey: data.idempotencyKey,
+            idempotencyKey: normalizedData.idempotencyKey,
           });
         }
         return hydrateInteraction(existing);
@@ -1278,6 +1351,7 @@ export function issueThreadInteractionService(db: Db) {
     ): Promise<ResolvedInteractionResult> => {
       const data = acceptIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
+      assertAgentResolutionAllowed(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
           // Accepting suggest_tasks only creates follow-up issues; it does not
@@ -1333,6 +1407,7 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
+      assertAgentResolutionAllowed(current, actor);
       if (current.kind !== "suggest_tasks") {
         throw unprocessable("Only suggest_tasks interactions can be accepted");
       }
@@ -1379,6 +1454,7 @@ export function issueThreadInteractionService(db: Db) {
           .set({
             status: "accepted",
             resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
             resolvedByUserId: actor.userId ?? null,
             resolvedAt,
             updatedAt: resolvedAt,
@@ -1476,6 +1552,7 @@ export function issueThreadInteractionService(db: Db) {
     ) => {
       const data = rejectIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
+      assertAgentResolutionAllowed(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
           return issueThreadInteractionService(db).rejectSuggestedTasks(issue, interactionId, data, actor, current);
@@ -1564,6 +1641,7 @@ export function issueThreadInteractionService(db: Db) {
             status: complete ? "answered" : "pending",
             result,
             resolvedByAgentId: complete ? actor.agentId ?? null : null,
+            resolvedByRunId: complete ? actor.runId ?? null : null,
             resolvedByUserId: complete ? actor.userId ?? null : null,
             resolvedAt: complete ? now : null,
             updatedAt: now,
@@ -1618,6 +1696,7 @@ export function issueThreadInteractionService(db: Db) {
             rejectionReason: input.reason?.trim() || null,
           },
           resolvedByAgentId: actor.agentId ?? null,
+          resolvedByRunId: actor.runId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),
           updatedAt: new Date(),
@@ -1981,6 +2060,7 @@ export function issueThreadInteractionService(db: Db) {
           status: "cancelled",
           result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
           resolvedByAgentId: actor.agentId ?? null,
+          resolvedByRunId: actor.runId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: now,
           updatedAt: now,
@@ -2010,10 +2090,11 @@ export function issueThreadInteractionService(db: Db) {
         .where(eq(issueThreadInteractions.id, interactionId))
         .then((rows) => rows[0] ?? null);
 
-      if (!current) throw notFound("Interaction not found");
-      if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
-        throw notFound("Interaction not found");
-      }
+        if (!current) throw notFound("Interaction not found");
+        if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
+          throw notFound("Interaction not found");
+        }
+        assertAgentResolutionAllowed(current, actor);
       if (current.kind !== "ask_user_questions") {
         throw unprocessable("Only ask_user_questions interactions can be answered");
       }
@@ -2036,7 +2117,8 @@ export function issueThreadInteractionService(db: Db) {
             answers: normalizedAnswers,
             summaryMarkdown: input.summaryMarkdown ?? null,
           },
-          resolvedByAgentId: actor.agentId ?? null,
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),
           updatedAt: new Date(),
@@ -2094,6 +2176,7 @@ export function issueThreadInteractionService(db: Db) {
             summaryMarkdown: null,
           },
           resolvedByAgentId: actor.agentId ?? null,
+          resolvedByRunId: actor.runId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),
           updatedAt: new Date(),
