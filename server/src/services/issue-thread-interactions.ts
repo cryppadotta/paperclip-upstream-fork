@@ -2015,32 +2015,52 @@ export function issueThreadInteractionService(db: Db) {
 
       const reason = data.reason?.trim() || null;
       const now = new Date();
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
+      // One transaction, linked tool action first: revoking pending/approved
+      // requests before resolving the card means a concurrent gateway claim
+      // (approved -> executing) either loses to the revocation's row lock or
+      // is detected below and aborts the withdrawal; a concurrent card
+      // resolution rolls the revocation back via the status="pending" guard.
+      // "approved" is revoked too — the request can be approved from the tool
+      // review queue while the card is still pending, and an executable
+      // request must not outlive a withdrawn card.
+      const updated = await db.transaction(async (tx) => {
+        await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
-          result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-      if (!updated) throw conflict("Interaction has already been resolved");
-
-      // "approved" is reachable while the card is still pending (the request can
-      // be approved from the tool review queue without resolving the card), so
-      // withdrawal must revoke approved-but-unconsumed requests too.
-      await resolveLinkedToolActionRequests(db, current, {
-        status: "cancelled",
-        fromStatuses: ["pending", "approved"],
-        actor,
-        now,
+          fromStatuses: ["pending", "approved"],
+          actor,
+          now,
+        });
+        if (current.kind === "request_confirmation") {
+          const active = await tx
+            .select({ id: toolActionRequests.id })
+            .from(toolActionRequests)
+            .where(and(
+              eq(toolActionRequests.companyId, current.companyId),
+              eq(toolActionRequests.interactionId, current.id),
+              inArray(toolActionRequests.status, ["executing", "executed"]),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (active) throw conflict("The linked tool action is already executing and can no longer be withdrawn");
+        }
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw conflict("Interaction has already been resolved");
+        return row;
       });
+
       await touchIssue(db, issue.id);
       const withdrawn = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, withdrawn);

@@ -248,6 +248,27 @@ describe("issueThreadInteractionService", () => {
     )).rejects.toMatchObject({ status: 409 });
   });
 
+  it("refuses withdrawal when the linked tool action is already executing", async () => {
+    const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+    const interactionRow = {
+      id: "interaction-executing", companyId: "company-1", issueId: "11111111-1111-4111-8111-111111111111",
+      kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee",
+      sourceCommentId: null, sourceRunId: null, title: null, summary: null,
+      createdByAgentId: "agent-1", createdByUserId: null, resolvedByAgentId: null, resolvedByUserId: null,
+      payload: { version: 1, prompt: "Proceed?" }, result: null, resolvedAt: null,
+      createdAt: new Date("2026-07-25T10:00:00.000Z"), updatedAt: new Date("2026-07-25T10:00:00.000Z"),
+    };
+    const state = createFakeDb({ interactionRow, parentRows: [{ id: "action-request-1" }] });
+    const svc = issueThreadInteractionService(state.db as never);
+    await expect(svc.withdrawInteraction(
+      { id: interactionRow.issueId, companyId: "company-1" },
+      interactionRow.id,
+      {},
+      { agentId: "agent-1" },
+    )).rejects.toMatchObject({ status: 409 });
+    expect(state.interactionUpdates).toHaveLength(0);
+  });
+
   it("expires pending interactions when the issue is terminal", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
     const interactionRow = {
