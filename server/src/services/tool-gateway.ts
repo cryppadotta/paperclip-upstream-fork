@@ -4220,7 +4220,13 @@ export function createToolGatewayService(
     }).summary;
     // Final recheck at the last DB write before dispatch: tool and snapshot
     // resolution above involve network calls, so re-verify the issue is still
-    // open now that only the provider call remains.
+    // open now that only the provider call remains. A close that commits after
+    // this read has raced an execution that was approved, claimed, and verified
+    // while the issue was open; that instant is irreducible for an external
+    // side effect gated by DB state (holding a DB lock across a remote provider
+    // call is not an option), and the accepted linearization is that the
+    // execution wins — its result still lands on the expired card via
+    // reflectToolActionInteractionLifecycle.
     await assertIssueOpenForApprovedAction({ claimed, invocation });
 
     const startedAt = Date.now();
