@@ -105,6 +105,9 @@ function createSuggestTasksInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -181,6 +184,9 @@ function createAskUserQuestionsInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -224,6 +230,9 @@ function createRequestConfirmationInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -283,6 +292,9 @@ function createRequestCheckboxConfirmationInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
@@ -946,6 +958,9 @@ function createRequestItemVerdictsInteraction(
     },
     result: null,
     ...overrides,
+    resolverPolicy: overrides.resolverPolicy ?? "board_only",
+    requestedResolverPolicy: overrides.requestedResolverPolicy ?? "board_only",
+    effectiveResolverPolicy: overrides.effectiveResolverPolicy ?? "board_only",
   };
 }
 
