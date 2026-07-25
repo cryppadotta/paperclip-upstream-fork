@@ -766,6 +766,10 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     const cardRoot = host.querySelector("div.rounded-lg.p-5.shadow-none");
     expect(cardRoot?.className).toContain("border-border");
     expect(cardRoot?.className).not.toMatch(/border-(rose|red)/);
+    // The header status icon is MinusCircle ("retracted"), never XCircle ("denied").
+    const statusIcon = cardRoot?.querySelector("svg");
+    expect(statusIcon?.getAttribute("class")).toContain("lucide-circle-minus");
+    expect(statusIcon?.getAttribute("class")).not.toContain("lucide-circle-x");
     const footer = host.querySelector('[data-testid="interaction-withdrawn-footer"]');
     expect(footer?.textContent).toContain("Withdrawn by");
     expect(footer?.textContent).toContain("Plan superseded by a newer revision");
