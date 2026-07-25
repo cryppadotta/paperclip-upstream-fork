@@ -9,6 +9,7 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
+  toolActionRequests,
 } from "@paperclipai/db";
 import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
@@ -366,6 +367,37 @@ function buildAdministrativeOutcomeResult(
     } satisfies RequestItemVerdictsResult;
   }
   return { version: 1, outcome, reason } as const;
+}
+
+// A request_confirmation card can govern a parked tool call via a linked
+// tool_action_requests row. Administrative resolutions (withdraw, terminal-issue
+// expiry) must settle that row too, or the parked call stays approvable under
+// its own one-hour lifecycle after its card is gone.
+async function resolveLinkedToolActionRequests(
+  db: Pick<Db, "update">,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "kind">,
+  outcome: {
+    status: "expired" | "cancelled";
+    fromStatuses: Array<"pending" | "approved">;
+    actor: InteractionActor;
+    now: Date;
+  },
+) {
+  if (interaction.kind !== "request_confirmation") return;
+  await db
+    .update(toolActionRequests)
+    .set({
+      status: outcome.status,
+      resolvedByAgentId: outcome.actor.agentId ?? null,
+      resolvedByUserId: outcome.actor.userId ?? null,
+      resolvedAt: outcome.now,
+      updatedAt: outcome.now,
+    })
+    .where(and(
+      eq(toolActionRequests.companyId, interaction.companyId),
+      eq(toolActionRequests.interactionId, interaction.id),
+      inArray(toolActionRequests.status, outcome.fromStatuses),
+    ));
 }
 
 function resolveActorKind(interaction: Pick<IssueThreadInteraction, "resolvedByAgentId" | "resolvedByUserId">) {
@@ -1947,7 +1979,15 @@ export function issueThreadInteractionService(db: Db) {
             eq(issueThreadInteractions.status, "pending"),
           ))
           .returning();
-        if (updated) expired.push(hydrateInteraction(updated));
+        if (updated) {
+          expired.push(hydrateInteraction(updated));
+          await resolveLinkedToolActionRequests(db, row, {
+            status: "expired",
+            fromStatuses: ["pending", "approved"],
+            actor,
+            now,
+          });
+        }
       }
       if (expired.length > 0) {
         await touchIssue(db, issue.id);
@@ -1992,6 +2032,12 @@ export function issueThreadInteractionService(db: Db) {
         .returning();
       if (!updated) throw conflict("Interaction has already been resolved");
 
+      await resolveLinkedToolActionRequests(db, current, {
+        status: "cancelled",
+        fromStatuses: ["pending"],
+        actor,
+        now,
+      });
       await touchIssue(db, issue.id);
       const withdrawn = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, withdrawn);

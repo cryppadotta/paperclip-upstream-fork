@@ -8942,16 +8942,6 @@ export function issueRoutes(
       const becameTerminal =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
       if (becameTerminal) {
-        const expiredInteractions = await issueThreadInteractionService(db).expirePendingInteractionsForTerminalIssue(issue, {
-          agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        });
-        await logExpiredRequestConfirmations({
-          issue,
-          interactions: expiredInteractions,
-          actor,
-          source: "issue.status_transition.issue_closed",
-        });
         await destroyReusableSandboxLeasesForTerminalIssue(issue);
       }
       if (becameTerminal && issue.parentId) {
@@ -10541,16 +10531,6 @@ export function issueRoutes(
         !["done", "cancelled"].includes(issueBeforeCommentDecision.status) &&
         ["done", "cancelled"].includes(currentIssue.status);
       if (becameTerminal) {
-        const expiredInteractions = await issueThreadInteractionService(db).expirePendingInteractionsForTerminalIssue(currentIssue, {
-          agentId: actor.agentId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        });
-        await logExpiredRequestConfirmations({
-          issue: currentIssue,
-          interactions: expiredInteractions,
-          actor,
-          source: "issue.status_transition.issue_closed",
-        });
         await destroyReusableSandboxLeasesForTerminalIssue(currentIssue);
       }
       if (becameTerminal && currentIssue.parentId) {
