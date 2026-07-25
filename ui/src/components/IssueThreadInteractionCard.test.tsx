@@ -28,6 +28,10 @@ import {
   supersededRequestItemVerdictsInteraction,
   staleTargetRequestConfirmationInteraction,
   rejectedSuggestedTasksInteraction,
+  agentAddressedRequestConfirmationInteraction,
+  agentResolvedRequestConfirmationInteraction,
+  withdrawnRequestConfirmationInteraction,
+  issueClosedRequestConfirmationInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -714,5 +718,65 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).toContain("Approve the plan and let the responsible start implementation?");
     expect(host.textContent).not.toContain("Approve & run");
     expect(host.textContent).not.toContain("Technical details");
+  });
+
+  it("renders the agents-may-resolve policy badge and addressee chip", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+    });
+
+    const policyBadge = host.querySelector('[data-testid="interaction-policy-badge"]');
+    expect(policyBadge?.textContent).toContain("Agents may resolve");
+
+    const addresseeBadge = host.querySelector('[data-testid="interaction-addressee-badge"]');
+    expect(addresseeBadge?.textContent).toContain("For ");
+  });
+
+  it("omits the policy and addressee badges for a board-only interaction", () => {
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+    });
+
+    expect(host.querySelector('[data-testid="interaction-policy-badge"]')).toBeNull();
+    expect(host.querySelector('[data-testid="interaction-addressee-badge"]')).toBeNull();
+  });
+
+  it("marks agent resolution with an audit chip in the resolved footer", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+    });
+
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(
+      host.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+  });
+
+  it("renders a withdrawn footer with the withdrawer, reason, and agent chip", () => {
+    const host = renderCard({
+      interaction: withdrawnRequestConfirmationInteraction,
+    });
+
+    // Header status reads "Withdrawn", not the raw "Cancelled" status.
+    expect(host.textContent).toContain("Withdrawn");
+    const footer = host.querySelector('[data-testid="interaction-withdrawn-footer"]');
+    expect(footer?.textContent).toContain("Withdrawn by");
+    expect(footer?.textContent).toContain("Plan superseded by a newer revision");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
+    // The generic "Resolved by" footer must not double-render.
+    expect(host.querySelector('[data-testid="interaction-resolved-footer"]')).toBeNull();
+  });
+
+  it("renders an issue-closed expiry footer for terminal auto-expiry", () => {
+    const host = renderCard({
+      interaction: issueClosedRequestConfirmationInteraction,
+    });
+
+    const footer = host.querySelector('[data-testid="interaction-issue-closed-footer"]');
+    expect(footer?.textContent).toContain("Expired when the issue closed");
+    expect(host.textContent).toContain("Expired · issue closed");
   });
 });

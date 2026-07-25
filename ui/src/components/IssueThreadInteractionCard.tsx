@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Users, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import {
@@ -88,6 +88,32 @@ function resolveActorLabel(args: {
     return formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ?? "Board";
   }
   return "Unknown";
+}
+
+/**
+ * Administrative terminal outcomes (P1): an interaction that was withdrawn by
+ * its board/agent, or auto-expired when its issue reached a terminal state.
+ * Both are stored as `status="cancelled"|"expired"` with the distinguishing
+ * fact carried on `result.outcome` (there is no dedicated `withdrawn` status).
+ */
+function getAdministrativeOutcome(
+  interaction: IssueThreadInteraction,
+): "withdrawn" | "issue_closed" | null {
+  const result = interaction.result;
+  if (result && typeof result === "object" && "outcome" in result) {
+    const outcome = (result as { outcome?: string | null }).outcome;
+    if (outcome === "withdrawn" || outcome === "issue_closed") return outcome;
+  }
+  return null;
+}
+
+function getAdministrativeReason(interaction: IssueThreadInteraction): string | null {
+  const result = interaction.result;
+  if (result && typeof result === "object" && "reason" in result) {
+    const reason = (result as { reason?: string | null }).reason;
+    if (typeof reason === "string" && reason.trim().length > 0) return reason.trim();
+  }
+  return null;
 }
 
 function statusLabel(status: IssueThreadInteraction["status"]) {
@@ -1165,10 +1191,18 @@ function AskUserQuestionsCard({
         <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" />
-            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+            {interaction.result?.outcome === "issue_closed"
+              ? questions.length === 1
+                ? "Question expired when the issue closed"
+                : "Questions expired when the issue closed"
+              : questions.length === 1
+                ? "Question expired by comment"
+                : "Questions expired by comment"}
           </div>
           <p className="mt-1">
-            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+            {interaction.result?.outcome === "issue_closed"
+              ? "This question request expired automatically when the issue reached a terminal state."
+              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1348,16 +1382,23 @@ function RequestConfirmationResolution({
 
   if (interaction.status === "expired") {
     const expiredByComment = outcome === "superseded_by_comment";
+    const expiredByIssueClosed = outcome === "issue_closed";
     const expiredByTargetChange = outcome === "stale_target";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          {expiredByComment
+            ? "Expired by comment"
+            : expiredByIssueClosed
+              ? "Expired · issue closed"
+              : "Expired by target change"}
         </div>
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            : expiredByIssueClosed
+              ? "This confirmation expired automatically when the issue reached a terminal state."
+              : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -3050,6 +3091,29 @@ export function IssueThreadInteractionCard({
           userLabelMap,
         })
       : null;
+  // P4: audit-visible distinction between agent and human resolution.
+  const resolvedByAgent = Boolean(interaction.resolvedByAgentId);
+  const adminOutcome = getAdministrativeOutcome(interaction);
+  const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
+  // P2: agents may resolve when the governance-capped policy allows it.
+  const agentsMayResolve = interaction.effectiveResolverPolicy === "board_or_agents";
+  // P3: interactions directed at a specific agent addressee.
+  const addresseeLabel = interaction.addresseeAgentId
+    ? resolveActorLabel({
+        agentId: interaction.addresseeAgentId,
+        agentMap,
+        currentUserId,
+        userLabelMap,
+      })
+    : null;
+  const statusText =
+    adminOutcome === "withdrawn"
+      ? "Withdrawn"
+      : adminOutcome === "issue_closed"
+        ? "Expired · issue closed"
+        : activeStyles
+          ? activeStyles.label
+          : statusLabel(interaction.status);
 
   return (
     <div className={cn("rounded-lg border p-5 shadow-none", styles.shell)}>
@@ -3060,8 +3124,42 @@ export function IssueThreadInteractionCard({
               <StatusIcon className={cn("h-3.5 w-3.5", iconSpin && "animate-spin")} />
               {isPlan ? "Plan" : interactionKindLabel(interaction.kind)}
               <span className="text-current/60">/</span>
-              {activeStyles ? activeStyles.label : statusLabel(interaction.status)}
+              {statusText}
             </span>
+            {agentsMayResolve ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="outline"
+                    className="gap-1 border-indigo-500/50 text-indigo-700 dark:text-indigo-200"
+                    data-testid="interaction-policy-badge"
+                  >
+                    <Users className="h-3 w-3" />
+                    Agents may resolve
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Governance allows an assigned agent to resolve this interaction without waiting for the board.
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
+            {addresseeLabel ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    className="gap-1"
+                    data-testid="interaction-addressee-badge"
+                  >
+                    <Bot className="h-3 w-3" />
+                    For {addresseeLabel}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-xs text-xs">
+                  Directed to {addresseeLabel}. Agent-addressed interactions are handled by that agent and are kept out of the board attention feed.
+                </TooltipContent>
+              </Tooltip>
+            ) : null}
           </div>
 
           <div className="mt-3 text-lg font-bold text-foreground">
@@ -3152,12 +3250,63 @@ export function IssueThreadInteractionCard({
         )}
       </div>
 
-      {resolvedByLabel && !isToolAction ? (
-        <div className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+      {adminOutcome === "withdrawn" ? (
+        <div
+          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-withdrawn-footer"
+        >
+          <div>
+            Withdrawn by{" "}
+            <span className="font-medium text-foreground">{resolvedByLabel ?? "an agent"}</span>
+            {resolvedByAgent ? <ResolvedByAgentChip /> : null}
+            {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
+          </div>
+          {adminReason ? (
+            <div className="mt-1 italic text-muted-foreground/90">"{adminReason}"</div>
+          ) : null}
+        </div>
+      ) : adminOutcome === "issue_closed" ? (
+        <div
+          className="mt-4 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-issue-closed-footer"
+        >
+          Expired when the issue closed
+          {interaction.resolvedAt ? ` · ${formatShortDate(interaction.resolvedAt)}` : ""}
+        </div>
+      ) : resolvedByLabel && !isToolAction ? (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-x-1 gap-y-0.5 border-t border-border/60 pt-3 text-xs text-muted-foreground"
+          data-testid="interaction-resolved-footer"
+        >
           Resolved by <span className="font-medium text-foreground">{resolvedByLabel}</span>
+          {resolvedByAgent ? <ResolvedByAgentChip /> : null}
           {interaction.resolvedAt ? ` on ${formatShortDate(interaction.resolvedAt)}` : ""}
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Small audit chip marking that an interaction was resolved by an agent (rather
+ * than a human board member) — governed agent resolution introduced in P2.
+ */
+function ResolvedByAgentChip() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="ml-1 gap-1 border-indigo-500/50 py-0 text-[length:--text-micro] text-indigo-700 dark:text-indigo-200"
+          data-testid="interaction-resolved-by-agent-chip"
+        >
+          <Bot className="h-3 w-3" />
+          Agent
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-xs text-xs">
+        Resolved by an agent under the company's interaction governance policy — audit-distinct from a human board resolution.
+      </TooltipContent>
+    </Tooltip>
   );
 }

@@ -1,8 +1,12 @@
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, Fragment, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
+  ISSUE_THREAD_INTERACTION_KINDS,
+  type InteractionResolverGovernance,
+  type IssueThreadInteractionKind,
+  type IssueThreadInteractionResolverPolicy,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -12,6 +16,13 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Settings, CloudUpload, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
@@ -22,6 +33,80 @@ import {
 const BYTES_PER_MIB = 1024 * 1024;
 const DEFAULT_COMPANY_ATTACHMENT_MAX_MIB = DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
 const MAX_COMPANY_ATTACHMENT_MAX_MIB = MAX_COMPANY_ATTACHMENT_MAX_BYTES / BYTES_PER_MIB;
+
+const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
+  suggest_tasks: "Suggested tasks",
+  ask_user_questions: "Ask user questions",
+  request_confirmation: "Confirmations",
+  request_checkbox_confirmation: "Checkbox confirmations",
+  request_item_verdicts: "Item verdicts",
+};
+
+// Sentinel for "no override" — Radix Select disallows empty-string item values.
+const GOVERNANCE_UNSET = "default";
+type GovernanceSelectValue = typeof GOVERNANCE_UNSET | IssueThreadInteractionResolverPolicy;
+
+const GOVERNANCE_POLICY_OPTIONS: { value: GovernanceSelectValue; label: string }[] = [
+  { value: GOVERNANCE_UNSET, label: "Company default" },
+  { value: "board_only", label: "Board only" },
+  { value: "board_or_agents", label: "Board or agents" },
+];
+
+function toSelectValue(policy: IssueThreadInteractionResolverPolicy | undefined): GovernanceSelectValue {
+  return policy ?? GOVERNANCE_UNSET;
+}
+
+/**
+ * Apply a single (kind, field) change to a governance map immutably, pruning
+ * empty entries so the persisted object stays sparse (only real overrides).
+ */
+function applyGovernanceChange(
+  current: InteractionResolverGovernance,
+  kind: IssueThreadInteractionKind,
+  field: "defaultPolicy" | "cap",
+  value: GovernanceSelectValue,
+): InteractionResolverGovernance {
+  const next: InteractionResolverGovernance = { ...current };
+  const entry = { ...(next[kind] ?? {}) };
+  if (value === GOVERNANCE_UNSET) {
+    delete entry[field];
+  } else {
+    entry[field] = value;
+  }
+  if (entry.defaultPolicy === undefined && entry.cap === undefined) {
+    delete next[kind];
+  } else {
+    next[kind] = entry;
+  }
+  return next;
+}
+function GovernanceSelect({
+  value,
+  onChange,
+  disabled,
+  testId,
+}: {
+  value: GovernanceSelectValue;
+  onChange: (value: GovernanceSelectValue) => void;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  return (
+    <Select value={value} onValueChange={(v) => onChange(v as GovernanceSelectValue)} disabled={disabled}>
+      <SelectTrigger size="sm" className="w-(--sz-170px) text-xs" data-testid={testId}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {GOVERNANCE_POLICY_OPTIONS.map((option) => (
+          <SelectItem key={option.value} value={option.value} className="text-xs">
+            {option.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 export function CompanySettings() {
   const {
     companies,
@@ -42,6 +127,7 @@ export function CompanySettings() {
   const [attachmentMaxMiB, setAttachmentMaxMiB] = useState(String(DEFAULT_COMPANY_ATTACHMENT_MAX_MIB));
   const [logoUrl, setLogoUrl] = useState("");
   const [logoUploadError, setLogoUploadError] = useState<string | null>(null);
+  const [governance, setGovernance] = useState<InteractionResolverGovernance>({});
 
   // Sync local state from selected company
   useEffect(() => {
@@ -51,6 +137,7 @@ export function CompanySettings() {
     setBrandColor(selectedCompany.brandColor ?? "");
     setAttachmentMaxMiB(String(Math.round((selectedCompany.attachmentMaxBytes ?? DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES) / BYTES_PER_MIB)));
     setLogoUrl(selectedCompany.logoUrl ?? "");
+    setGovernance(selectedCompany.interactionResolverGovernance ?? {});
   }, [selectedCompany]);
 
   const attachmentMaxBytes = Number.parseInt(attachmentMaxMiB, 10) * BYTES_PER_MIB;
@@ -88,6 +175,25 @@ export function CompanySettings() {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
   });
+
+  const governanceMutation = useMutation({
+    mutationFn: (next: InteractionResolverGovernance) =>
+      companiesApi.update(selectedCompanyId!, { interactionResolverGovernance: next }),
+    onSuccess: (company) => {
+      setGovernance(company.interactionResolverGovernance ?? {});
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+    }
+  });
+
+  function handleGovernanceChange(
+    kind: IssueThreadInteractionKind,
+    field: "defaultPolicy" | "cap",
+    value: GovernanceSelectValue,
+  ) {
+    const next = applyGovernanceChange(governance, kind, field, value);
+    setGovernance(next);
+    governanceMutation.mutate(next);
+  }
 
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
@@ -364,6 +470,63 @@ export function CompanySettings() {
             onChange={(v) => settingsMutation.mutate(v)}
             toggleTestId="company-settings-team-approval-toggle"
           />
+        </div>
+      </div>
+
+      {/* Interaction governance */}
+      <div className="space-y-4" data-testid="company-settings-interaction-governance-section">
+        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Interaction governance
+        </div>
+        <div className="space-y-4 rounded-md border border-border px-4 py-4">
+          <p className="text-sm text-muted-foreground">
+            Control who may resolve each kind of thread interaction.{" "}
+            <span className="font-medium text-foreground">Default policy</span> is the
+            resolver policy new interactions request;{" "}
+            <span className="font-medium text-foreground">Cap</span> is the maximum a
+            request may reach — set it to{" "}
+            <span className="font-medium text-foreground">Board only</span> to always
+            require the board. Tool-approval confirmations always stay board-only
+            regardless of these settings.
+          </p>
+          <div className="grid grid-cols-[1fr_auto_auto] items-center gap-x-4 gap-y-2.5">
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Kind
+            </div>
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Default policy
+            </div>
+            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Cap
+            </div>
+            {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
+              const entry = governance[kind] ?? {};
+              return (
+                <Fragment key={kind}>
+                  <div className="text-sm">{INTERACTION_KIND_LABELS[kind]}</div>
+                  <GovernanceSelect
+                    testId={`governance-${kind}-default`}
+                    value={toSelectValue(entry.defaultPolicy)}
+                    disabled={governanceMutation.isPending}
+                    onChange={(v) => handleGovernanceChange(kind, "defaultPolicy", v)}
+                  />
+                  <GovernanceSelect
+                    testId={`governance-${kind}-cap`}
+                    value={toSelectValue(entry.cap)}
+                    disabled={governanceMutation.isPending}
+                    onChange={(v) => handleGovernanceChange(kind, "cap", v)}
+                  />
+                </Fragment>
+              );
+            })}
+          </div>
+          {governanceMutation.isError && (
+            <span className="text-xs text-destructive">
+              {governanceMutation.error instanceof Error
+                ? governanceMutation.error.message
+                : "Failed to save interaction governance"}
+            </span>
+          )}
         </div>
       </div>
 
