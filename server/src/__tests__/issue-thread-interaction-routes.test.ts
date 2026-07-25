@@ -1544,8 +1544,8 @@ describe.sequential("issue thread interaction routes", () => {
       createdByAgentId: CREATED_AGENT_ID,
       addresseeAgentId: ASSIGNEE_AGENT_ID,
       sourceRunId: "run-1",
-      requestedResolverPolicy: "board_only",
-      effectiveResolverPolicy: "board_only",
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
       payload: { version: 1, questions: [] },
     };
     mockInteractionService.getForIssue

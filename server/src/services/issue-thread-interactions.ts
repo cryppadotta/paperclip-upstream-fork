@@ -111,11 +111,11 @@ export function resolveInteractionPolicy(args: {
 function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
   if (!actor.agentId) return;
   if (!actor.runId) throw forbidden("Agent run id required to resolve an issue-thread interaction");
+  if (current.effectiveResolverPolicy !== "board_or_agents") {
+    throw forbidden("This issue-thread interaction is board-only");
+  }
   if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {
     throw forbidden("Only the addressed agent or a board user may resolve this issue-thread interaction");
-  }
-  if (!current.addresseeAgentId && current.effectiveResolverPolicy !== "board_or_agents") {
-    throw forbidden("This issue-thread interaction is board-only");
   }
   if (current.createdByAgentId === actor.agentId) {
     throw forbidden("Agents cannot resolve interactions they created");

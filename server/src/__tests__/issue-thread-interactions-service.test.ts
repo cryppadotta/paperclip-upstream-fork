@@ -99,7 +99,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
-  it("persists addressees and restricts board-only interactions to the addressed agent", async () => {
+  it("persists addressees without allowing them to bypass board-only governance", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
     const creatorAgentId = randomUUID();
     const addresseeAgentId = randomUUID();
@@ -142,7 +142,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const input = {
       kind: "ask_user_questions" as const,
-      resolverPolicy: "board_only" as const,
+      resolverPolicy: "board_or_agents" as const,
       addresseeAgentId,
       continuationPolicy: "wake_assignee" as const,
       payload: {
@@ -162,8 +162,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     );
     expect(created).toMatchObject({
       addresseeAgentId,
-      requestedResolverPolicy: "board_only",
-      effectiveResolverPolicy: "board_only",
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
     });
 
     const answered = await interactionsSvc.answerQuestions(
@@ -192,6 +192,25 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     )).rejects.toMatchObject({
       status: 403,
       message: expect.stringContaining("addressed agent"),
+    });
+
+    const boardOnly = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        ...input,
+        resolverPolicy: "board_only",
+        idempotencyKey: "addressed:board-only",
+      },
+      { agentId: creatorAgentId },
+    );
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      boardOnly.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: addresseeAgentId, runId: addresseeRunId },
+    )).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("board-only"),
     });
 
     await expect(interactionsSvc.create(
