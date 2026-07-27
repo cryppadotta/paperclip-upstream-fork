@@ -268,5 +268,11 @@ describeEmbeddedPostgres("instance activity stream", () => {
     expect(allowed.status).toBe(200);
     expect(allowed.body).toHaveLength(1);
     expect(allowed.body[0].action).toBe("instance.database_backup_triggered");
+
+    const invalidCompanyId = await request(app(instanceAdminActor))
+      .get("/api/instance/activity")
+      .query({ companyId: "not-a-uuid" });
+    expect(invalidCompanyId.status).toBe(400);
+    expect(invalidCompanyId.body).toEqual({ error: "companyId must be a valid UUID" });
   });
 });

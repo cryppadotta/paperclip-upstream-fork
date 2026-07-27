@@ -130,8 +130,14 @@ export function activityRoutes(db: Db) {
     if (typeof req.query.action === "string" && req.query.action.trim()) {
       conditions.push(eq(instanceActivityLog.action, req.query.action.trim()));
     }
-    if (typeof req.query.companyId === "string" && req.query.companyId.trim()) {
-      conditions.push(eq(instanceActivityLog.companyId, req.query.companyId.trim()));
+    const companyIdParam = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
+    if (companyIdParam) {
+      const parsedCompanyId = z.string().uuid().safeParse(companyIdParam);
+      if (!parsedCompanyId.success) {
+        res.status(400).json({ error: "companyId must be a valid UUID" });
+        return;
+      }
+      conditions.push(eq(instanceActivityLog.companyId, parsedCompanyId.data));
     }
     if (typeof req.query.actorType === "string" && req.query.actorType.trim()) {
       conditions.push(eq(instanceActivityLog.actorType, req.query.actorType.trim()));
