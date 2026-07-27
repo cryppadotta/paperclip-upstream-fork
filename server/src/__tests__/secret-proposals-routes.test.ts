@@ -127,7 +127,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     return app;
   }
 
-  function createBoardApp(fixture: Awaited<ReturnType<typeof seedRun>>) {
+  function createBoardApp(fixture: Awaited<ReturnType<typeof seedRun>>, options?: { admin?: boolean }) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -135,7 +135,10 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         type: "board",
         userId: "board-user",
         companyIds: [fixture.companyId],
-        source: "local_implicit",
+        source: options?.admin === false ? "session" : "local_implicit",
+        memberships: options?.admin === false
+          ? [{ companyId: fixture.companyId, status: "active", membershipRole: "member" }]
+          : undefined,
       };
       next();
     });
@@ -143,6 +146,21 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     app.use(errorHandler);
     return app;
   }
+
+  it("requires company admin access to reject secret proposals", async () => {
+    const fixture = await seedRun();
+    const proposed = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({ kind: "secret", name: "dev/reject/token", value: "reject-secret", justification: "Needed" });
+
+    const rejected = await request(createBoardApp(fixture, { admin: false }))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposed.body.id}/reject`)
+      .send({ reason: "Not approved" });
+
+    expect(rejected.status).toBe(403);
+    expect(await db.select().from(companySecretProposals).where(eq(companySecretProposals.id, proposed.body.id)))
+      .toEqual([expect.objectContaining({ status: "pending", valueCiphertext: expect.any(Object) })]);
+  });
 
   it("requires agent JWT and atomically cascade-approves a secret plus binding with dual audits", async () => {
     const fixture = await seedRun();

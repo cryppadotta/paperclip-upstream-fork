@@ -28,14 +28,16 @@ import { issueService } from "../services/issues.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 
-function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
+function hasSecretDefinitionAdminAccess(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
   assertCompanyAccess(req, companyId);
-  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
   const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
-  if (membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole))) {
-    return;
-  }
+  return membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole));
+}
+
+function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
+  if (hasSecretDefinitionAdminAccess(req, companyId)) return;
   throw forbidden("Company admin access required");
 }
 
@@ -131,6 +133,10 @@ export function secretRoutes(db: Db) {
     kind: string;
     targetId: string | null;
   }) {
+    if (proposal.kind === "secret") {
+      assertSecretDefinitionAdmin(req, req.params.companyId as string);
+      return;
+    }
     const decision = await bindingApprovalDecision(req, proposal);
     if (decision && !decision.allowed) {
       throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
@@ -140,6 +146,9 @@ export function secretRoutes(db: Db) {
   async function boardProposalView(req: Parameters<typeof assertBoard>[0], proposal: Awaited<ReturnType<typeof proposals.listForBoard>>[number]) {
     if (proposal.status !== "pending") {
       return { ...proposal, viewerCanApprove: false, approveBlockReason: "Proposal is no longer pending" };
+    }
+    if (proposal.kind === "secret" && !hasSecretDefinitionAdminAccess(req, req.params.companyId as string)) {
+      return { ...proposal, viewerCanApprove: false, approveBlockReason: "Company admin access required" };
     }
     const decision = await bindingApprovalDecision(req, proposal);
     return {
