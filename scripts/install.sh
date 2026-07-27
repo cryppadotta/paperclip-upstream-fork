@@ -335,15 +335,19 @@ else
   else
     log "Node.js was not found"
   fi
-  check_version_manager
-  log "Installing Node.js $DEFAULT_NODE_MAJOR"
-  if [ "$OS_NAME" = "macos" ]; then
-    install_node_macos
+  if [ "$DRY_RUN" = "1" ]; then
+    log "Would install Node.js $DEFAULT_NODE_MAJOR"
   else
-    install_node_linux
+    check_version_manager
+    log "Installing Node.js $DEFAULT_NODE_MAJOR"
+    if [ "$OS_NAME" = "macos" ]; then
+      install_node_macos
+    else
+      install_node_linux
+    fi
+    has_supported_node || fail "Node.js installation finished, but Node.js >= $MIN_NODE_MAJOR with npm/npx is not available"
+    log "Installed Node.js $(node --version)"
   fi
-  has_supported_node || fail "Node.js installation finished, but Node.js >= $MIN_NODE_MAJOR with npm/npx is not available"
-  log "Installed Node.js $(node --version)"
 fi
 
 PACKAGE_SPEC="$PAPERCLIP_PACKAGE@latest"

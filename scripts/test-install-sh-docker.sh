@@ -118,6 +118,17 @@ run_with_node dry-run bash /paperclip-scripts/install.sh --no-prompt --dry-run -
   exit 1
 }
 
+echo "==> dry run without Node"
+docker run --rm \
+  -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
+  -v "$RESULTS_DIR:/results" \
+  ubuntu:24.04 \
+  bash -c 'mkdir -p /tmp/paperclip-test-bin && printf "#!/bin/sh\ntouch /results/dry-run-no-node.package-manager\nexit 99\n" >/tmp/paperclip-test-bin/apt-get && chmod +x /tmp/paperclip-test-bin/apt-get && PATH="/tmp/paperclip-test-bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" bash /paperclip-scripts/install.sh --no-prompt --dry-run --no-onboard'
+[ ! -e "$RESULTS_DIR/dry-run-no-node.package-manager" ] || {
+  echo "Expected --dry-run to avoid invoking the Node package manager" >&2
+  exit 1
+}
+
 echo "==> environment twins"
 docker run --rm \
   -v "$REPO_ROOT/scripts:/paperclip-scripts:ro" \
