@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { createRoot as createReactRoot, type Root } from "react-dom/client";
-import { act } from "react";
+import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
@@ -161,6 +161,14 @@ const providerConfigs = [
 ] satisfies Partial<CompanySecretProviderConfig>[];
 
 const activeRoots = new Set<Root>();
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void>;
+  flushSync(() => {
+    result = callback();
+  });
+  await result!;
+}
 
 function createRoot(container: Element | DocumentFragment) {
   const root = createReactRoot(container);
