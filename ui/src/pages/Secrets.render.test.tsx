@@ -621,13 +621,14 @@ describe("Secrets page layout", () => {
     });
     await flushReact();
 
+    await waitForReact(() => document.body.textContent?.includes("View in Usage") ?? false);
     const viewUsageButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("View in Usage"),
     ) as HTMLButtonElement | undefined;
     await act(async () => {
       viewUsageButton?.click();
     });
-    await flushReact();
+    await waitForReact(() => mockSecretsApi.usage.mock.calls.length > 0);
 
     expect(mockSecretsApi.usage).toHaveBeenCalledWith("secret-openai");
     expect(document.body.textContent).toContain("CodexCoder");
@@ -947,7 +948,7 @@ describe("Secrets page layout", () => {
     await act(async () => {
       definitionRow?.click();
     });
-    await flushReact();
+    await waitForReact(() => document.body.textContent?.includes("Details") ?? false);
 
     expect(document.body.textContent).toContain("Personal GitHub token");
     expect(document.body.textContent).toContain("Details");
@@ -1475,8 +1476,7 @@ describe("Secrets page layout", () => {
     await act(async () => {
       companyRow?.click();
     });
-    await flushReact();
-    await flushReact();
+    await waitForReact(() => document.body.textContent?.includes("Reviewer") ?? false);
 
     // Existing access is listed right in the Details tab.
     expect(document.body.textContent).toContain("Agent access");
