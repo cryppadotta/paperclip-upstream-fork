@@ -123,9 +123,9 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const images = attentionDetailImages(item);
   const hasImages = images.length > 0;
-  // The issue (or source) this row points at — used as the target for the
-  // "n more" affordance in the expanded gallery.
-  const issueHref = item.relatedIssue?.href ?? href;
+  // The issue or source this row points at — used as the target for expanded
+  // gallery affordances even when the subject itself is not an issue.
+  const detailHref = item.relatedIssue?.href ?? href;
   // Inline-resolvable active rows expand to reveal their resolver; rows with
   // images expand to reveal a larger gallery (PAP-13544). Either case gives a
   // header/thumbnail click somewhere to go. Non-inline, image-less rows keep the
@@ -405,7 +405,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
 
       {expanded && (hasImages || inline) && (
         <div className="space-y-3 border-t border-border/60 bg-muted/20 px-4 py-3 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
-          {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
+          {hasImages && <ExpandedImages images={images} issueHref={detailHref} />}
           {inline && (
             <InlineResolver
               item={item}
