@@ -15,17 +15,33 @@ function reasonText(entry) {
   return entry.reasons.map((entryReason) => entryReason.message).join("; ");
 }
 
+function scopeText(readiness) {
+  const authors = readiness.authors?.length
+    ? `PRs authored by ${readiness.authors.map((author) => `\`${author}\``).join(", ")} (this Paperclip instance)`
+    : "PRs by any author (community included)";
+  const window = readiness.windowDays ? ` referenced by issues active in the last ${readiness.windowDays} day(s)` : "";
+  return `${authors}${window}`;
+}
+
 export function renderReport(readiness) {
   const lines = [
     "# PR Gardening Report",
     "",
     `Repository: \`${readiness.repository}\`  `,
+    `Scope: ${scopeText(readiness)}  `,
     `Generated: ${readiness.generatedAt}  `,
     `Head-SHA verification: every verdict below was computed from the recorded current head SHA.`,
     "",
     `Summary: **${readiness.summary.ready} ready**, **${readiness.summary.needsGardening} need gardening**, **${readiness.summary.reportOnly} report-only drafts**.`,
     "",
   ];
+
+  if (readiness.truncatedIssues?.length) {
+    lines.push(
+      `Discovery caveat: ${readiness.truncatedIssues.length} issue(s) hit the per-issue extract match cap, so PR mentions beyond the cap were not scanned: ${readiness.truncatedIssues.map((issue) => issue.identifier ?? issue.issueId).join(", ")}.`,
+      "",
+    );
+  }
 
   for (const confidence of ["high", "medium", "low"]) {
     const entries = readiness.pullRequests.filter((entry) => entry.confidence === confidence && entry.state === "open");
@@ -39,6 +55,8 @@ export function renderReport(readiness) {
       lines.push(
         `### [#${entry.number}](${entry.url}) — ${entry.title}${draft}`,
         "",
+        `- Purpose: ${entry.purpose ?? "No description provided."}`,
+        `- Author: ${entry.author ? `\`${entry.author}\`` : "unknown"}`,
         `- Verdict: \`${entry.verdict}\``,
         `- Head: \`${entry.headSha}\``,
         `- Originating issue: ${issueLabel(entry.originatingIssue)}`,
