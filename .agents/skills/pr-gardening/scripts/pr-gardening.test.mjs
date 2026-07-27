@@ -270,6 +270,40 @@ test("renders scope, purpose, confidence groups, and immutable guardrail", () =>
   assert.match(report, /never merges, approves, or closes/);
 });
 
+test("escapes contributor-controlled Markdown in report titles and purposes", () => {
+  const report = renderReport({
+    repository: "paperclipai/paperclip",
+    windowDays: 14,
+    authors: null,
+    generatedAt: "2026-07-27T00:00:00Z",
+    summary: { ready: 0, needsGardening: 1, reportOnly: 0 },
+    pullRequests: [
+      {
+        number: 2,
+        url: "https://github.com/paperclipai/paperclip/pull/2",
+        title: "[Injected](https://example.test)",
+        author: "community-user",
+        purpose: "![tracking pixel](https://example.test/pixel.png) <img src=x>",
+        state: "open",
+        isDraft: false,
+        verdict: "needs_gardening",
+        confidence: "medium",
+        headSha: "def",
+        originatingIssue: null,
+        checks: { checks: [{}], pending: [], failing: [] },
+        greptile: { clean: false, present: false },
+        behindBy: 0,
+        baseRefName: "master",
+        reasons: [],
+      },
+    ],
+  });
+  assert.ok(report.includes("\\[Injected\\]\\(https://example.test\\)"));
+  assert.ok(report.includes("\\!\\[tracking pixel\\]\\(https://example.test/pixel.png\\)"));
+  assert.ok(report.includes("\\<img src=x\\>"));
+  assert.doesNotMatch(report, /!\[tracking pixel\]|<img src=x>/);
+});
+
 test("scripts contain no mutating GitHub commands", async () => {
   const { readFile } = await import("node:fs/promises");
   const scripts = await Promise.all([

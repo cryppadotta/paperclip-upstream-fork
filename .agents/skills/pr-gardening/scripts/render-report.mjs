@@ -5,6 +5,10 @@ import { parseArgs, readJson } from "./lib.mjs";
 
 const LABELS = { high: "High", medium: "Medium", low: "Low" };
 
+function escapeMarkdownText(value) {
+  return String(value).replace(/([\\`*_[\]()!|<>])/g, "\\$1");
+}
+
 function issueLabel(issue) {
   if (!issue) return "No originating issue";
   return issue.identifier ? `${issue.identifier} (${issue.status})` : `${issue.issueId} (${issue.status})`;
@@ -53,9 +57,9 @@ export function renderReport(readiness) {
     for (const entry of entries) {
       const draft = entry.isDraft ? " — draft (report only)" : "";
       lines.push(
-        `### [#${entry.number}](${entry.url}) — ${entry.title}${draft}`,
+        `### [#${entry.number}](${entry.url}) — ${escapeMarkdownText(entry.title)}${draft}`,
         "",
-        `- Purpose: ${entry.purpose ?? "No description provided."}`,
+        `- Purpose: ${escapeMarkdownText(entry.purpose ?? "No description provided.")}`,
         `- Author: ${entry.author ? `\`${entry.author}\`` : "unknown"}`,
         `- Verdict: \`${entry.verdict}\``,
         `- Head: \`${entry.headSha}\``,
