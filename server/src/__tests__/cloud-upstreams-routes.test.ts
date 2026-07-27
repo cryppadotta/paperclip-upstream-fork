@@ -7,6 +7,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockCloudUpstreamService = vi.hoisted(() => ({
   list: vi.fn(),
   startConnect: vi.fn(),
+  getPendingConnectionCompanyId: vi.fn(),
   finishConnect: vi.fn(),
   preview: vi.fn(),
   createRun: vi.fn(),
@@ -47,6 +48,7 @@ describe("cloud upstream routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetExperimental.mockResolvedValue({ enableCloudSync: true });
+    mockCloudUpstreamService.getPendingConnectionCompanyId.mockResolvedValue("company-1");
   });
 
   it("denies cross-company connect start before invoking the service", async () => {
@@ -123,6 +125,23 @@ describe("cloud upstream routes", () => {
         details: { targetOrigin: "https://cloud.example.test" },
       }),
     );
+  });
+
+  it("hides cross-company connect finish results", async () => {
+    mockCloudUpstreamService.getPendingConnectionCompanyId.mockResolvedValue("company-2");
+
+    const res = await request(createApp())
+      .post("/api/cloud-upstreams/connect/finish")
+      .send({
+        pendingConnectionId: "pending-2",
+        code: "oauth-code",
+        state: "oauth-state",
+      });
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: "Pending cloud upstream connection was not found" });
+    expect(mockCloudUpstreamService.finishConnect).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
   it("logs cloud upstream run cancellation", async () => {

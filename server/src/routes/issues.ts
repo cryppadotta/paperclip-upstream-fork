@@ -10114,7 +10114,7 @@ export function issueRoutes(
             {
               agentId: actor.agentId ?? undefined,
               userId: actor.actorType === "user" ? actor.actorId : undefined,
-              runId: wakeRun?.id ?? null,
+              runId: actor.runId,
             },
             commentOptions,
             tx,

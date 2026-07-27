@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { badRequest, notFound } from "../errors.js";
-import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardOrgAccess, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { cloudUpstreamService, instanceSettingsService, logActivity } from "../services/index.js";
 
 export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {}) {
@@ -51,13 +51,18 @@ export function cloudUpstreamRoutes(db: Db, options: { instanceId?: string } = {
   router.post("/cloud-upstreams/connect/finish", async (req, res) => {
     assertBoardOrgAccess(req);
     await assertEnabled();
+    const pendingConnectionId = stringBody(req.body, "pendingConnectionId");
+    const companyId = await service.getPendingConnectionCompanyId(pendingConnectionId);
+    if (!hasCompanyAccess(req, companyId)) {
+      throw notFound("Pending cloud upstream connection was not found");
+    }
+    assertCompanyAccess(req, companyId);
     const actor = getActorInfo(req);
     const result = await service.finishConnect({
-      pendingConnectionId: stringBody(req.body, "pendingConnectionId"),
+      pendingConnectionId,
       code: stringBody(req.body, "code"),
       state: stringBody(req.body, "state"),
     });
-    assertCompanyAccess(req, result.companyId);
     await logActivity(db, {
       companyId: result.companyId,
       actorType: actor.actorType,
