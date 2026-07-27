@@ -165,6 +165,33 @@ describe("DecisionCard", () => {
     expect(strict?.disabled).toBe(true);
   });
 
+  it("disables strict options when a secondary target is stale", () => {
+    const el = render({
+      targetChanged: { "issue-target": false, "issue-parent": true },
+      decision: mkDecision({
+        targetSnapshots: {
+          "issue-target": { status: "backlog", assigneeAgentId: null, assigneeUserId: null, updatedAt: "2026-07-01T09:00:00Z", childCount: 2 },
+          "issue-parent": { status: "todo", assigneeAgentId: null, assigneeUserId: null, updatedAt: "2026-07-01T09:00:00Z", childCount: 0 },
+        },
+        options: [
+          {
+            id: "strict-create",
+            label: "Create the follow-up",
+            effects: [{
+              type: "create_issue",
+              targetIssueId: "issue-target",
+              staleness: "strict",
+              draft: { title: "Follow-up", parentId: "issue-parent" },
+            }],
+          },
+        ],
+      }),
+    });
+    const strict = [...el.querySelectorAll("button")].find((button) => button.textContent?.includes("Create the follow-up"));
+    expect(strict?.disabled).toBe(true);
+    expect(strict?.textContent).toContain("Blocked · stale");
+  });
+
   it("gates a cancel_issue_tree option behind a type-to-confirm step", () => {
     const onDecide = vi.fn();
     const el = render({

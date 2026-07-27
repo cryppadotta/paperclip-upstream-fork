@@ -68,6 +68,18 @@ function humanStatus(status: string | null | undefined): string {
   return status.replaceAll("_", " ");
 }
 
+function referencedTargetIds(effect: DecisionEffect): string[] {
+  const ids = new Set([effect.targetIssueId]);
+  if (effect.type === "create_issue") {
+    if (effect.draft.parentId) ids.add(effect.draft.parentId);
+    for (const id of effect.draft.blockedByIssueIds ?? []) ids.add(id);
+  }
+  if (effect.type === "resolve_blocker") {
+    for (const id of effect.removeBlockedByIssueIds) ids.add(id);
+  }
+  return [...ids];
+}
+
 function issueLabel(ref: DecisionIssueRef | null, fallbackId: string): string {
   if (ref?.identifier) return ref.identifier;
   if (ref?.title) return ref.title;
@@ -252,6 +264,7 @@ export function DecisionCard({
     () => (open ? Object.entries(targetChanged ?? {}).filter(([, changed]) => changed).map(([id]) => id) : []),
     [open, targetChanged],
   );
+  const staleTargetIdSet = useMemo(() => new Set(staleTargetIds), [staleTargetIds]);
   const isStale = staleTargetIds.length > 0;
   const hasCancelTree = decision.options.some((option) => option.effects.some((effect) => effect.type === "cancel_issue_tree"));
 
@@ -405,7 +418,7 @@ export function DecisionCard({
           {decision.options.map((option) => {
             const destructive = isDestructiveOption(option);
             const blockedStale = option.effects.some(
-              (effect) => effect.staleness === "strict" && staleTargetIds.includes(effect.targetIssueId),
+              (effect) => effect.staleness === "strict" && referencedTargetIds(effect).some((id) => staleTargetIdSet.has(id)),
             );
             const disabled = busy || requiredUnmet || blockedStale;
             const cancelTree = cancelTreeEffect(option);
