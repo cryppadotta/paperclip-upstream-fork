@@ -118,7 +118,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   const isHidden = variant === "hidden";
   const inline = !isHidden && isInlineResolvable(item);
   const href = item.subject.href;
-  const issueHref = item.relatedIssue?.href ?? (item.subject.kind === "issue" ? href : null);
+  const issueHref =
+    item.relatedIssue?.href ?? (["issue", "interaction"].includes(item.subject.kind) ? href : null);
   const snoozedUntil = item.dismissal?.kind === "snooze" ? item.dismissal.snoozedUntil : null;
   const detailLine = attentionDetailLine(item) ?? item.whyNow;
   const images = attentionDetailImages(item);

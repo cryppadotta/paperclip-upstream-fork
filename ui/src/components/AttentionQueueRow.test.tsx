@@ -305,6 +305,39 @@ describe("AttentionQueueRow", () => {
     expect(onToggleExpand).not.toHaveBeenCalled();
   });
 
+  it("opens issue-backed interaction titles and timestamps in a new tab", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "issue_thread_interaction",
+          subject: {
+            kind: "interaction",
+            id: "interaction-1",
+            companyId: "c1",
+            title: "Approve the migration plan?",
+            identifier: null,
+            status: "pending",
+            href: "/PAP/issues/PAP-1#interaction-interaction-1",
+            metadata: { issueId: "issue-1", kind: "request_confirmation" },
+          },
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const links = Array.from(
+      container?.querySelectorAll('a[href="/PAP/issues/PAP-1#interaction-interaction-1"]') ?? [],
+    );
+    expect(links.map((link) => link.textContent?.trim())).toEqual([
+      expect.stringMatching(/ago$/),
+      "Approve the migration plan?",
+    ]);
+    expect(links.every((link) => link.getAttribute("target") === "_blank")).toBe(true);
+  });
+
   it("renders project identity once without a filter button", () => {
     render(
       <AttentionQueueRow
