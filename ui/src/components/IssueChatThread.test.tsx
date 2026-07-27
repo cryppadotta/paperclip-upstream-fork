@@ -2975,6 +2975,7 @@ describe("IssueChatThread", () => {
 
     const composer = container.querySelector('[data-testid="issue-chat-composer"]') as HTMLDivElement | null;
     expect(composer).not.toBeNull();
+    expect(composer?.nextElementSibling).toBe(scrollToBottom);
     expect(composer?.className).toContain("rounded-md");
     expect(composer?.className).not.toContain("rounded-lg");
     expect(composer?.className).toContain("p-(--sz-15px)");
