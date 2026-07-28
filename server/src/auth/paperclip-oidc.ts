@@ -9,7 +9,7 @@ import { z } from "zod";
 import { logActivity } from "../services/activity-log.js";
 
 const PROVIDER_ID = "paperclip-id";
-const STATE_COOKIE = "paperclip_oidc_state";
+const STATE_COOKIE_PREFIX = "paperclip_oidc_state_";
 const STATE_TTL_MS = 10 * 60 * 1000;
 const LINK_INTENT_PREFIX = "paperclip-oidc-link:";
 
@@ -38,7 +38,20 @@ export function readPaperclipOidcConfig(env: NodeJS.ProcessEnv = process.env): P
   if (!issuer || !clientId || !clientSecret) return null;
   const scopes = (env.PAPERCLIP_OIDC_SCOPES ?? "openid profile email").split(/[\s,]+/).filter(Boolean);
   if (!scopes.includes("openid")) scopes.unshift("openid");
-  return { issuer: new URL(issuer).toString().replace(/\/$/, ""), clientId, clientSecret, scopes };
+  try {
+    return { issuer: new URL(issuer).toString().replace(/\/$/, ""), clientId, clientSecret, scopes };
+  } catch {
+    return null;
+  }
+}
+
+export function paperclipOidcRedirectPath(value: string | undefined, fallback: string) {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return fallback;
+  return value;
+}
+
+export function paperclipOidcStateCookieName(state: string) {
+  return `${STATE_COOKIE_PREFIX}${state}`;
 }
 
 function signature(value: string, secret: string) {
@@ -294,7 +307,7 @@ export function paperclipOidc(config: PaperclipOidcConfig, secret: string, db: D
       }, async (ctx) => {
         const state: OidcState = {
           state: oidc.randomState(), nonce: oidc.randomNonce(), codeVerifier: oidc.randomPKCECodeVerifier(),
-          callbackURL: ctx.body.callbackURL || "/", errorCallbackURL: ctx.body.errorCallbackURL || "/auth",
+          callbackURL: paperclipOidcRedirectPath(ctx.body.callbackURL, "/"), errorCallbackURL: paperclipOidcRedirectPath(ctx.body.errorCallbackURL, "/auth"),
           expiresAt: Date.now() + STATE_TTL_MS,
         };
         const authorizationURL = oidc.buildAuthorizationUrl(await getConfiguration(), {
@@ -302,7 +315,7 @@ export function paperclipOidc(config: PaperclipOidcConfig, secret: string, db: D
           response_type: "code", scope: config.scopes.join(" "), state: state.state, nonce: state.nonce,
           code_challenge: await oidc.calculatePKCECodeChallenge(state.codeVerifier), code_challenge_method: "S256",
         });
-        ctx.setCookie(STATE_COOKIE, sealOidcState(state, secret), paperclipOidcStateCookieOptions(ctx.context.baseURL));
+        ctx.setCookie(paperclipOidcStateCookieName(state.state), sealOidcState(state, secret), paperclipOidcStateCookieOptions(ctx.context.baseURL));
         return ctx.json({ url: authorizationURL.toString(), redirect: true });
       }),
       paperclipOidcLink: createAuthEndpoint("/link/paperclip-id", {
@@ -327,7 +340,7 @@ export function paperclipOidc(config: PaperclipOidcConfig, secret: string, db: D
         }
         const state: OidcState = {
           state: oidc.randomState(), nonce: oidc.randomNonce(), codeVerifier: oidc.randomPKCECodeVerifier(),
-          callbackURL: ctx.body.callbackURL || "/", errorCallbackURL: ctx.body.errorCallbackURL || "/auth",
+          callbackURL: paperclipOidcRedirectPath(ctx.body.callbackURL, "/"), errorCallbackURL: paperclipOidcRedirectPath(ctx.body.errorCallbackURL, "/auth"),
           linkIntent: authorization.linkIntent, expiresAt: Date.now() + STATE_TTL_MS,
         };
         const authorizationURL = oidc.buildAuthorizationUrl(await getConfiguration(), {
@@ -335,15 +348,16 @@ export function paperclipOidc(config: PaperclipOidcConfig, secret: string, db: D
           response_type: "code", scope: config.scopes.join(" "), state: state.state, nonce: state.nonce,
           code_challenge: await oidc.calculatePKCECodeChallenge(state.codeVerifier), code_challenge_method: "S256",
         });
-        ctx.setCookie(STATE_COOKIE, sealOidcState(state, secret), paperclipOidcStateCookieOptions(ctx.context.baseURL));
+        ctx.setCookie(paperclipOidcStateCookieName(state.state), sealOidcState(state, secret), paperclipOidcStateCookieOptions(ctx.context.baseURL));
         return ctx.json({ url: authorizationURL.toString(), redirect: true });
       }),
       paperclipOidcCallback: createAuthEndpoint("/oauth2/callback/paperclip-id", {
         method: "GET",
         query: z.object({ code: z.string().optional(), state: z.string().optional(), error: z.string().optional() }),
       }, async (ctx) => {
-        const state = unsealOidcState(ctx.getCookie(STATE_COOKIE) ?? undefined, secret);
-        ctx.setCookie(STATE_COOKIE, "", { ...paperclipOidcStateCookieOptions(ctx.context.baseURL), maxAge: 0 });
+        const stateCookieName = ctx.query.state ? paperclipOidcStateCookieName(ctx.query.state) : undefined;
+        const state = unsealOidcState(stateCookieName ? ctx.getCookie(stateCookieName) ?? undefined : undefined, secret);
+        if (stateCookieName) ctx.setCookie(stateCookieName, "", { ...paperclipOidcStateCookieOptions(ctx.context.baseURL), maxAge: 0 });
         const fail = (code: string): never => { throw ctx.redirect(`${state?.errorCallbackURL || "/auth"}${(state?.errorCallbackURL || "/auth").includes("?") ? "&" : "?"}oidcError=${encodeURIComponent(code)}`); };
         if (!state || ctx.query.error || !ctx.query.code || ctx.query.state !== state.state || !ctx.request) return fail("invalid_state");
         const validState = state;

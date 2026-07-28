@@ -23,6 +23,8 @@ import {
   paperclipOidc,
   paperclipOidcLinkBodySchema,
   paperclipOidcSignInBodySchema,
+  paperclipOidcRedirectPath,
+  paperclipOidcStateCookieName,
   paperclipOidcStateCookieOptions,
   readPaperclipOidcConfig,
   sealOidcState,
@@ -39,11 +41,19 @@ describe("Paperclip ID OIDC", () => {
   it("is disabled unless every required credential is configured", () => {
     expect(readPaperclipOidcConfig({})).toBeNull();
     expect(readPaperclipOidcConfig({ PAPERCLIP_OIDC_ISSUER: "https://id.example", PAPERCLIP_OIDC_CLIENT_ID: "client" })).toBeNull();
+    expect(readPaperclipOidcConfig({ PAPERCLIP_OIDC_ISSUER: "not a url", PAPERCLIP_OIDC_CLIENT_ID: "client", PAPERCLIP_OIDC_CLIENT_SECRET: "secret" })).toBeNull();
   });
 
   it("normalizes scopes and always requests openid", () => {
     expect(readPaperclipOidcConfig({ PAPERCLIP_OIDC_ISSUER: "https://id.example/", PAPERCLIP_OIDC_CLIENT_ID: "client", PAPERCLIP_OIDC_CLIENT_SECRET: "secret", PAPERCLIP_OIDC_SCOPES: "email,profile" }))
       .toEqual({ issuer: "https://id.example", clientId: "client", clientSecret: "secret", scopes: ["openid", "email", "profile"] });
+  });
+
+  it("restricts redirects and isolates concurrent state cookies", () => {
+    expect(paperclipOidcRedirectPath("/projects?tab=all", "/")).toBe("/projects?tab=all");
+    expect(paperclipOidcRedirectPath("https://evil.example", "/")).toBe("/");
+    expect(paperclipOidcRedirectPath("//evil.example", "/auth")).toBe("/auth");
+    expect(paperclipOidcStateCookieName("state-a")).not.toBe(paperclipOidcStateCookieName("state-b"));
   });
 
   it("rejects tampered and expired callback state", () => {
