@@ -50,7 +50,7 @@ export function AuthPage() {
       if (mode === "sign_in") {
         await authApi.signInEmail({ email: email.trim(), password });
         if (linkRequired) {
-          await authApi.signInPaperclipId({ callbackURL: nextPath, link: true });
+          await authApi.linkPaperclipId({ callbackURL: nextPath, password });
           return true;
         }
         return false;

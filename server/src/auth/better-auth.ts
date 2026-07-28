@@ -192,7 +192,7 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
   };
 
   const oidcConfig = readPaperclipOidcConfig();
-  if (oidcConfig) authConfig.plugins.push(paperclipOidc(oidcConfig, secret));
+  if (oidcConfig) authConfig.plugins.push(paperclipOidc(oidcConfig, secret, db));
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;
