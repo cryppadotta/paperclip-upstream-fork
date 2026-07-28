@@ -46,7 +46,7 @@ export function readPaperclipOidcConfig(env: NodeJS.ProcessEnv = process.env): P
 }
 
 export function paperclipOidcRedirectPath(value: string | undefined, fallback: string) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) return fallback;
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return fallback;
   return value;
 }
 

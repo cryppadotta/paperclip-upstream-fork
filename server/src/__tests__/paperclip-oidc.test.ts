@@ -53,6 +53,7 @@ describe("Paperclip ID OIDC", () => {
     expect(paperclipOidcRedirectPath("/projects?tab=all", "/")).toBe("/projects?tab=all");
     expect(paperclipOidcRedirectPath("https://evil.example", "/")).toBe("/");
     expect(paperclipOidcRedirectPath("//evil.example", "/auth")).toBe("/auth");
+    expect(paperclipOidcRedirectPath("/\\evil.example", "/auth")).toBe("/auth");
     expect(paperclipOidcStateCookieName("state-a")).not.toBe(paperclipOidcStateCookieName("state-b"));
   });
 
