@@ -328,7 +328,7 @@ describeEmbeddedPostgres("Paperclip ID OIDC persistence", () => {
       updatedAt: timestamp,
     })));
     const migration = await readFile(
-      new URL("../../../packages/db/src/migrations/0195_oidc_account_binding_unique.sql", import.meta.url),
+      new URL("../../../packages/db/src/migrations/0196_oidc_account_binding_unique.sql", import.meta.url),
       "utf8",
     );
     const statements = migration.split("--> statement-breakpoint").map((statement) => statement.trim()).filter(Boolean);
