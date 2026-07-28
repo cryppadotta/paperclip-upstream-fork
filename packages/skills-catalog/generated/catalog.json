@@ -515,11 +515,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 977,
-          "sha256": "aa835ac4fbe613ad8d77839c8b6c8ba8a97a37ac19b08838769c4b559f5a4591"
+          "sizeBytes": 1578,
+          "sha256": "a0f7385599873910e2fabf400346016a07dacbc7ece27c0e3616ae8fd94ebfbb"
         }
       ],
-      "contentHash": "sha256:3fb74bec2e8716eb90f6ccce68614d7acfdb63d27be55fcadf109ff2dc4278ac"
+      "contentHash": "sha256:642321f40d51e0125df05c6fbace49aeb07ec30392058756909c259c9c5eac6a"
     },
     {
       "id": "paperclipai:optional:finance:ramp",

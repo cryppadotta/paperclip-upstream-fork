@@ -27,3 +27,14 @@ For user-facing comments, plans, and documents, write using only ASD-STE100 Simp
 - Use articles ("the", "a") and do not drop words to save space.
 - Write positive instructions; avoid negative or vague qualifiers.
 - Keep paragraphs to one topic.
+
+## Approved words
+
+The approved words are the ASD-STE100 controlled vocabulary — the Dictionary in the current ASD-STE100 specification, plus the technical names and technical verbs that your subject needs. When a word is not approved, use the simplest common word that has one meaning. Prefer these house choices:
+
+- "start" / "stop" (not "initiate", "commence", "terminate", "kill")
+- "make" (not "implement", "leverage", "utilize")
+- "before" / "after" (not "prior to", "subsequent to")
+- "about" (not "regarding", "in relation to")
+- "help" (not "facilitate")
+- "use" (not "utilize", "employ")
