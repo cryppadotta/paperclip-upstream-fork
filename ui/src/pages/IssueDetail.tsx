@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -40,6 +40,15 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import {
+  beginIssueDetailNavigation,
+  ISSUE_DETAIL_CONTENT_MEASURE,
+  ISSUE_DETAIL_CONTENT_PAINT_MARK,
+  ISSUE_DETAIL_HEADER_MEASURE,
+  ISSUE_DETAIL_HEADER_PAINT_MARK,
+  reportIssueDetailWebVitals,
+  scheduleIssueDetailPaintMeasure,
+} from "../lib/issue-detail-performance";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -1712,6 +1721,25 @@ export function IssueDetail() {
     () => flattenIssueCommentPages(commentPages?.pages),
     [commentPages?.pages],
   );
+
+  useLayoutEffect(() => {
+    beginIssueDetailNavigation();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
+    return reportIssueDetailWebVitals();
+  }, [issueId]);
+
+  const headerPaintRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_HEADER_PAINT_MARK, ISSUE_DETAIL_HEADER_MEASURE);
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!issue || commentsLoading) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
+  }, [commentsLoading, issue?.id]);
   const shouldPrefetchOlderComments = useMemo(
     () =>
       shouldAutoloadOlderIssueComments({
@@ -4219,7 +4247,11 @@ export function IssueDetail() {
   );
 
   const issueHeaderBlock = (
-      <div className={cn("space-y-3", shellSectionClass)}>
+      <div
+        ref={headerPaintRef}
+        data-testid="issue-detail-header"
+        className={cn("space-y-3", shellSectionClass)}
+      >
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -4950,6 +4982,7 @@ export function IssueDetail() {
             (symmetric, so the centered column keeps the same axis) and the
             scrollbar sits flush against the properties-pane border. */}
         <TabsContent
+          data-testid="issue-detail-content"
           value="chat"
           className={
             taskChatShellEnabled
