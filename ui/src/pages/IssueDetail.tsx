@@ -1731,10 +1731,10 @@ export function IssueDetail() {
     return reportIssueDetailWebVitals();
   }, [issueId]);
 
-  const headerPaintRef = useCallback((node: HTMLDivElement | null) => {
-    if (!node) return;
+  useEffect(() => {
+    if (!issue) return;
     scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_HEADER_PAINT_MARK, ISSUE_DETAIL_HEADER_MEASURE);
-  }, [issueId]);
+  }, [issue?.id]);
 
   useEffect(() => {
     if (!issue || commentsLoading) return;
@@ -4248,7 +4248,6 @@ export function IssueDetail() {
 
   const issueHeaderBlock = (
       <div
-        ref={headerPaintRef}
         data-testid="issue-detail-header"
         className={cn("space-y-3", shellSectionClass)}
       >
