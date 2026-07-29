@@ -17,6 +17,9 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+
+const cloudTenantWriteDebounce = new Map<string, number>();
+const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
@@ -431,8 +434,18 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const companyId = cloudTenantCompanyId(stackId);
   const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
   const now = new Date();
+  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
+  const syncKey = [userId, userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
+  const shouldSync = (cloudTenantWriteDebounce.get(syncKey) ?? 0) <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  if (shouldSync) cloudTenantWriteDebounce.set(syncKey, now.getTime());
+  let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
+    companyId,
+    membershipRole,
+    status: "active",
+  };
 
-  await db
+  try {
+  if (shouldSync) await db
     .insert(authUsers)
     .values({
       id: userId,
@@ -458,11 +471,11 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   // the BetterAuth session path, board API keys, and the authorization
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
-  await db
+  if (shouldSync) await db
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
-  await db
+  if (shouldSync) await db
     .insert(companies)
     .values({
       id: companyId,
@@ -476,7 +489,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       target: companies.id,
     });
 
-  if (paperclipCompanyName) {
+  if (shouldSync && paperclipCompanyName) {
     await repairCloudTenantCompanyName(db, {
       companyId,
       paperclipCompanyId,
@@ -485,8 +498,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     });
   }
 
-  const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
-  const membership = await db
+  effectiveMembership = shouldSync ? await db
     .insert(companyMemberships)
     .values({
       companyId,
@@ -513,17 +525,21 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       companyId,
       membershipRole,
       status: "active",
-    });
+    }) : { companyId, membershipRole, status: "active" as const };
 
   // Without instance-admin elevation, cloud tenant users are authorized purely
   // through company-scoped permission grants — seed the same role defaults the
   // regular membership flows create.
-  await ensureHumanRoleDefaultGrants(db, {
+  if (shouldSync) await ensureHumanRoleDefaultGrants(db, {
     companyId,
     principalId: userId,
-    membershipRole: membership.membershipRole,
+    membershipRole: effectiveMembership.membershipRole ?? membershipRole,
     grantedByUserId: null,
   });
+  } catch (error) {
+    if (shouldSync) cloudTenantWriteDebounce.delete(syncKey);
+    throw error;
+  }
 
   // The stack's seeded company is only where Cloud provisioned this user.
   // Companies created afterwards on the instance (imports, in-app company
@@ -556,8 +572,8 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     memberships: [
       {
         companyId,
-        membershipRole: membership.membershipRole,
-        status: membership.status,
+        membershipRole: effectiveMembership.membershipRole ?? membershipRole,
+        status: effectiveMembership.status,
       },
       ...additionalMemberships,
     ],
