@@ -10,6 +10,8 @@ const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
 const OFFERED_BUCKETS = new Set(["A", "B", "C"]);
 const DEFAULT_STALE_DAYS = 60;
 const INTERACTION_LIMIT = 200;
+const INBOX_MINE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done"];
+const INBOX_QUERY_CAP = 500;
 
 class ApiError extends Error {
   constructor(status, message, body = null) {
@@ -185,6 +187,38 @@ async function mapLimit(values, limit, mapper) {
   return results;
 }
 
+async function fetchMineInboxRows(context, userId) {
+  const statusResults = await Promise.all(INBOX_MINE_STATUSES.map(async (status) => {
+    const query = new URLSearchParams({ userId, status });
+    const rows = await apiRequest(context, `/agents/me/inbox/mine?${query}`);
+    if (!Array.isArray(rows)) throw new Error(`Inbox API returned a non-array response for status ${status}`);
+    return { status, rows };
+  }));
+  const rowsById = new Map();
+  const statusCounts = {};
+  const cappedStatuses = [];
+  let duplicateCount = 0;
+  for (const { status, rows } of statusResults) {
+    statusCounts[status] = rows.length;
+    if (rows.length >= INBOX_QUERY_CAP) cappedStatuses.push(status);
+    for (const issue of rows) {
+      if (rowsById.has(issue.id)) duplicateCount += 1;
+      rowsById.set(issue.id, issue);
+    }
+  }
+  return {
+    rows: [...rowsById.values()],
+    coverage: {
+      strategy: "per_status",
+      queryCap: INBOX_QUERY_CAP,
+      statusCounts,
+      cappedStatuses,
+      duplicateCount,
+      complete: cappedStatuses.length === 0,
+    },
+  };
+}
+
 async function inspectWorkspace(context, workspaceId, issueIdentifiers, gitRoot) {
   let workspace = null;
   let readiness = null;
@@ -318,7 +352,15 @@ function renderReport(scanResult) {
     `- Stale threshold: ${scanResult.staleDays} days`,
     `- Inbox rows classified: ${scanResult.items.length}`,
     `- Archive candidates: ${scanResult.candidates.length}`,
+    `- Scan coverage: ${scanResult.coverage.complete ? "complete across per-status queries" : "possibly truncated"}`,
   ];
+  if (!scanResult.coverage.complete) {
+    lines.push(
+      "",
+      "> [!WARNING]",
+      `> Coverage may be incomplete: ${scanResult.coverage.cappedStatuses.map((status) => `\`${status}\``).join(", ")} returned at least ${scanResult.coverage.queryCap} rows, the Mine endpoint cap.`,
+    );
+  }
   for (const bucket of ["A", "B", "C", "D"]) {
     const items = scanResult.items.filter((item) => item.bucket === bucket);
     lines.push("", `## ${labels[bucket]} (${items.length})`, "");
@@ -373,9 +415,7 @@ async function scan(options) {
   const candidatesPath = options.candidates ?? resolve(outputDir, "candidates.json");
   const reportPath = options.report ?? resolve(outputDir, "garden-inbox-report.md");
 
-  const query = new URLSearchParams({ userId });
-  const rows = await apiRequest(context, `/agents/me/inbox/mine?${query}`);
-  if (!Array.isArray(rows)) throw new Error("Inbox API returned a non-array response");
+  const { rows, coverage } = await fetchMineInboxRows(context, userId);
   const issuesByWorkspace = new Map();
   for (const issue of rows) {
     if (!issue.executionWorkspaceId) continue;
@@ -398,6 +438,7 @@ async function scan(options) {
     userId,
     staleDays,
     sourceCount: rows.length,
+    coverage,
     items,
     candidates: items.filter((item) => OFFERED_BUCKETS.has(item.bucket)),
   };
@@ -409,6 +450,7 @@ async function scan(options) {
     userId,
     staleDays,
     sourceCount: rows.length,
+    coverage,
     candidates: scanResult.candidates,
     kept: items.filter((item) => item.bucket === "D"),
   };
@@ -633,6 +675,7 @@ export {
   classify,
   confirm,
   decodeJwtPayload,
+  fetchMineInboxRows,
   normalizeApiBase,
   scan,
 };

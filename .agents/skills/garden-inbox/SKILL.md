@@ -36,6 +36,8 @@ node .agents/skills/garden-inbox/scripts/garden-inbox.mjs scan \
 
 Inspect `garden-inbox-report.md` and `candidates.json`. The report groups every inbox row into exactly one bucket:
 
+The scan reads Mine separately for each included issue status so the endpoint's global 500-row cap does not silently omit older rows. If any single-status query reaches that cap, both outputs mark coverage as possibly truncated; do not treat that scan as complete.
+
 - A: merged/archived workspace and all linked work terminal; selected by default.
 - B: terminal or workspace-gone work idle beyond the threshold; selected by default.
 - C: stale work with commits ahead of base; never selected by default.

@@ -6,6 +6,7 @@ import {
   archiveTargetBody,
   classify,
   decodeJwtPayload,
+  fetchMineInboxRows,
   normalizeApiBase,
 } from "./garden-inbox.mjs";
 
@@ -99,4 +100,58 @@ test("decodes the responsible user and normalizes API URLs locally", () => {
   const payload = Buffer.from(JSON.stringify({ responsible_user_id: "user-1" })).toString("base64url");
   assert.equal(decodeJwtPayload(`header.${payload}.signature`).responsible_user_id, "user-1");
   assert.equal(normalizeApiBase("https://paperclip.example/api/"), "https://paperclip.example");
+});
+
+test("scans Mine once per status and merges rows by issue id", async (t) => {
+  const requestedStatuses = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    const parsed = new URL(url);
+    const status = parsed.searchParams.get("status");
+    requestedStatuses.push(status);
+    const rows = status === "todo"
+      ? [issue({ id: "shared", status: "todo" })]
+      : status === "done"
+        ? [issue({ id: "shared", status: "done" }), issue({ id: "done-only" })]
+        : [];
+    return new Response(JSON.stringify(rows), { status: 200 });
+  });
+
+  const result = await fetchMineInboxRows({
+    apiBase: "https://paperclip.example",
+    apiKey: "secret",
+  }, "user-1");
+
+  assert.deepEqual(requestedStatuses, ["backlog", "todo", "in_progress", "in_review", "blocked", "done"]);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows.find((row) => row.id === "shared").status, "done");
+  assert.equal(result.coverage.duplicateCount, 1);
+  assert.equal(result.coverage.complete, true);
+  assert.deepEqual(result.coverage.statusCounts, {
+    backlog: 0,
+    todo: 1,
+    in_progress: 0,
+    in_review: 0,
+    blocked: 0,
+    done: 2,
+  });
+});
+
+test("warns when an individual status query reaches the Mine endpoint cap", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url) => {
+    const status = new URL(url).searchParams.get("status");
+    const rows = status === "done"
+      ? Array.from({ length: 500 }, (_, index) => issue({ id: `done-${index}` }))
+      : [];
+    return new Response(JSON.stringify(rows), { status: 200 });
+  });
+
+  const result = await fetchMineInboxRows({
+    apiBase: "https://paperclip.example",
+    apiKey: "secret",
+  }, "user-1");
+
+  assert.equal(result.rows.length, 500);
+  assert.equal(result.coverage.complete, false);
+  assert.deepEqual(result.coverage.cappedStatuses, ["done"]);
+  assert.equal(result.coverage.queryCap, 500);
 });
