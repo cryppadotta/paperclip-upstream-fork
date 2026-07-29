@@ -1,4 +1,4 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
@@ -117,8 +117,26 @@ export async function fetchIssueDetail(
   issueRef: string,
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
-  const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
-  return seedIssueDetailCache(queryClient, issue, { issueRef });
+  const view = options ? await issuesApi.getView(issueRef, options) : await issuesApi.getView(issueRef);
+  const issue = seedIssueDetailCache(queryClient, view.detail, { issueRef });
+  const refs = collectIssueRefs(issueRef, issue);
+  for (const ref of refs) {
+    queryClient.setQueryData<InfiniteData<typeof view.comments, string | null>>(
+      queryKeys.issues.comments(ref),
+      { pages: [view.comments], pageParams: [null] },
+    );
+    queryClient.setQueryData(queryKeys.issues.interactions(ref), view.interactions);
+    queryClient.setQueryData(queryKeys.issues.attachments(ref), view.attachments);
+    queryClient.setQueryData(queryKeys.issues.workProducts(ref), view.workProducts);
+    queryClient.setQueryData(queryKeys.issues.runs(ref), view.runs);
+    queryClient.setQueryData(queryKeys.issues.liveRuns(ref), view.liveRuns);
+    queryClient.setQueryData(queryKeys.issues.activeRun(ref), view.activeRun);
+  }
+  queryClient.setQueryData(
+    queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
+    view.childIssues,
+  );
+  return issue;
 }
 
 export function getIssueDetailQueryOptions(
@@ -158,6 +176,10 @@ export function prefetchIssueDetail(
  * query key IssueDetail mounts, so a subsequent navigation paints comments from
  * cache instead of waiting on a fetch. Keyed by issue ref and always background
  * revalidated by the mounted query, so it never surfaces stale cross-issue data.
+ *
+ * `prefetchInfiniteQuery` respects `staleTime`: if the comments cache is already
+ * fresh (e.g. seeded by the aggregate `getView` fetch), this is a no-op and does
+ * not issue a redundant request.
  */
 export function prefetchIssueComments(queryClient: QueryClient, issueRef: string) {
   return queryClient.prefetchInfiniteQuery({
