@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVisibilityRefetchInterval } from "@/lib/polling";
 import { accessApi } from "../api/access";
 import { useDialogActions } from "../context/DialogContext";
@@ -18,6 +18,7 @@ import {
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
+import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
   buildSubIssueProgressSummary,
   shouldRenderSubIssueProgressSummary,
@@ -653,6 +654,7 @@ export function IssuesList({
 }: IssuesListProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { keyboardShortcutsEnabled } = useGeneralSettings();
   // Keyboard selection for the list view (mirrors the inbox). Hover moves the
   // selection only after real pointer movement, so keyboard-driven scrolling
@@ -1407,6 +1409,11 @@ export function IssuesList({
           const pathId = issue.identifier ?? issue.id;
           const detailState = withIssueDetailHeaderSeed(st.issueLinkState, issue);
           rememberIssueDetailLocationState(pathId, detailState);
+          // Seed the full list-row snapshot + first comments page before we
+          // navigate so keyboard-driven opens paint from cache instantly, the
+          // same way pointer hover/click does through the issue link. Mirrors
+          // the inbox Enter handler.
+          void prefetchIssueDetailForNavigation(queryClient, pathId, { issue });
           navigate(createIssueDetailPath(pathId), { state: detailState });
           break;
         }
@@ -1416,7 +1423,7 @@ export function IssuesList({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [keyboardShortcutsEnabled, navigate]);
+  }, [keyboardShortcutsEnabled, navigate, queryClient]);
 
   // Keep the keyboard selection visible while navigating. Depends on the
   // render budget too: a selection past the mounted batch scrolls once its
