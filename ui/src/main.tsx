@@ -20,7 +20,7 @@ import { PluginLauncherProvider } from "./plugins/launchers";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 // The mdxeditor stylesheet is imported by the lazily-loaded editor chunk
 // (ui/src/components/MarkdownEditorImpl.tsx) so it stays off the critical path
-// until an editor renders (PAP-15666).
+// until an editor renders.
 import "./index.css";
 
 initPluginBridge(React, ReactDOM);

@@ -12,7 +12,7 @@ import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 
-// Route-level code splitting (PAP-15666). Previously every one of ~90 pages was
+// Route-level code splitting. Previously every one of ~90 pages was
 // statically imported here, producing a single ~6.5 MB entry chunk shipped on
 // every route (including the issue page). Each page is now loaded lazily so a
 // route ships only its own chunk plus shared vendor chunks. Pages are named

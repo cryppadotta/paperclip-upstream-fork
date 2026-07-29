@@ -64,7 +64,7 @@ import { AlertTriangle, Check, ChevronDown, Loader2, Paperclip } from "lucide-re
 import type { IssueChatComposerHandle } from "./IssueChatThread";
 
 // ---------------------------------------------------------------------------
-// Lazily-loaded issue-chat composer (PAP-15666).
+// Lazily-loaded issue-chat composer.
 //
 // The composer is the only part of the issue thread that needs the heavy
 // @assistant-ui/react runtime (via `useAui`/`usePaperclipIssueRuntime`) and the

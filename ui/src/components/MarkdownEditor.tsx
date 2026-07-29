@@ -12,7 +12,7 @@ export type { MentionOption, MarkdownEditorRef, MarkdownEditorProps } from "./Ma
 // contributor to the app's JavaScript. Loading the real editor lazily means
 // those libraries (and the mdxeditor stylesheet) are fetched on demand — the
 // first time any composer, inline editor, or dialog actually renders an editor
-// — instead of shipping on every route's critical path (PAP-15666). Every
+// — instead of shipping on every route's critical path. Every
 // existing `MarkdownEditor` consumer picks this up transparently.
 const MarkdownEditorImpl = lazy(() =>
   import("./MarkdownEditorImpl").then((module) => ({ default: module.MarkdownEditor })),

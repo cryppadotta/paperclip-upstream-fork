@@ -47,7 +47,7 @@ import { useSecondTick } from "../hooks/useSecondTick";
 import type { PaperclipIssueRuntimeSendOptions } from "../hooks/usePaperclipIssueRuntime";
 // The composer (and the assistant-ui runtime it needs) is loaded lazily so it
 // stays off the issue page's critical path; the read-only transcript below
-// renders immediately from props (PAP-15666).
+// renders immediately from props.
 const IssueChatComposerDock = lazy(() => import("./IssueChatComposerDock"));
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";

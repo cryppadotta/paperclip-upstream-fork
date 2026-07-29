@@ -644,7 +644,7 @@ export function Layout() {
               ) : (
                 <RouteErrorBoundary>
                   {/* Content-area Suspense boundary for route-level code
-                      splitting (PAP-15666): keep the shell (sidebar, panels)
+                      splitting: keep the shell (sidebar, panels)
                       mounted while a lazily-loaded page chunk resolves. */}
                   <Suspense
                     fallback={

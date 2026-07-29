@@ -5,7 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { visualizer } from "rollup-plugin-visualizer";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
 
-// The issue page (IssueDetail) is the perf-critical route (PAP-15659). Route
+// The issue page (IssueDetail) is the perf-critical route. Route
 // splitting via React.lazy carves every page into its own chunk, but that would
 // otherwise regress the issue page's open — the shell can only discover the
 // IssueDetail chunk after React renders the route. Inject a
@@ -67,7 +67,7 @@ export default defineConfig(({ mode }) => ({
         // Rollup's automatic code-splitting already isolates them into deferred
         // chunks. Forcing them into named manualChunks instead pulls their
         // shared UI dependencies (e.g. Radix) onto the critical path and
-        // regresses the issue-page open — the exact opposite of PAP-15666's
+        // regresses the issue-page open — the exact opposite of this work's
         // goal. See dist/stats.html (rollup-plugin-visualizer) to verify the
         // editor/assistant-ui chunks stay off the entry's modulepreload set.
         manualChunks(id) {

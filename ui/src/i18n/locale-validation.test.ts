@@ -3,7 +3,7 @@ import { t } from ".";
 import en from "./locales/en.json";
 import { validateLocaleMessages } from "./locale-validation";
 
-// The runtime now loads non-default locales lazily (PAP-15666), so `locales.ts`
+// The runtime now loads non-default locales lazily, so `locales.ts`
 // no longer eagerly exposes every locale's messages. Glob them here so this
 // test keeps validating all locale files.
 const localeModules = import.meta.glob("./locales/*.json", {

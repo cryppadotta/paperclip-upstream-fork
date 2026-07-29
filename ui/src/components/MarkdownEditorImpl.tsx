@@ -1,6 +1,6 @@
 // The mdxeditor stylesheet used to live in the global entry (ui/src/main.tsx).
 // It now travels with this lazily-loaded editor chunk so it stays off the
-// critical path until an editor is actually rendered (PAP-15666).
+// critical path until an editor is actually rendered.
 import "@mdxeditor/editor/style.css";
 import {
   Component,

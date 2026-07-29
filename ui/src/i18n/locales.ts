@@ -8,7 +8,7 @@ export const DEFAULT_LOCALE = "en" as const;
 // Per-locale lazy loaders. `en` (the default) is bundled synchronously below so
 // the app renders immediately; every other locale's JSON is code-split and only
 // fetched the first time that locale is activated. Previously all ~40 locales
-// were `eager`-globbed into the entry chunk (PAP-15666) — pure dead weight for
+// were `eager`-globbed into the entry chunk — pure dead weight for
 // the common `en` path.
 const localeLoaders = import.meta.glob("./locales/*.json", {
   import: "default",

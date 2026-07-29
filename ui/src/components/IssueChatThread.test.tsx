@@ -322,7 +322,7 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
-  // The composer is loaded lazily (React.lazy) since PAP-15666. Resolve its
+  // The composer is loaded lazily (React.lazy). Resolve its
   // chunk (the same module React.lazy awaits) and then let React commit the
   // mounted composer before asserting on its DOM.
   async function settleComposer() {
