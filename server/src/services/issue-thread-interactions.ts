@@ -1288,15 +1288,25 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     issue: { id: string; companyId: string };
     interactionId: string;
   }) {
-    const current = await db
-      .select()
-      .from(issueThreadInteractions)
-      .where(eq(issueThreadInteractions.id, args.interactionId))
-      .then((rows) => rows[0] ?? null);
+    const [current, issueStatus] = await Promise.all([
+      db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, args.interactionId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.id, args.issue.id), eq(issues.companyId, args.issue.companyId)))
+        .then((rows) => rows[0]?.status ?? null),
+    ]);
 
     if (!current) throw notFound("Interaction not found");
     if (current.companyId !== args.issue.companyId || current.issueId !== args.issue.id) {
       throw notFound("Interaction not found");
+    }
+    if (issueStatus && isTerminalIssueStatus(issueStatus)) {
+      throw conflict("Interaction is no longer actionable because the issue is closed");
     }
     if (current.status !== "pending") {
       throw conflict("Interaction has already been resolved");
@@ -1614,13 +1624,29 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       return { checked: rows.length, candidates: eligible.length, accepted, woken };
     },
     listForIssue: async (issueId: string) => {
-      const rows = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.issueId, issueId))
-        .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+      const [rows, issueStatus] = await Promise.all([
+        db
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.issueId, issueId))
+          .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id)),
+        db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((issueRows) => issueRows[0]?.status ?? null),
+      ]);
 
-      return rows.map((row) => hydrateInteraction(row));
+      return rows.map((row) => hydrateInteraction(
+        issueStatus && isTerminalIssueStatus(issueStatus) && row.status === "pending"
+          ? {
+              ...row,
+              status: "expired",
+              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+              resolvedAt: row.updatedAt,
+            }
+          : row,
+      ));
     },
 
     getById: async (interactionId: string) => {
