@@ -251,12 +251,20 @@ function classify(issue, workspaceInfo, staleDays, now) {
     issueStatus: issue.status,
     workspaceStatus: workspaceInfo?.status ?? null,
     workspaceGone,
+    workspaceInspectionError: workspaceInfo?.error ?? null,
     mergedIntoBase,
     allLinkedIssuesTerminal,
     aheadCount,
     staleDays,
   };
 
+  if (workspaceInfo?.error) {
+    return {
+      bucket: "D",
+      reason: reason("workspace_inspection_failed", "Keep: workspace archive safety could not be verified.", facts),
+      lastActivity,
+    };
+  }
   if (hasOpenBlockers) return { bucket: "D", reason: reason("open_blockers", "Keep: the issue has unresolved blocker or liveness attention.", facts), lastActivity };
   if (awaitingUser) return { bucket: "D", reason: reason("pending_user_action", "Keep: the issue is awaiting a user decision or review.", facts), lastActivity };
   if (!terminal) {
