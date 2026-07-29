@@ -86,3 +86,11 @@ node .agents/skills/garden-inbox/scripts/garden-inbox.mjs apply \
   --candidates "$RUN_DIR/candidates.json" \
   --dry-run
 ```
+
+## Verify the bundled logic
+
+Run the zero-dependency Node tests after changing classification or selection safety:
+
+```bash
+node --test .agents/skills/garden-inbox/scripts/garden-inbox.test.mjs
+```
