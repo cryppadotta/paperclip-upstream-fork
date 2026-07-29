@@ -1285,27 +1285,20 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
   }
 
   async function getPendingInteractionForResolution(args: {
-    issue: { id: string; companyId: string };
+    issue: { id: string; companyId: string; status?: string };
     interactionId: string;
   }) {
-    const [current, issueStatus] = await Promise.all([
-      db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.id, args.interactionId))
-        .then((rows) => rows[0] ?? null),
-      db
-        .select({ status: issues.status })
-        .from(issues)
-        .where(and(eq(issues.id, args.issue.id), eq(issues.companyId, args.issue.companyId)))
-        .then((rows) => rows[0]?.status ?? null),
-    ]);
+    const current = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, args.interactionId))
+      .then((rows) => rows[0] ?? null);
 
     if (!current) throw notFound("Interaction not found");
     if (current.companyId !== args.issue.companyId || current.issueId !== args.issue.id) {
       throw notFound("Interaction not found");
     }
-    if (issueStatus && isTerminalIssueStatus(issueStatus)) {
+    if (args.issue.status && isTerminalIssueStatus(args.issue.status)) {
       throw conflict("Interaction is no longer actionable because the issue is closed");
     }
     if (current.status !== "pending") {
@@ -1314,14 +1307,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     return current;
   }
 
-  async function assertIssueOpenForInteractionResolution(issue: { id: string; companyId: string }) {
-    const status = await db
-      .select({ status: issues.status })
-      .from(issues)
-      .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
-      .then((rows) => rows[0]?.status ?? null);
-    if (!status) throw notFound("Issue not found");
-    if (isTerminalIssueStatus(status)) {
+  function assertIssueOpenForInteractionResolution(issue: { id: string; companyId: string; status?: string }) {
+    if (issue.status && isTerminalIssueStatus(issue.status)) {
       throw conflict("Interaction is no longer actionable because the issue is closed");
     }
   }
@@ -2014,7 +2001,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     acceptInteraction: async (
-      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null; status?: string },
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
@@ -2062,12 +2049,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     acceptSuggestedTasks: async (
-      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null; status?: string },
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      await assertIssueOpenForInteractionResolution(issue);
+      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -2216,7 +2203,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     rejectInteraction: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
@@ -2241,12 +2228,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     submitItemVerdicts: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: SubmitIssueThreadInteractionVerdicts,
       actor: InteractionActor,
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
-      await assertIssueOpenForInteractionResolution(issue);
+      assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
         const current = await tx
@@ -2343,13 +2330,13 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     rejectSuggestedTasks: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
       current: IssueThreadInteractionRow,
     ) => {
-      await assertIssueOpenForInteractionResolution(issue);
+      assertIssueOpenForInteractionResolution(issue);
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
@@ -2391,7 +2378,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     expireRequestConfirmationsSupersededByComment: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
     ) => {
@@ -2735,7 +2722,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      await assertIssueOpenForInteractionResolution(issue);
+      assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
@@ -2803,12 +2790,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     answerQuestions: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RespondIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      await assertIssueOpenForInteractionResolution(issue);
+      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -2865,12 +2852,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     },
 
     cancelQuestions: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
-      await assertIssueOpenForInteractionResolution(issue);
+      assertIssueOpenForInteractionResolution(issue);
       const data = cancelIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
