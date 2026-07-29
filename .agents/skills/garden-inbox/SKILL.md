@@ -75,7 +75,7 @@ node .agents/skills/garden-inbox/scripts/garden-inbox.mjs apply \
   --candidates "$RUN_DIR/candidates.json"
 ```
 
-On rejection, expiry, or an accepted empty selection, the script archives nothing. Its summary includes the API undo path, `DELETE /api/issues/:id/inbox-archive`, for every archived row.
+On rejection, expiry, or an accepted empty selection, the script archives nothing. Apply preserves the scan file's target user, including an explicit `--user-id` override. Its summary includes the API undo path and target-user body for every archived row.
 
 Test `apply` without API writes by supplying a saved interaction response:
 

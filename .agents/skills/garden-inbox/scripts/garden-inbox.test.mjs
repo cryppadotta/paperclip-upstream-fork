@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   acceptedCandidates,
+  archiveTargetBody,
   classify,
   decodeJwtPayload,
   normalizeApiBase,
@@ -72,6 +73,10 @@ test("returns only accepted options from the originating scan", () => {
     result: { outcome: "accepted", selectedOptionIds: ["issue-1"] },
   };
   assert.deepEqual(acceptedCandidates(interaction, scan, new Map([[candidate.issueId, candidate]])), [candidate]);
+});
+
+test("preserves an overridden scan user for archive and undo requests", () => {
+  assert.deepEqual(archiveTargetBody({ userId: "target-user" }), { userId: "target-user" });
 });
 
 test("rejects selected ids that were not offered", () => {

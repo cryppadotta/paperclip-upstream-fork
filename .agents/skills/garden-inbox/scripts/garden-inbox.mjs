@@ -427,7 +427,11 @@ function truncate(value, limit) {
 
 function candidateFile(options) {
   const data = readJson(options.candidates ?? "candidates.json");
-  if (data?.schemaVersion !== 1 || typeof data.scanId !== "string" || !Array.isArray(data.candidates)) {
+  if (data?.schemaVersion !== 1
+    || typeof data.scanId !== "string"
+    || typeof data.userId !== "string"
+    || data.userId.trim() === ""
+    || !Array.isArray(data.candidates)) {
     throw new Error("Candidates file is not a garden-inbox schemaVersion 1 scan");
   }
   for (const item of data.candidates) {
@@ -436,6 +440,10 @@ function candidateFile(options) {
     }
   }
   return data;
+}
+
+function archiveTargetBody(scanData) {
+  return { userId: scanData.userId };
 }
 
 function chunk(values, size) {
@@ -559,7 +567,7 @@ function acceptedCandidates(interaction, scanData, candidateById) {
   });
 }
 
-function renderApplySummary(results, interactions, dryRun) {
+function renderApplySummary(results, interactions, dryRun, userId) {
   const lines = [
     `# Garden inbox ${dryRun ? "dry-run " : ""}apply summary`, "",
     `- Interactions inspected: ${interactions.length}`,
@@ -572,7 +580,7 @@ function renderApplySummary(results, interactions, dryRun) {
   for (const result of results) {
     lines.push("", `- ${result.ok ? "OK" : "FAILED"}: ${result.identifier ?? result.issueId} — ${result.message}`);
     if (result.ok) {
-      lines.push(`  Undo: \`DELETE /api/issues/${result.issueId}/inbox-archive\` or use **Unarchive** in the issue properties pane.`);
+      lines.push(`  Undo: \`DELETE /api/issues/${result.issueId}/inbox-archive\` with body \`${JSON.stringify({ userId })}\`, or use **Unarchive** in the issue properties pane.`);
     }
   }
   return `${lines.join("\n")}\n`;
@@ -604,7 +612,7 @@ async function applyAccepted(options) {
     try {
       await apiRequest(context, `/issues/${encodeURIComponent(candidate.issueId)}/inbox-archive`, {
         method: "POST",
-        body: {},
+        body: archiveTargetBody(data),
       });
       results.push({ ...candidate, ok: true, message: "archived accepted inbox entry" });
     } catch (error) {
@@ -612,7 +620,7 @@ async function applyAccepted(options) {
     }
   }
 
-  const summary = renderApplySummary(results, interactions, Boolean(options.dry_run));
+  const summary = renderApplySummary(results, interactions, Boolean(options.dry_run), data.userId);
   process.stdout.write(summary);
   if (options.summary) writeText(options.summary, summary);
   if (results.some((result) => !result.ok)) process.exitCode = 1;
@@ -621,6 +629,7 @@ async function applyAccepted(options) {
 
 export {
   acceptedCandidates,
+  archiveTargetBody,
   classify,
   confirm,
   decodeJwtPayload,
