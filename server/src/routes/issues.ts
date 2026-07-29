@@ -2717,7 +2717,6 @@ export function issueRoutes(
   const router = Router();
   const svc = issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
-  const activitySvc = activityService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
