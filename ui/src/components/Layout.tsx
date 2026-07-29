@@ -648,7 +648,7 @@ export function Layout() {
                       mounted while a lazily-loaded page chunk resolves. */}
                   <Suspense
                     fallback={
-                      <div className="flex min-h-[40vh] items-center justify-center">
+                      <div className="flex min-h-(--sz-40vh) items-center justify-center">
                         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
                       </div>
                     }
