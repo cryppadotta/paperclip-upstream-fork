@@ -67,6 +67,40 @@ describe("agent session wake messages", () => {
     expect(renderPaperclipWakePrompt(wakePayload)).toContain("hello");
   });
 
+  it("materializes the agent chain of command and budget on context-only wakes", async () => {
+    const wakePayload = await buildPaperclipWakePayload({
+      db: {} as never,
+      companyId: "company-1",
+      contextSnapshot: { wakeReason: "timer" },
+      agentContext: {
+        id: "agent-1",
+        name: "Builder",
+        role: "engineer",
+        chainOfCommand: [
+          { id: "manager-1", name: "CTO", role: "cto", title: "Chief Technology Officer" },
+        ],
+        budget: { monthlyCents: 10_000, spentCents: 2_500 },
+      },
+    });
+
+    expect(wakePayload).toMatchObject({
+      reason: "timer",
+      issue: null,
+      agentContext: {
+        id: "agent-1",
+        role: "engineer",
+        chainOfCommand: [{ id: "manager-1", name: "CTO" }],
+        budget: { monthlyCents: 10_000, spentCents: 2_500 },
+      },
+    });
+    expect(renderPaperclipWakePrompt(wakePayload)).toContain(
+      "- agent identity: Builder (agent-1); role: engineer; manager: CTO (manager-1); chain depth: 1",
+    );
+    expect(renderPaperclipWakePrompt(wakePayload)).toContain(
+      "- monthly budget: $25.00 used / $100.00 (25% used)",
+    );
+  });
+
   it("leaves a normal context-only wake without a renderable payload", async () => {
     await expect(
       buildPaperclipWakePayload({

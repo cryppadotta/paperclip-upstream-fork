@@ -645,6 +645,22 @@ type PaperclipWakeAgentMessage = {
   sessionId: string | null;
 };
 
+type PaperclipWakeAgentContext = {
+  id: string | null;
+  name: string | null;
+  role: string | null;
+  chainOfCommand: Array<{
+    id: string;
+    name: string;
+    role: string | null;
+    title: string | null;
+  }>;
+  budget: {
+    monthlyCents: number;
+    spentCents: number;
+  };
+};
+
 type PaperclipWakeRecovery = {
   cause: string | null;
   failureSummary: string | null;
@@ -675,6 +691,7 @@ type PaperclipWakePayload = {
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
   executionWorkspace: PaperclipWakeExecutionWorkspace | null;
   agentMessage: PaperclipWakeAgentMessage | null;
+  agentContext: PaperclipWakeAgentContext | null;
   annotationDeltas: PaperclipWakeAnnotationDelta[];
   childIssueSummaries: PaperclipWakeChildIssueSummary[];
   childIssueSummaryTruncated: boolean;
@@ -722,6 +739,41 @@ function normalizePaperclipWakeAgentMessage(value: unknown): PaperclipWakeAgentM
     source: asString(message.source, "").trim() || null,
     pluginKey: asString(message.pluginKey, "").trim() || null,
     sessionId: asString(message.sessionId, "").trim() || null,
+  };
+}
+
+function normalizePaperclipWakeAgentContext(value: unknown): PaperclipWakeAgentContext | null {
+  const context = parseObject(value);
+  const id = asString(context.id, "").trim() || null;
+  const name = asString(context.name, "").trim() || null;
+  const role = asString(context.role, "").trim() || null;
+  const chainOfCommand = Array.isArray(context.chainOfCommand)
+    ? context.chainOfCommand
+        .slice(0, 50)
+        .map((entry) => {
+          const manager = parseObject(entry);
+          const managerId = asString(manager.id, "").trim();
+          const managerName = asString(manager.name, "").trim();
+          if (!managerId || !managerName) return null;
+          return {
+            id: managerId,
+            name: managerName,
+            role: asString(manager.role, "").trim() || null,
+            title: asString(manager.title, "").trim() || null,
+          };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    : [];
+  const budget = parseObject(context.budget);
+  const monthlyCents = Math.max(0, Math.round(asNumber(budget.monthlyCents, 0)));
+  const spentCents = Math.max(0, Math.round(asNumber(budget.spentCents, 0)));
+  if (!id && !name && !role && chainOfCommand.length === 0 && Object.keys(budget).length === 0) return null;
+  return {
+    id,
+    name,
+    role,
+    chainOfCommand,
+    budget: { monthlyCents, spentCents },
   };
 }
 
@@ -1302,7 +1354,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  const agentContext = normalizePaperclipWakeAgentContext(payload.agentContext);
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !agentContext && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1327,6 +1380,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     checkboxSelection,
     executionWorkspace,
     agentMessage,
+    agentContext,
     childIssueSummaries,
     childIssueSummaryTruncated: asBoolean(payload.childIssueSummaryTruncated, false),
     commentIds,
@@ -1549,6 +1603,23 @@ export function renderPaperclipWakePrompt(
   }
   if (normalized.issue?.priority) {
     lines.push(`- issue priority: ${normalized.issue.priority}`);
+  }
+  if (normalized.agentContext) {
+    const agentLabel = normalized.agentContext.name ?? normalized.agentContext.id ?? "unknown";
+    const agentIdSuffix = normalized.agentContext.id && normalized.agentContext.id !== agentLabel
+      ? ` (${normalized.agentContext.id})`
+      : "";
+    const role = normalized.agentContext.role ?? "unknown";
+    const directManager = normalized.agentContext.chainOfCommand[0];
+    const manager = directManager ? `${directManager.name} (${directManager.id})` : "none (top-level agent)";
+    const chainDepth = normalized.agentContext.chainOfCommand.length;
+    const { monthlyCents, spentCents } = normalized.agentContext.budget;
+    const spent = `$${(spentCents / 100).toFixed(2)}`;
+    const budget = monthlyCents > 0
+      ? `${spent} used / $${(monthlyCents / 100).toFixed(2)} (${Math.round((spentCents / monthlyCents) * 100)}% used)`
+      : `${spent} used / unlimited`;
+    lines.push(`- agent identity: ${agentLabel}${agentIdSuffix}; role: ${role}; manager: ${manager}; chain depth: ${chainDepth}`);
+    lines.push(`- monthly budget: ${budget}`);
   }
   const issueDescription = normalized.issue?.description ?? null;
   // Resume deltas skip the description: the session already received the brief

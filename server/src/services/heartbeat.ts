@@ -133,6 +133,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
@@ -5048,6 +5049,23 @@ export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   contextSnapshot: Record<string, unknown>;
+  agentContext?:
+    | {
+        id: string;
+        name: string;
+        role: string;
+        chainOfCommand: Array<{
+          id: string;
+          name: string;
+          role: string;
+          title: string | null;
+        }>;
+        budget: {
+          monthlyCents: number;
+          spentCents: number;
+        };
+      }
+    | null;
   continuationSummary?:
     | {
         key: string;
@@ -5101,6 +5119,7 @@ export async function buildPaperclipWakePayload(input: {
     && Object.keys(executionStage).length === 0
     && !issueSummary
     && !agentMessageText
+    && !input.agentContext
   ) return null;
 
   const commentRows =
@@ -5317,6 +5336,7 @@ export async function buildPaperclipWakePayload(input: {
           workMode: issueSummary.workMode,
         }
       : null,
+    agentContext: input.agentContext ?? null,
     agentMessage: agentMessageText
       ? {
           text: agentMessageText,
@@ -6184,6 +6204,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   const runLogStore = getRunLogStore();
   const secretsSvc = secretService(db);
   const companySkills = companySkillService(db);
+  const agentsSvc = agentService(db);
   const issuesSvc = issueService(db);
   const treeControlSvc = issueTreeControlService(db);
   const executionWorkspacesSvc = executionWorkspaceService(db);
@@ -12879,6 +12900,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       db,
       companyId: agent.companyId,
       contextSnapshot: context,
+      agentContext: {
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+        chainOfCommand: await agentsSvc.getChainOfCommand(agent.id),
+        budget: {
+          monthlyCents: agent.budgetMonthlyCents,
+          spentCents: agent.spentMonthlyCents,
+        },
+      },
       continuationSummary,
       issueSummary: issueRef
         ? {

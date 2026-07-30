@@ -709,6 +709,42 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("normalizes and renders compact agent identity, reporting, and budget context", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", identifier: "PAP-15785", title: "Avoid identity refetches" },
+      agentContext: {
+        id: "agent-1",
+        name: "Builder",
+        role: "engineer",
+        chainOfCommand: [
+          { id: "manager-1", name: "CTO", role: "cto", title: "Chief Technology Officer" },
+          { id: "manager-2", name: "CEO", role: "ceo", title: null },
+        ],
+        budget: { monthlyCents: 20_000, spentCents: 5_250 },
+      },
+    };
+
+    expect(JSON.parse(stringifyPaperclipWakePayload(payload) ?? "{}")).toMatchObject({
+      agentContext: {
+        id: "agent-1",
+        name: "Builder",
+        role: "engineer",
+        chainOfCommand: [
+          { id: "manager-1", name: "CTO" },
+          { id: "manager-2", name: "CEO" },
+        ],
+        budget: { monthlyCents: 20_000, spentCents: 5_250 },
+      },
+    });
+    expect(renderPaperclipWakePrompt(payload)).toContain(
+      "- agent identity: Builder (agent-1); role: engineer; manager: CTO (manager-1); chain depth: 2",
+    );
+    expect(renderPaperclipWakePrompt(payload)).toContain(
+      "- monthly budget: $52.50 used / $200.00 (26% used)",
+    );
+  });
+
   it("preserves and renders the issue description in structured wake payloads", () => {
     const payload = {
       reason: "issue_assigned",
