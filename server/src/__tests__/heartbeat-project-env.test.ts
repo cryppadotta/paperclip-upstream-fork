@@ -6,6 +6,7 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
+  buildReferencedProjectRunObservability,
   buildRunWorkspaceHints,
   extractMentionedSkillIdsFromSources,
   resolveAdditionalProjectWorkspace,
@@ -835,7 +836,7 @@ describe("resolveAdditionalRunWorkspaces", () => {
 
     const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
 
-    expect(result).toEqual({ additionalWorkspaces: [], warnings: [] });
+    expect(result).toEqual({ additionalWorkspaces: [], warnings: [], failures: [] });
     // The flag-off path must be inert: no mention lookup and no workspace resolution run.
     expect(mentionLookups).toBe(0);
     expect(workspaceResolves).toBe(0);
@@ -872,6 +873,48 @@ describe("resolveAdditionalRunWorkspaces", () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("project-a");
     expect(result.warnings[0]).toContain("clone exploded");
+    expect(result.failures).toEqual([{ projectId: "project-a", reason: "resolution" }]);
+  });
+
+  it("aggregates per-layer warnings onto the run's surfaced warnings", async () => {
+    // Two valid projects sync; one is dropped by authorization and one fails to resolve. The run
+    // still resolves, and both dropped projects are named in the surfaced warnings, one per layer.
+    const options = buildOptions({
+      mentionedIds: ["project-a", "project-b", "denied-project", "broken-project"],
+      access: {
+        decide: async (input) =>
+          input.scope?.projectId === "denied-project"
+            ? { allowed: false, action: "project:read", reason: "deny_no_grant", explanation: "denied" }
+            : allowDecision,
+      },
+      resolveProjectWorkspace: async (project) => {
+        if (project.projectId === "broken-project") {
+          throw new Error("clone exploded");
+        }
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces.map((workspace) => workspace.projectId)).toEqual([
+      "project-a",
+      "project-b",
+    ]);
+    // Each dropped project is named in a surfaced warning, across both layers.
+    expect(result.warnings.some((warning) => warning.includes("denied-project"))).toBe(true);
+    expect(result.warnings.some((warning) => warning.includes("broken-project"))).toBe(true);
+    // The structured failures carry the layer that dropped each project.
+    expect(result.failures).toEqual([
+      { projectId: "denied-project", reason: "authorization" },
+      { projectId: "broken-project", reason: "resolution" },
+    ]);
   });
 
   it("skips referenced-project work on a remote target and warns when the issue mentions a project", async () => {
@@ -903,9 +946,29 @@ describe("resolveAdditionalRunWorkspaces", () => {
     expect(result.additionalWorkspaces).toEqual([]);
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("local execution target");
+    // The remote path drops every referenced project at the staging layer. Each dropped project
+    // keeps a structured failure so the requested-vs-synced accounting counts the whole set and the
+    // run still emits its structured sync log.
+    expect(result.failures).toEqual([
+      { projectId: "project-a", reason: "staging" },
+      { projectId: "project-b", reason: "staging" },
+    ]);
     // The remote path must skip the per-project clone work whose result the target cannot receive.
     expect(mentionLookups).toBe(1);
     expect(workspaceResolves).toBe(0);
+  });
+
+  it("drops a duplicate remote referenced mention to a single staging failure and ignores the anchor", async () => {
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: ["anchor-project", "project-a", "project-a"],
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, "anchor-project", options);
+
+    // The anchor is not a referenced drop, and a repeated mention counts once.
+    expect(result.failures).toEqual([{ projectId: "project-a", reason: "staging" }]);
+    expect(result.warnings).toHaveLength(1);
   });
 
   it("stays silent on a remote target when the issue mentions no referenced project", async () => {
@@ -916,7 +979,40 @@ describe("resolveAdditionalRunWorkspaces", () => {
 
     const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
 
-    expect(result).toEqual({ additionalWorkspaces: [], warnings: [] });
+    expect(result).toEqual({ additionalWorkspaces: [], warnings: [], failures: [] });
+  });
+});
+
+describe("buildReferencedProjectRunObservability", () => {
+  it("emits referenced_projects_requested vs referenced_projects_synced with failure reason", () => {
+    const observability = buildReferencedProjectRunObservability({
+      syncedProjectIds: ["project-a"],
+      failures: [
+        { projectId: "project-b", reason: "authorization" },
+        { projectId: "project-c", reason: "resolution" },
+        { projectId: "project-d", reason: "staging" },
+      ],
+    });
+
+    // Requested is the synced count plus every dropped project, so the counts reconcile.
+    expect(observability.referenced_projects_requested).toBe(4);
+    expect(observability.referenced_projects_synced).toBe(1);
+    expect(observability.referenced_project_failures).toEqual([
+      { project_id: "project-b", reason: "authorization" },
+      { project_id: "project-c", reason: "resolution" },
+      { project_id: "project-d", reason: "staging" },
+    ]);
+  });
+
+  it("emits zero counts and no failures when no project is referenced", () => {
+    const observability = buildReferencedProjectRunObservability({
+      syncedProjectIds: [],
+      failures: [],
+    });
+
+    expect(observability.referenced_projects_requested).toBe(0);
+    expect(observability.referenced_projects_synced).toBe(0);
+    expect(observability.referenced_project_failures).toEqual([]);
   });
 });
 

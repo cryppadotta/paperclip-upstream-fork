@@ -11,6 +11,7 @@ import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimenta
 import { AppsExperimentalGate } from "./components/AppsExperimentalGate";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
+import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 
 // Route-level code splitting. Previously every one of ~90 pages was
 // statically imported here, producing a single ~6.5 MB entry chunk shipped on
@@ -364,7 +365,7 @@ function LegacySettingsRedirect() {
   const { companyPrefix } = useParams<{ companyPrefix?: string }>();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany =
@@ -472,7 +473,7 @@ function CompanyRootRedirect() {
   const location = useLocation();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
@@ -503,7 +504,7 @@ function UnprefixedBoardRedirect() {
   const { companies, selectedCompany, loading } = useCompany();
 
   if (loading) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   const targetCompany = selectedCompany ?? companies[0] ?? null;
