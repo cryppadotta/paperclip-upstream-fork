@@ -1,8 +1,55 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
-import { buildPaperclipWakePayload } from "../services/heartbeat.js";
+import {
+  buildAgentChainOfCommandSnapshot,
+  buildPaperclipWakePayload,
+} from "../services/heartbeat.js";
 
 describe("agent session wake messages", () => {
+  it("loads the reporting chain with one bounded query", async () => {
+    const execute = vi.fn().mockResolvedValue([
+      { id: "manager-1", name: "CTO", role: "cto", title: "Chief Technology Officer" },
+      { id: "manager-2", name: "CEO", role: "ceo", title: null },
+    ]);
+
+    await expect(
+      buildAgentChainOfCommandSnapshot({
+        db: { execute } as never,
+        agent: { id: "agent-1", companyId: "company-1", reportsTo: "manager-1" },
+        runId: "run-1",
+      }),
+    ).resolves.toEqual([
+      { id: "manager-1", name: "CTO", role: "cto", title: "Chief Technology Officer" },
+      { id: "manager-2", name: "CEO", role: "ceo", title: null },
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("continues a wake without reporting context when the hierarchy query fails", async () => {
+    const execute = vi.fn().mockRejectedValue(new Error("database unavailable"));
+
+    await expect(
+      buildAgentChainOfCommandSnapshot({
+        db: { execute } as never,
+        agent: { id: "agent-1", companyId: "company-1", reportsTo: "manager-1" },
+        runId: "run-1",
+      }),
+    ).resolves.toEqual([]);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips hierarchy lookup for top-level agents", async () => {
+    const execute = vi.fn();
+
+    await expect(
+      buildAgentChainOfCommandSnapshot({
+        db: { execute } as never,
+        agent: { id: "agent-1", companyId: "company-1", reportsTo: null },
+      }),
+    ).resolves.toEqual([]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("includes the issue brief and requires fallback fetch when a long description is truncated", async () => {
     const description = [
       "Update launch-card.svg and change the CTA to Try Team free.",

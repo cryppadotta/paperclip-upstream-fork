@@ -742,24 +742,33 @@ function normalizePaperclipWakeAgentMessage(value: unknown): PaperclipWakeAgentM
   };
 }
 
+function normalizePaperclipWakeAgentField(value: unknown): string | null {
+  const normalized = asString(value, "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+  return normalized || null;
+}
+
 function normalizePaperclipWakeAgentContext(value: unknown): PaperclipWakeAgentContext | null {
   const context = parseObject(value);
-  const id = asString(context.id, "").trim() || null;
-  const name = asString(context.name, "").trim() || null;
-  const role = asString(context.role, "").trim() || null;
+  const id = normalizePaperclipWakeAgentField(context.id);
+  const name = normalizePaperclipWakeAgentField(context.name);
+  const role = normalizePaperclipWakeAgentField(context.role);
   const chainOfCommand = Array.isArray(context.chainOfCommand)
     ? context.chainOfCommand
         .slice(0, 50)
         .map((entry) => {
           const manager = parseObject(entry);
-          const managerId = asString(manager.id, "").trim();
-          const managerName = asString(manager.name, "").trim();
+          const managerId = normalizePaperclipWakeAgentField(manager.id);
+          const managerName = normalizePaperclipWakeAgentField(manager.name);
           if (!managerId || !managerName) return null;
           return {
             id: managerId,
             name: managerName,
-            role: asString(manager.role, "").trim() || null,
-            title: asString(manager.title, "").trim() || null,
+            role: normalizePaperclipWakeAgentField(manager.role),
+            title: normalizePaperclipWakeAgentField(manager.title),
           };
         })
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
