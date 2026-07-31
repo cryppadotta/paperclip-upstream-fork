@@ -2604,7 +2604,7 @@ function CompactSystemNoticeRow({
             type="button"
             aria-expanded={open}
             aria-controls={detailsId}
-            className="flex w-full items-center gap-2 py-0.5 text-left"
+            className="-mx-1 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/5"
             onClick={() => setOpen((value) => !value)}
           >
             <span
@@ -2617,13 +2617,15 @@ function CompactSystemNoticeRow({
                 · {source.label}
               </span>
             ) : null}
-            <span className="ml-auto flex items-center gap-1.5">
+            {/* Trailing meta never shrinks — keeps the timestamp on one line so the
+                collapsed row stays a single quiet line on narrow / mobile widths. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
               {message.createdAt ? (
-                <span data-testid="compact-system-notice-time" className="text-(length:--text-micro) text-muted-foreground/50">
+                <span data-testid="compact-system-notice-time" className="whitespace-nowrap text-(length:--text-micro) text-muted-foreground/50">
                   {commentDateLabel(message.createdAt)}
                 </span>
               ) : null}
-              <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground/40 transition-transform", open && "rotate-180")} />
+              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform group-hover:text-muted-foreground/70", open && "rotate-180")} />
             </span>
           </button>
           <div id={detailsId} hidden={!open} className="py-1">
