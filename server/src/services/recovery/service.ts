@@ -216,7 +216,7 @@ function recoveryNoticeMetadata(input: {
           type: "agent_link" as const,
           label: "Recovery owner",
           agentId: input.recoveryOwner.id,
-          name: input.recoveryOwner.name,
+          name: input.recoveryOwner.name.slice(0, 160),
         }]
       : [{ type: "key_value" as const, label: "Recovery owner", value: "board" }]),
     ...(input.latestRun

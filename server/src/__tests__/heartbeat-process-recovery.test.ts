@@ -4882,6 +4882,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "process_lost",
       runError: "Authorization: Bearer sk-test-recovery-secret",
     });
+    const longRecoveryOwnerName = "R".repeat(161);
+    await db.update(agents).set({ name: longRecoveryOwnerName }).where(eq(agents.id, agentId));
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -4908,11 +4910,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("retried dispatch");
     expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).toContain(`Recovery owner: [${longRecoveryOwnerName}]`);
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "warning",
-      title: "Recovery: retries exhausted — moved to blocked (owner: CodexCoder)",
+      title: `${`Recovery: retries exhausted — moved to blocked (owner: ${longRecoveryOwnerName})`.slice(0, 159)}…`,
       density: "compact",
     });
     expect(comments[0]?.metadata).toMatchObject({
@@ -4921,6 +4923,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         rows: expect.arrayContaining([
           expect.objectContaining({ type: "key_value", label: "Recovery action", value: recoveryAction.id }),
           expect.objectContaining({ type: "key_value", label: "Cause", value: "process_lost" }),
+          expect.objectContaining({ type: "agent_link", label: "Recovery owner", name: "R".repeat(160) }),
         ]),
       })],
     });
