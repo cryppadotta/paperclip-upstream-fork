@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -233,6 +233,25 @@ describePg("decisionService", () => {
     })]));
   });
 
+  it("loads target staleness in a bounded query for the open-decision list", async () => {
+    const first = await createCommentDecision("lenient", { idempotencyKey: "list-query-1" });
+    const second = await createCommentDecision("lenient", { idempotencyKey: "list-query-2" });
+    await db.update(issues).set({ updatedAt: new Date(Date.now() + 1_000) }).where(eq(issues.id, targetIssueId));
+
+    const selectSpy = vi.spyOn(db, "select");
+    try {
+      const listed = await service().list(companyId, { status: "open" });
+      expect(selectSpy).toHaveBeenCalledTimes(2);
+      expect(listed.filter((decision) => decision.id === first.id || decision.id === second.id))
+        .toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: first.id, targetChanged: { [targetIssueId]: true } }),
+          expect.objectContaining({ id: second.id, targetChanged: { [targetIssueId]: true } }),
+        ]));
+    } finally {
+      selectSpy.mockRestore();
+    }
+  });
+
   it("bounds expiration work to the configured batch size", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "1";
     await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: new Date(Date.now() + 5) });
@@ -263,24 +282,42 @@ describePg("decisionService", () => {
       companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign another?", body: "Body",
       options: [{ id: "assign", label: "Assign", effects: [] }, { id: "skip", label: "Skip", effects: [] }],
     });
+    const acceptedAgain = await service().create({
+      companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign again?", body: "Body",
+      options: [{ id: "assign", label: "Assign", effects: [] }, { id: "skip", label: "Skip", effects: [] }],
+    });
     await service().create({
       companyId, actor: agentActor(), agentId, runId, ruleKey: "cleanup.stale", title: "Clean up?", body: "Body",
       options: [{ id: "clean", label: "Clean", effects: [] }], expiresAt: new Date(Date.now() + 5),
     });
     await service().decide({ id: accepted.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
+    await service().decide({ id: acceptedAgain.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
     await service().dismiss(rejected.id, decidedByUserId, boardActor(), "Not this time");
     await new Promise((resolve) => setTimeout(resolve, 10));
     await service().sweepExpired();
 
     const stats = await service().stats(companyId, { originAgentId: agentId });
-    expect(stats.totals).toEqual({ proposed: 3, accepted: 1, rejected: 1, expired: 1 });
+    expect(stats.filters).toEqual({ originAgentId: agentId, since: null });
+    expect(stats.totals).toEqual({ proposed: 4, accepted: 2, rejected: 1, expired: 1 });
     expect(stats.groups).toEqual([
       { ruleKey: "cleanup.stale", proposed: 1, accepted: 0, rejected: 0, expired: 1, chosenOptions: [] },
-      { ruleKey: "routing.assign", proposed: 2, accepted: 1, rejected: 1, expired: 0,
-        chosenOptions: [{ optionId: "assign", count: 1 }] },
+      { ruleKey: "routing.assign", proposed: 3, accepted: 2, rejected: 1, expired: 0,
+        chosenOptions: [{ optionId: "assign", count: 2 }] },
     ]);
     expect((await service().outcome(rejected.id)).metadata).toMatchObject({ dismissed: true, dismissReason: "Not this time" });
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "decision.dismissed")))
       .toEqual([expect.objectContaining({ entityId: rejected.id, responsibleUserId: decidedByUserId })]);
+  });
+
+  it("rejects a direct dismissal when the signed decision spec was tampered with", async () => {
+    const created = await createCommentDecision();
+    await db.update(decisions).set({ options: [{ id: "tampered", label: "Tampered", effects: [{
+      type: "comment_on_issue", targetIssueId, staleness: "lenient", bodyMarkdown: "tampered",
+    }] }] }).where(eq(decisions.id, created.id));
+
+    await expect(service().dismiss(created.id, decidedByUserId, boardActor(), "No"))
+      .rejects.toThrow("Decision signature verification failed");
+    expect((await service().get(created.id))?.status).toBe("open");
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "decision.dismissed"))).toHaveLength(0);
   });
 });

@@ -153,49 +153,61 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
       conditions.push(inArray(decisions.id, links.map((row) => row.id)));
     }
     const rows = await db.select().from(decisions).where(and(...conditions)).orderBy(desc(decisions.createdAt)).limit(Math.min(filter.limit ?? 50, 100));
-    return Promise.all(rows.map(async (decision) => {
+    const openDecisionIds = rows.filter((decision) => decision.status === "open").map((decision) => decision.id);
+    const currentTargets = openDecisionIds.length
+      ? await db.select({ id: issues.id, updatedAt: issues.updatedAt })
+        .from(decisionTargetIssues)
+        .innerJoin(issues, and(eq(issues.companyId, companyId), eq(issues.id, decisionTargetIssues.issueId)))
+        .where(and(eq(decisionTargetIssues.companyId, companyId), inArray(decisionTargetIssues.decisionId, openDecisionIds)))
+      : [];
+    const currentTargetsById = new Map(currentTargets.map((target) => [target.id, target.updatedAt]));
+    return rows.map((decision) => {
       const changed: Record<string, boolean> = {};
       if (decision.status === "open") for (const [id, snapshot] of Object.entries(decision.targetSnapshots as Record<string, Snapshot>)) {
-        const current = await db.select({ updatedAt: issues.updatedAt }).from(issues).where(eq(issues.id, id)).then((items) => items[0] ?? null);
-        changed[id] = !current || current.updatedAt.toISOString() !== snapshot.updatedAt;
+        const currentUpdatedAt = currentTargetsById.get(id);
+        changed[id] = !currentUpdatedAt || currentUpdatedAt.toISOString() !== snapshot.updatedAt;
       }
       return { ...decision, targetChanged: changed };
-    }));
+    });
   }
 
   async function stats(companyId: string, filter: { originAgentId?: string; since?: Date } = {}): Promise<DecisionStatsResponse> {
     const conditions = [eq(decisions.companyId, companyId)];
     if (filter.originAgentId) conditions.push(eq(decisions.originAgentId, filter.originAgentId));
     if (filter.since) conditions.push(gte(decisions.createdAt, filter.since));
+    const dismissed = sql<boolean>`coalesce(${decisions.metadata}->'dismissed' = 'true'::jsonb, false)`;
     const rows = await db.select({
       ruleKey: decisions.ruleKey,
       status: decisions.status,
       chosenOptionId: decisions.chosenOptionId,
-      metadata: decisions.metadata,
-    }).from(decisions).where(and(...conditions));
+      dismissed,
+      value: count(),
+    }).from(decisions).where(and(...conditions))
+      .groupBy(decisions.ruleKey, decisions.status, decisions.chosenOptionId, dismissed);
     const emptyCounts = (): DecisionStatsCounts => ({ proposed: 0, accepted: 0, rejected: 0, expired: 0 });
     const totals = emptyCounts();
     const grouped = new Map<string | null, { counts: DecisionStatsCounts; chosenOptions: Map<string, number> }>();
     for (const row of rows) {
+      const value = Number(row.value);
       const group = grouped.get(row.ruleKey) ?? { counts: emptyCounts(), chosenOptions: new Map<string, number>() };
       grouped.set(row.ruleKey, group);
-      totals.proposed += 1;
-      group.counts.proposed += 1;
+      totals.proposed += value;
+      group.counts.proposed += value;
       if (row.status === "expired") {
-        totals.expired += 1;
-        group.counts.expired += 1;
+        totals.expired += value;
+        group.counts.expired += value;
         continue;
       }
       if (row.status !== "decided") continue;
-      const rejected = row.chosenOptionId === "dismissed" || row.metadata?.dismissed === true;
+      const rejected = row.chosenOptionId === "dismissed" || row.dismissed;
       if (rejected) {
-        totals.rejected += 1;
-        group.counts.rejected += 1;
+        totals.rejected += value;
+        group.counts.rejected += value;
         continue;
       }
-      totals.accepted += 1;
-      group.counts.accepted += 1;
-      if (row.chosenOptionId) group.chosenOptions.set(row.chosenOptionId, (group.chosenOptions.get(row.chosenOptionId) ?? 0) + 1);
+      totals.accepted += value;
+      group.counts.accepted += value;
+      if (row.chosenOptionId) group.chosenOptions.set(row.chosenOptionId, (group.chosenOptions.get(row.chosenOptionId) ?? 0) + value);
     }
     return {
       groupBy: "ruleKey",
@@ -395,6 +407,7 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
 
   async function dismiss(id: string, userId: string, userActor: AuthorizationActor, reason?: string | null) {
     const current = await get(id); if (!current) throw notFound("Decision not found");
+    if (!verifyDecisionSpec(spec({ id: current.id, options: current.options, targetSnapshots: current.targetSnapshots as Record<string, Snapshot> }), current.signedSpec)) throw forbidden("Decision signature verification failed");
     const empty = current.options.find((option) => option.effects.length === 0);
     if (empty) return decide({ id, optionId: empty.id, decidedByUserId: userId, userActor, dismissed: true, dismissReason: reason });
     const [updated] = await db.update(decisions).set({ status: "decided", executionStatus: "succeeded", chosenOptionId: "dismissed", decidedByUserId: userId,
