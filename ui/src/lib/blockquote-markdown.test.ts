@@ -50,6 +50,16 @@ describe("unescapeBlockquoteMarkers", () => {
     expect(unescapeBlockquoteMarkers(input)).toBe("- ```\n  \\> literal\n  ```\n> real quote");
   });
 
+  it("does not close a list-nested fence on a list-marker content line", () => {
+    const input = "- ```\n  - ```\n  \\> literal\n  ```\n\\> real quote";
+    expect(unescapeBlockquoteMarkers(input)).toBe("- ```\n  - ```\n  \\> literal\n  ```\n> real quote");
+  });
+
+  it("tracks the continuation indent of an ordered-list fence", () => {
+    const input = "10. ```\n    \\> literal\n    ```\n\\> real quote";
+    expect(unescapeBlockquoteMarkers(input)).toBe("10. ```\n    \\> literal\n    ```\n> real quote");
+  });
+
   it("tracks fenced code blocks through blockquote container prefixes", () => {
     const input = "> ```\n> \\> literal\n> ```\n\\> real quote";
     expect(unescapeBlockquoteMarkers(input)).toBe("> ```\n> \\> literal\n> ```\n> real quote");
