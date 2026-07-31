@@ -269,12 +269,12 @@ describePg("decisionService", () => {
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
   });
 
-  it("resumes claimed effects exactly once after a simulated crash", async () => {
+  it("resumes claimed effects exactly once after a simulated crash without a client idempotency key", async () => {
     const created = await createCommentDecision();
     await db.update(decisions).set({ status: "decided", executionStatus: "running", chosenOptionId: "yes", decidedByUserId,
-      inputValues: {}, metadata: { decideIdempotencyKey: "resume-key" } }).where(eq(decisions.id, created.id));
+      inputValues: {} }).where(eq(decisions.id, created.id));
     await db.insert(decisionEffectExecutions).values({ decisionId: created.id, effectIndex: 0, effectType: "comment_on_issue", targetIssueId, status: "claimed" });
-    const resumed = await service().decide({ id: created.id, optionId: "yes", idempotencyKey: "resume-key", decidedByUserId, userActor: boardActor() });
+    const resumed = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
     expect(resumed.executionStatus).toBe("succeeded");
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
   });

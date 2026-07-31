@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { Agent, AttentionSubject } from "@paperclipai/shared";
@@ -158,13 +158,26 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   };
 
   const decideMutation = useMutation({
-    mutationFn: (input: { optionId: string; inputValues: Record<string, string> }) =>
-      decisionsApi.decide(decisionId, { optionId: input.optionId, inputValues: input.inputValues }),
+    mutationFn: (input: { optionId: string; inputValues: Record<string, string>; idempotencyKey?: string | null }) =>
+      decisionsApi.decide(decisionId, input),
+    retry: 2,
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.decisions.detail(decisionId), data);
       invalidate();
     },
   });
+
+  const resumeAttemptedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (decision?.status !== "decided" || decision.executionStatus !== "running" || !decision.chosenOptionId) return;
+    if (resumeAttemptedRef.current === decision.id) return;
+    resumeAttemptedRef.current = decision.id;
+    decideMutation.mutate({
+      optionId: decision.chosenOptionId,
+      inputValues: decision.inputValues ?? {},
+      idempotencyKey: null,
+    });
+  }, [decision, decideMutation]);
 
   const dismissMutation = useMutation({
     mutationFn: (reason: string | undefined) => decisionsApi.dismiss(decisionId, reason),
@@ -217,7 +230,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       }
       busy={busy}
       errorMessage={errorMessage}
-      onDecide={(optionId, inputValues) => decideMutation.mutate({ optionId, inputValues })}
+      onDecide={(optionId, inputValues) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() })}
       onDismiss={(reason) => dismissMutation.mutate(reason)}
     />
   );

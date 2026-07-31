@@ -49,6 +49,12 @@ function sameIds(left: readonly string[], right: readonly string[]) {
   return rightIds.size === right.length && left.every((id) => rightIds.has(id));
 }
 
+function sameInputValues(left: Record<string, string>, right: Record<string, string>) {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  return leftKeys.length === rightKeys.length && leftKeys.every((key) => left[key] === right[key]);
+}
+
 function spec(decision: { id: string; options: DecisionOption[]; targetSnapshots: Record<string, Snapshot> }) {
   return { decisionId: decision.id, options: decision.options, targetSnapshots: decision.targetSnapshots };
 }
@@ -420,6 +426,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const metadata = current.metadata as Record<string, unknown>;
     if (!verifyDecisionSpec(spec({ id: current.id, options: current.options, targetSnapshots: current.targetSnapshots as Record<string, Snapshot> }), current.signedSpec)) throw forbidden("Decision signature verification failed");
     if (current.status === "decided" && input.idempotencyKey && metadata.decideIdempotencyKey === input.idempotencyKey) {
+      if (current.decidedByUserId !== input.decidedByUserId) throw forbidden("Decision replay belongs to a different user");
+      return current.executionStatus === "running" ? runEffects(current, input.userActor) : outcome(current.id);
+    }
+    if (current.status === "decided" && current.chosenOptionId === input.optionId &&
+      sameInputValues(current.inputValues ?? {}, input.inputValues ?? {})) {
       if (current.decidedByUserId !== input.decidedByUserId) throw forbidden("Decision replay belongs to a different user");
       return current.executionStatus === "running" ? runEffects(current, input.userActor) : outcome(current.id);
     }

@@ -67,6 +67,10 @@ const INITIAL_ATTENTION_ROW_RENDER_LIMIT = 50;
 const ATTENTION_ROW_RENDER_BATCH_SIZE = 100;
 const ATTENTION_SCROLL_LOAD_THRESHOLD_PX = 480;
 
+export function decisionHistoryQueryEnabled(companyId: string | null | undefined, open: boolean) {
+  return Boolean(companyId && open);
+}
+
 function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
   if (!element || typeof window === "undefined") return null;
   let current = element.parentElement;
@@ -139,15 +143,15 @@ export function WhatNeedsMe() {
 
   // Decision history — decided / expired decisions leave the open attention
   // feed (entryRule = open only), so we fetch them directly for the curtains.
-  const { data: decidedDecisions } = useQuery({
+  const { data: decidedDecisions, isLoading: decidedDecisionsLoading } = useQuery({
     queryKey: queryKeys.decisions.list(selectedCompanyId!, "decided"),
     queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: 50 }),
-    enabled: !!selectedCompanyId,
+    enabled: decisionHistoryQueryEnabled(selectedCompanyId, decidedOpen),
   });
-  const { data: expiredDecisions } = useQuery({
+  const { data: expiredDecisions, isLoading: expiredDecisionsLoading } = useQuery({
     queryKey: queryKeys.decisions.list(selectedCompanyId!, "expired"),
     queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: 50 }),
-    enabled: !!selectedCompanyId,
+    enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
   });
 
   const { data: session } = useQuery({
@@ -435,9 +439,7 @@ export function WhatNeedsMe() {
     return <PageSkeleton variant="approvals" />;
   }
 
-  const hasHistory = (decidedDecisions?.length ?? 0) > 0 || (expiredDecisions?.length ?? 0) > 0;
-  const hasAnything =
-    activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0 || hasHistory;
+  const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
 
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
@@ -674,43 +676,54 @@ export function WhatNeedsMe() {
             </Curtain>
           )}
 
-          {(decidedDecisions?.length ?? 0) > 0 && (
-            <Curtain
-              label="Decided"
-              count={decidedDecisions!.length}
-              open={decidedOpen}
-              onToggle={() => setDecidedOpen((prev) => !prev)}
-            >
-              {decidedDecisions!.map((decision) => (
-                <DecisionResolver
-                  key={decision.id}
-                  companyId={selectedCompanyId}
-                  decisionId={decision.id}
-                  agentMap={agentMap}
-                />
-              ))}
-            </Curtain>
-          )}
-
-          {(expiredDecisions?.length ?? 0) > 0 && (
-            <Curtain
-              label="Expired"
-              count={expiredDecisions!.length}
-              open={expiredOpen}
-              onToggle={() => setExpiredOpen((prev) => !prev)}
-            >
-              {expiredDecisions!.map((decision) => (
-                <DecisionResolver
-                  key={decision.id}
-                  companyId={selectedCompanyId}
-                  decisionId={decision.id}
-                  agentMap={agentMap}
-                />
-              ))}
-            </Curtain>
-          )}
         </div>
       )}
+
+      <div className="space-y-4">
+        <Curtain
+          label="Decided"
+          count={decidedDecisions?.length}
+          open={decidedOpen}
+          onToggle={() => setDecidedOpen((prev) => !prev)}
+        >
+          {decidedDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
+          ) : (decidedDecisions?.length ?? 0) > 0 ? (
+            decidedDecisions!.map((decision) => (
+              <DecisionResolver
+                key={decision.id}
+                companyId={selectedCompanyId}
+                decisionId={decision.id}
+                agentMap={agentMap}
+              />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground">No decided decisions.</p>
+          )}
+        </Curtain>
+
+        <Curtain
+          label="Expired"
+          count={expiredDecisions?.length}
+          open={expiredOpen}
+          onToggle={() => setExpiredOpen((prev) => !prev)}
+        >
+          {expiredDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
+          ) : (expiredDecisions?.length ?? 0) > 0 ? (
+            expiredDecisions!.map((decision) => (
+              <DecisionResolver
+                key={decision.id}
+                companyId={selectedCompanyId}
+                decisionId={decision.id}
+                agentMap={agentMap}
+              />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground">No expired decisions.</p>
+          )}
+        </Curtain>
+      </div>
 
       <DecisionTrainingDrawer
         open={trainingItem !== null}
@@ -727,10 +740,10 @@ export function WhatNeedsMe() {
 
 /**
  * Violet left-rule strip over a run of decisions that share a bundle, e.g.
- * "Gardener proposed 6 cleanups · from PAP-123 · morning sweep · 6 pending".
+ * "Planner proposed 6 decisions · from PAP-123 · routing review · 6 pending".
  * Grouping is a surface only — each decision is still decided independently.
  */
-function DecisionBundleHeader({
+export function DecisionBundleHeader({
   agentName,
   title,
   originIssue,
@@ -741,7 +754,7 @@ function DecisionBundleHeader({
   originIssue: AttentionSubject | null;
   count: number;
 }) {
-  const noun = count === 1 ? "cleanup" : "cleanups";
+  const noun = count === 1 ? "decision" : "decisions";
   return (
     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm border-l-2 border-violet-500/60 bg-violet-500/5 px-3 py-1.5 text-xs">
       <span className="font-semibold text-violet-800 dark:text-violet-200">
@@ -905,7 +918,7 @@ function Curtain({
   children,
 }: {
   label: string;
-  count: number;
+  count?: number;
   open: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -913,7 +926,7 @@ function Curtain({
   return (
     <section className="space-y-2">
       <IssueGroupHeader
-        label={`${label} (${count})`}
+        label={count == null ? label : `${label} (${count})`}
         collapsible
         collapsed={!open}
         onToggle={onToggle}
