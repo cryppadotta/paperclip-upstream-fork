@@ -1,13 +1,13 @@
 {
   "version": 1,
   "baselineId": "storybook-visual-initial-public-baseline",
-  "sourceCommit": "5438c3b8bfb28896c4aa1698c332df33f3d5af2d",
+  "sourceCommit": "a4b4a5699cbbe6b7801e05599ee900c529741afa",
   "snapshotCount": 828,
   "archive": {
-    "url": "https://pages.paperclip.ing/baselines/storybook-visual/fd6e065925cbb25eba94e76566c2a9a605638abe859f01539ecc7f6dbceb3f45/snapshots.tgz",
-    "sha256": "fd6e065925cbb25eba94e76566c2a9a605638abe859f01539ecc7f6dbceb3f45",
-    "byteSize": 53756168,
-    "objectKey": "baselines/storybook-visual/fd6e065925cbb25eba94e76566c2a9a605638abe859f01539ecc7f6dbceb3f45/snapshots.tgz"
+    "url": "https://pages.paperclip.ing/baselines/storybook-visual/bfd24459cf2b37a032433f9edd95115cf115bb46aaf4edd660aae8d8c9708768/snapshots.tgz",
+    "sha256": "bfd24459cf2b37a032433f9edd95115cf115bb46aaf4edd660aae8d8c9708768",
+    "byteSize": 53662024,
+    "objectKey": "baselines/storybook-visual/bfd24459cf2b37a032433f9edd95115cf115bb46aaf4edd660aae8d8c9708768/snapshots.tgz"
   },
   "environment": {
     "browser": "chromium",
