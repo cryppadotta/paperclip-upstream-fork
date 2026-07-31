@@ -45,6 +45,16 @@ describe("unescapeBlockquoteMarkers", () => {
     expect(unescapeBlockquoteMarkers(input)).toBe("```\n\\> not a quote\n```\n> real quote");
   });
 
+  it("does not touch escaped markers inside a list-nested fenced code block", () => {
+    const input = "- ```\n  \\> literal\n  ```\n\\> real quote";
+    expect(unescapeBlockquoteMarkers(input)).toBe("- ```\n  \\> literal\n  ```\n> real quote");
+  });
+
+  it("tracks fenced code blocks through blockquote container prefixes", () => {
+    const input = "> ```\n> \\> literal\n> ```\n\\> real quote";
+    expect(unescapeBlockquoteMarkers(input)).toBe("> ```\n> \\> literal\n> ```\n> real quote");
+  });
+
   it("handles tilde fences", () => {
     const input = "~~~\n\\> literal\n~~~";
     expect(unescapeBlockquoteMarkers(input)).toBe("~~~\n\\> literal\n~~~");

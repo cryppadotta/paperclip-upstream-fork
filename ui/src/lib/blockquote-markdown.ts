@@ -19,16 +19,20 @@
  *   - content nested in a blockquote or list, whose lines carry a `>`/`-`/`digit.`
  *     container prefix rather than plain indent.
  *
- * Top-level fenced code blocks are also skipped: their contents are never
- * `\`-escaped by the exporter, and a `\>` inside a code fence is meaningful
- * literal text. Fence tracking follows CommonMark: a closing fence must use the
- * same character as the opening fence, be at least as long, and carry no trailing
- * content (an info string is only allowed on the opening fence).
+ * Fenced code blocks are also skipped, including fences nested in blockquote or
+ * list containers: their contents are never `\`-escaped by the exporter, and a
+ * `\>` inside a code fence is meaningful literal text. Fence tracking follows
+ * CommonMark: a closing fence must use the same character as the opening fence,
+ * be at least as long, and carry no trailing content (an info string is only
+ * allowed on the opening fence).
  */
 
-// A line whose first non-space content is a run of >=3 backticks or tildes,
-// with whatever follows captured separately (info string / trailing content).
-const FENCE_LINE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+// A line whose first content after optional blockquote/list container markers is
+// a run of >=3 backticks or tildes, with whatever follows captured separately.
+// Recognizing the container on the opening line protects indented continuation
+// content such as `  \> literal` inside a list-nested fence.
+const FENCE_LINE_RE =
+  /^ {0,3}(?:(?:> ?|(?:[-+*]|\d{1,9}[.)]) +))*(`{3,}|~{3,})(.*)$/;
 // A block-level escaped blockquote marker: `\>` at column 0, allowing only the
 // 0–3 spaces of insignificant leading indent CommonMark permits before a block.
 const ESCAPED_BLOCKQUOTE_RE = /^( {0,3})\\>/;
