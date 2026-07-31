@@ -2264,6 +2264,208 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(comments).toHaveLength(0);
   }, 20_000);
 
+  it("returns full details at the observed volume without multiplying unconfigured shared service history", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const workspaceCount = 6_176;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Workspace scale regression",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/workspace-scale-regression",
+    });
+
+    const workspaceRows = Array.from({ length: workspaceCount }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace" as const,
+      strategyType: "project_primary" as const,
+      name: `Shared workspace ${index + 1}`,
+      status: "idle" as const,
+      providerType: "local_fs" as const,
+      cwd: "/tmp/workspace-scale-regression",
+    }));
+    for (let offset = 0; offset < workspaceRows.length; offset += 400) {
+      await db.insert(executionWorkspaces).values(workspaceRows.slice(offset, offset + 400));
+    }
+    await db.insert(workspaceRuntimeServices).values(
+      Array.from({ length: 163 }, (_, index) => ({
+        id: randomUUID(),
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        scopeType: "project_workspace",
+        scopeId: projectWorkspaceId,
+        serviceName: `historical-service-${index + 1}`,
+        status: "stopped",
+        lifecycle: "shared",
+        reuseKey: `historical-service-${index + 1}`,
+        command: `pnpm historical:${index + 1}`,
+        cwd: "/tmp/workspace-scale-regression",
+        provider: "local_process",
+        healthStatus: "unknown",
+      })),
+    );
+
+    const workspaces = await svc.list(companyId);
+
+    expect(workspaces).toHaveLength(workspaceCount);
+    expect(workspaces.reduce((count, workspace) => count + (workspace.runtimeServices?.length ?? 0), 0)).toBe(0);
+    expect(JSON.stringify(workspaces).length).toBeLessThan(12_000_000);
+
+    const overview = await svc.listOverview(companyId, { limit: 1, offset: 0 });
+    expect(overview.total).toBe(workspaceCount);
+    expect(overview.items[0]).toMatchObject({
+      serviceCount: 0,
+      runningServiceCount: 0,
+      primaryService: null,
+      hasRuntimeConfig: false,
+    });
+  }, 30_000);
+
+  it("inherits only runtime-service rows matching the current project workspace configuration", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const currentWebServiceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Configured runtime selection",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      isPrimary: true,
+      cwd: "/tmp/configured-runtime-selection",
+      metadata: {
+        runtimeConfig: {
+          workspaceRuntime: {
+            services: [{ name: "web", command: "pnpm dev" }],
+          },
+          desiredState: "stopped",
+        },
+      },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      mode: "shared_workspace",
+      strategyType: "project_primary",
+      name: "Shared configured workspace",
+      status: "idle",
+      providerType: "local_fs",
+      cwd: "/tmp/configured-runtime-selection",
+    });
+    await db.insert(workspaceRuntimeServices).values([
+      {
+        id: randomUUID(),
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        scopeType: "project_workspace",
+        scopeId: projectWorkspaceId,
+        serviceName: "web",
+        status: "stopped",
+        lifecycle: "shared",
+        reuseKey: "old-web",
+        command: "pnpm dev",
+        cwd: "/tmp/configured-runtime-selection",
+        provider: "local_process",
+        healthStatus: "unknown",
+        updatedAt: new Date("2026-07-29T10:00:00.000Z"),
+      },
+      {
+        id: currentWebServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        scopeType: "project_workspace",
+        scopeId: projectWorkspaceId,
+        serviceName: "web",
+        status: "stopped",
+        lifecycle: "shared",
+        reuseKey: "current-web",
+        command: "pnpm dev",
+        cwd: "/tmp/configured-runtime-selection",
+        provider: "local_process",
+        healthStatus: "unknown",
+        updatedAt: new Date("2026-07-30T10:00:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        scopeType: "project_workspace",
+        scopeId: projectWorkspaceId,
+        serviceName: "removed-worker",
+        status: "stopped",
+        lifecycle: "shared",
+        reuseKey: "removed-worker",
+        command: "pnpm worker",
+        cwd: "/tmp/configured-runtime-selection",
+        provider: "local_process",
+        healthStatus: "unknown",
+        updatedAt: new Date("2026-07-31T10:00:00.000Z"),
+      },
+    ]);
+
+    const [workspace] = await svc.list(companyId);
+    expect(workspace?.runtimeServices).toEqual([
+      expect.objectContaining({
+        id: currentWebServiceId,
+        serviceName: "web",
+        configIndex: 0,
+      }),
+    ]);
+
+    const overview = await svc.listOverview(companyId, { limit: 10, offset: 0 });
+    expect(overview.items[0]).toMatchObject({
+      serviceCount: 1,
+      runningServiceCount: 0,
+      hasRuntimeConfig: true,
+      primaryService: {
+        id: currentWebServiceId,
+        serviceName: "web",
+        status: "stopped",
+      },
+    });
+  });
+
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();

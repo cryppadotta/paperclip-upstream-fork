@@ -1,5 +1,9 @@
 import type { Db } from "@paperclipai/db";
 import { workspaceRuntimeServices } from "@paperclipai/db";
+import {
+  listWorkspaceServiceCommandDefinitions,
+  matchWorkspaceRuntimeServiceToCommand,
+} from "@paperclipai/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
@@ -25,6 +29,29 @@ export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow
     if (!current.has(identity)) current.set(identity, row);
   }
   return [...current.values()];
+}
+
+export function selectConfiguredRuntimeServiceRows(
+  rows: WorkspaceRuntimeServiceRow[],
+  workspaceRuntime: Record<string, unknown> | null | undefined,
+) {
+  const availableRows = selectCurrentRuntimeServiceRows(rows).map((row) => ({
+    ...row,
+    configIndex: null as number | null,
+  }));
+  const selectedRows: Array<WorkspaceRuntimeServiceRow & { configIndex: number | null }> = [];
+
+  for (const command of listWorkspaceServiceCommandDefinitions(workspaceRuntime)) {
+    const matchedRow = matchWorkspaceRuntimeServiceToCommand(command, availableRows);
+    if (!matchedRow) continue;
+    selectedRows.push({
+      ...matchedRow,
+      configIndex: command.serviceIndex,
+    });
+    availableRows.splice(availableRows.indexOf(matchedRow), 1);
+  }
+
+  return selectedRows;
 }
 
 export async function listCurrentRuntimeServicesForProjectWorkspaces(
