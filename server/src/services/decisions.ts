@@ -9,22 +9,44 @@ import { logActivity } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
 
-type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string; childCount: number };
+type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string; childCount: number; descendantIds?: string[] };
 type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" }) => Promise<unknown>;
 export type DecisionServiceOptions = { wakeOriginAgent: Wake };
 const DAY = 86_400_000;
 
+function effectTargetIds(effect: DecisionEffect) {
+  const result = new Set([effect.targetIssueId]);
+  if (effect.type === "create_issue") {
+    if (effect.draft.parentId) result.add(effect.draft.parentId);
+    for (const id of effect.draft.blockedByIssueIds ?? []) result.add(id);
+  }
+  if (effect.type === "resolve_blocker") for (const id of effect.removeBlockedByIssueIds) result.add(id);
+  return [...result];
+}
+
 function targetIds(options: DecisionOption[]) {
   const result = new Set<string>();
-  for (const option of options) for (const effect of option.effects) {
-    result.add(effect.targetIssueId);
-    if (effect.type === "create_issue") {
-      if (effect.draft.parentId) result.add(effect.draft.parentId);
-      for (const id of effect.draft.blockedByIssueIds ?? []) result.add(id);
-    }
-    if (effect.type === "resolve_blocker") for (const id of effect.removeBlockedByIssueIds) result.add(id);
-  }
+  for (const option of options) for (const effect of option.effects) for (const id of effectTargetIds(effect)) result.add(id);
   return [...result];
+}
+
+function targetActions(options: DecisionOption[]) {
+  const result = new Map<string, Set<"issue:comment" | "issue:mutate">>();
+  for (const option of options) for (const effect of option.effects) {
+    const action = effect.type === "comment_on_issue" ? "issue:comment" as const : "issue:mutate" as const;
+    for (const id of effectTargetIds(effect)) {
+      const actions = result.get(id) ?? new Set();
+      actions.add(action);
+      result.set(id, actions);
+    }
+  }
+  return result;
+}
+
+function sameIds(left: readonly string[], right: readonly string[]) {
+  if (left.length !== right.length) return false;
+  const rightIds = new Set(right);
+  return rightIds.size === right.length && left.every((id) => rightIds.has(id));
 }
 
 function spec(decision: { id: string; options: DecisionOption[]; targetSnapshots: Record<string, Snapshot> }) {
@@ -59,6 +81,9 @@ function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
 export function decisionService(db: Db, options: DecisionServiceOptions) {
   const authz = authorizationService(db);
   let targetSweepCursor: string | null = null;
+  type CreateInput = { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; bundleId?: string | null;
+    ruleKey?: string | null; title: string; body: string; options: DecisionOption[]; inputs?: DecisionInput[] | null; expiresAt?: Date | null;
+    idempotencyKey?: string | null; continuationPolicy?: "none" | "wake_origin_agent"; metadata?: Record<string, unknown> };
 
   async function origin(companyId: string, agentId: string, runId: string) {
     const run = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
@@ -69,37 +94,55 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return { run, issueId };
   }
 
-  async function descendantCount(companyId: string, rootId: string, dbOrTx: Db) {
-    const queue = [rootId]; const visited = new Set([rootId]); let count = 0;
+  async function collectDescendantIds(companyId: string, rootId: string, dbOrTx: Db) {
+    const queue = [rootId]; const visited = new Set([rootId]); const result: string[] = [];
     while (queue.length) {
       const parentId = queue.shift()!;
       const children = await dbOrTx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.parentId, parentId)));
       for (const child of children) {
         if (visited.has(child.id)) continue;
         visited.add(child.id);
-        count += 1;
+        result.push(child.id);
         queue.push(child.id);
       }
     }
-    return count;
+    return result;
   }
 
-  async function snapshots(companyId: string, ids: string[], actor: AuthorizationActor, dbOrTx: Db) {
+  async function snapshots(companyId: string, ids: string[], actor: AuthorizationActor, requiredActions: ReturnType<typeof targetActions>,
+    cancellationTargetIds: ReadonlySet<string>, dbOrTx: Db) {
     const rows = ids.length ? await dbOrTx.select().from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids))) : [];
     if (rows.length !== ids.length) throw unprocessable("All referenced issues must exist in the company");
     const result: Record<string, Snapshot> = {};
     for (const issue of rows) {
       const access = await authz.decide({ actor, action: "issue:read", resource: resource(issue) });
       if (!access.allowed) throw forbidden("Decision target is outside the origin visibility boundary");
+      for (const action of requiredActions.get(issue.id) ?? []) {
+        const effectAccess = await authz.decide({ actor, action, resource: resource(issue) });
+        if (!effectAccess.allowed) throw forbidden("Decision effect exceeds the origin authority boundary");
+      }
+      const descendantIds = await collectDescendantIds(companyId, issue.id, dbOrTx);
+      if (cancellationTargetIds.has(issue.id) && descendantIds.length) {
+        const descendants = await dbOrTx.select().from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, descendantIds)));
+        const descendantAccess = await Promise.all(descendants.map((descendant) =>
+          authz.decide({ actor, action: "issue:mutate", resource: resource(descendant) })));
+        if (descendants.length !== descendantIds.length || descendantAccess.some((access) => !access.allowed)) {
+          throw forbidden("Decision effect exceeds the origin authority boundary");
+        }
+      }
       result[issue.id] = { status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
-        updatedAt: issue.updatedAt.toISOString(), childCount: await descendantCount(companyId, issue.id, dbOrTx) };
+        updatedAt: issue.updatedAt.toISOString(), childCount: descendantIds.length,
+        ...(cancellationTargetIds.has(issue.id) ? { descendantIds } : {}) };
     }
     return result;
   }
 
-  async function create(input: { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; bundleId?: string | null;
-    ruleKey?: string | null; title: string; body: string; options: DecisionOption[]; inputs?: DecisionInput[] | null; expiresAt?: Date | null;
-    idempotencyKey?: string | null; continuationPolicy?: "none" | "wake_origin_agent"; metadata?: Record<string, unknown> }, dbOrTx: Db = db) {
+  async function createInStore(input: CreateInput, dbOrTx: Db) {
+    if (input.idempotencyKey) {
+      const lockKey = `decision-create:${input.companyId}:${input.idempotencyKey}`;
+      await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    }
     const provenance = await origin(input.companyId, input.agentId, input.runId);
     if (input.idempotencyKey) {
       const existing = await dbOrTx.select().from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.idempotencyKey, input.idempotencyKey)))
@@ -117,7 +160,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const expiresAt = input.expiresAt ?? new Date(Date.now() + 7 * DAY);
     if (expiresAt.getTime() <= Date.now() || expiresAt.getTime() > Date.now() + 30 * DAY) throw unprocessable("expiresAt must be within 30 days");
     const ids = targetIds(input.options);
-    const targetSnapshots = await snapshots(input.companyId, ids, input.actor, dbOrTx);
+    const cancellationTargetIds = new Set(input.options.flatMap((option) => option.effects
+      .filter((effect) => effect.type === "cancel_issue_tree").map((effect) => effect.targetIssueId)));
+    const targetSnapshots = await snapshots(input.companyId, ids, input.actor, targetActions(input.options), cancellationTargetIds, dbOrTx);
     const id = randomUUID();
     const [created] = await dbOrTx.insert(decisions).values({ id, companyId: input.companyId, bundleId: input.bundleId ?? null,
       originAgentId: input.agentId, originIssueId: provenance.issueId, originRunId: input.runId, ruleKey: input.ruleKey ?? null,
@@ -138,6 +183,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       runId: input.runId, action: "decision.created", entityType: "decision", entityId: id,
       details: { originIssueId: provenance.issueId, originAgentId: input.agentId, originResponsibleUserId: provenance.run.responsibleUserId } });
     return created;
+  }
+
+  async function create(input: CreateInput, dbOrTx?: Db) {
+    if (dbOrTx) return createInStore(input, dbOrTx);
+    return db.transaction((tx) => createInStore(input, tx as unknown as Db));
   }
 
   const get = (id: string) => db.select().from(decisions).where(eq(decisions.id, id)).then((rows) => rows[0] ?? null);
@@ -272,12 +322,15 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
           const [row] = await tx.update(decisionEffectExecutions).set({ status, error: reason, result: details, activityLogId: activity?.id ?? null, executedAt: new Date() }).where(eq(decisionEffectExecutions.id, execution!.id)).returning();
           return row;
         };
-        const referencedIds = new Set([effect.targetIssueId]);
-        if (effect.type === "create_issue") {
-          if (effect.draft.parentId) referencedIds.add(effect.draft.parentId);
-          for (const id of effect.draft.blockedByIssueIds ?? []) referencedIds.add(id);
+        const directReferencedIds = new Set(effectTargetIds(effect));
+        const snapshots = decision.targetSnapshots as Record<string, Snapshot>;
+        const cancellationDescendantIds = effect.type === "cancel_issue_tree"
+          ? snapshots[effect.targetIssueId]?.descendantIds
+          : undefined;
+        if (effect.type === "cancel_issue_tree" && !Array.isArray(cancellationDescendantIds)) {
+          return finish("failed", "invalid_signed_cancellation_scope", { reason: "invalid_signed_cancellation_scope" });
         }
-        if (effect.type === "resolve_blocker") for (const id of effect.removeBlockedByIssueIds) referencedIds.add(id);
+        const referencedIds = new Set([...directReferencedIds, ...(cancellationDescendantIds ?? [])]);
         const referencedIssues = await tx.select().from(issues).where(and(eq(issues.companyId, decision.companyId), inArray(issues.id, [...referencedIds])));
         if (referencedIssues.length !== referencedIds.size) return finish("failed", "invalid_effect_reference", { reason: "invalid_effect_reference" });
         const target = referencedIssues.find((item) => item.id === effect.targetIssueId)!;
@@ -302,11 +355,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         if (!userAccess.allowed || deniedOrigin) return finish("failed", "deny_decision_intersection",
           { reason: "deny_decision_intersection", userReason: userAccess.reason, originReason: deniedOrigin?.reason ?? null });
         if (effect.staleness === "strict") {
-          const snapshots = decision.targetSnapshots as Record<string, Snapshot>;
-          const staleReference = referencedIssues.some((item) => snapshots[item.id]?.updatedAt !== item.updatedAt.toISOString());
-          const expandedTree = effect.type === "cancel_issue_tree" &&
-            snapshots[target.id]?.childCount !== await descendantCount(decision.companyId, target.id, tx as unknown as Db);
-          if (staleReference || expandedTree) return finish("skipped", "target_changed", { reason: "target_changed" });
+          const staleReference = referencedIssues.some((item) => directReferencedIds.has(item.id) &&
+            snapshots[item.id]?.updatedAt !== item.updatedAt.toISOString());
+          const changedTree = effect.type === "cancel_issue_tree" && !sameIds(cancellationDescendantIds!,
+            await collectDescendantIds(decision.companyId, target.id, tx as unknown as Db));
+          if (staleReference || changedTree) return finish("skipped", "target_changed", { reason: "target_changed" });
         }
         const svc = issueService(tx as unknown as Db);
         const values = decision.inputValues ?? {};
@@ -334,16 +387,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             idempotencyKey: `decision-effect:${decision.id}:${effectIndex}` });
           result = { issueId: created.id };
         } else {
-          const queue = [target.id]; const visited = new Set<string>(); const cancelled: string[] = [];
-          while (queue.length) {
-            const id = queue.shift()!;
-            if (visited.has(id)) continue;
-            visited.add(id);
-            cancelled.push(id);
-            const children = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, decision.companyId), eq(issues.parentId, id)));
-            queue.push(...children.filter((row) => !visited.has(row.id)).map((row) => row.id));
-          }
-          for (const id of cancelled.reverse()) await svc.update(id, { status: "cancelled", actorUserId: decidedByUserId }, tx);
+          const cancelled = [target.id, ...cancellationDescendantIds!].reverse();
+          for (const id of cancelled) await svc.update(id, { status: "cancelled", actorUserId: decidedByUserId }, tx);
           await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
           result = { cancelledIssueIds: cancelled };
         }

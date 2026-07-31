@@ -136,6 +136,19 @@ describePg("decisionService", () => {
     expect(result.executions[0]).toMatchObject({ status: "failed", error: "deny_decision_intersection" });
   });
 
+  it("rejects mutation proposals from an origin actor with read-only access", async () => {
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, originResponsibleUserId));
+    const readOnlyActor = { ...agentActor(),
+      onBehalfOfMemberships: [{ companyId, membershipRole: "viewer" as const, status: "active" as const }] };
+
+    await expect(service().create({
+      companyId, actor: readOnlyActor, agentId, runId, title: "Update?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{
+        type: "update_issue_status", targetIssueId, staleness: "lenient", status: "in_progress",
+      }] }],
+    })).rejects.toThrow("Decision effect exceeds the origin authority boundary");
+  });
+
   it("expires a decision atomically instead of executing after its deadline", async () => {
     const created = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -165,6 +178,27 @@ describePg("decisionService", () => {
     const cancelResult = await service().decide({ id: cancelDecision.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
     expect(cancelResult.executions[0]).toMatchObject({ status: "skipped", error: "target_changed" });
     expect((await db.select().from(issues).where(eq(issues.id, childId)))[0]?.status).toBe("todo");
+  });
+
+  it("never expands a lenient cancellation beyond the signed descendant scope", async () => {
+    const reviewedChildId = randomUUID();
+    await db.insert(issues).values({ id: reviewedChildId, companyId, title: "Reviewed child", status: "todo", priority: "medium",
+      parentId: targetIssueId, responsibleUserId: decidedByUserId });
+    const created = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Cancel?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{
+        type: "cancel_issue_tree", targetIssueId, staleness: "lenient", reasonComment: "cleanup",
+      }] }],
+    });
+    const unreviewedChildId = randomUUID();
+    await db.insert(issues).values({ id: unreviewedChildId, companyId, title: "Unreviewed child", status: "todo", priority: "medium",
+      parentId: targetIssueId, responsibleUserId: decidedByUserId });
+
+    const result = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+
+    expect(result.executions[0]).toMatchObject({ status: "executed",
+      result: { cancelledIssueIds: [reviewedChildId, targetIssueId] } });
+    expect((await db.select().from(issues).where(eq(issues.id, unreviewedChildId)))[0]?.status).toBe("todo");
   });
 
   it("bounds cyclic issue traversal for snapshots and cancel-tree execution", async () => {
