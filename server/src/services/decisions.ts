@@ -11,6 +11,7 @@ import { issueService } from "./issues.js";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string; childCount: number };
 type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" }) => Promise<unknown>;
+export type DecisionServiceOptions = { wakeOriginAgent: Wake };
 const DAY = 86_400_000;
 
 function targetIds(options: DecisionOption[]) {
@@ -55,7 +56,7 @@ function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
     actor.memberships?.some((membership) => membership.companyId === companyId && membership.status === "active") === true;
 }
 
-export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}) {
+export function decisionService(db: Db, options: DecisionServiceOptions) {
   const authz = authorizationService(db);
   let targetSweepCursor: string | null = null;
 
@@ -69,12 +70,16 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
   }
 
   async function descendantCount(companyId: string, rootId: string, dbOrTx: Db) {
-    const queue = [rootId]; let count = 0;
+    const queue = [rootId]; const visited = new Set([rootId]); let count = 0;
     while (queue.length) {
       const parentId = queue.shift()!;
       const children = await dbOrTx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.parentId, parentId)));
-      count += children.length;
-      queue.push(...children.map((child) => child.id));
+      for (const child of children) {
+        if (visited.has(child.id)) continue;
+        visited.add(child.id);
+        count += 1;
+        queue.push(child.id);
+      }
     }
     return count;
   }
@@ -329,8 +334,15 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
             idempotencyKey: `decision-effect:${decision.id}:${effectIndex}` });
           result = { issueId: created.id };
         } else {
-          const queue = [target.id]; const cancelled: string[] = [];
-          while (queue.length) { const id = queue.shift()!; cancelled.push(id); const children = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, decision.companyId), eq(issues.parentId, id))); queue.push(...children.map((row) => row.id)); }
+          const queue = [target.id]; const visited = new Set<string>(); const cancelled: string[] = [];
+          while (queue.length) {
+            const id = queue.shift()!;
+            if (visited.has(id)) continue;
+            visited.add(id);
+            cancelled.push(id);
+            const children = await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, decision.companyId), eq(issues.parentId, id)));
+            queue.push(...children.filter((row) => !visited.has(row.id)).map((row) => row.id));
+          }
           for (const id of cancelled.reverse()) await svc.update(id, { status: "cancelled", actorUserId: decidedByUserId }, tx);
           await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
           result = { cancelledIssueIds: cancelled };
@@ -416,7 +428,10 @@ export function decisionService(db: Db, options: { wakeOriginAgent?: Wake } = {}
     await logActivity(db, { companyId: updated.companyId, actorType: "system", actorId: "decision-executor", agentId: updated.originAgentId,
       runId: updated.originRunId, responsibleUserIdOverride: userId, action: "decision.dismissed", entityType: "decision", entityId: updated.id,
       details: { chosenOptionId: "dismissed", decidedByUserId: userId, dismissed: true } });
-    return outcome(id);
+    const result = await outcome(id);
+    if (updated.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent({ companyId: updated.companyId, agentId: updated.originAgentId,
+      issueId: updated.originIssueId, decisionId: updated.id, outcome: "decided" });
+    return result;
   }
 
   async function createBundle(input: { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; title: string; summary: string;

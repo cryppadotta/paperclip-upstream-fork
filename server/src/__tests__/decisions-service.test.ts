@@ -167,6 +167,28 @@ describePg("decisionService", () => {
     expect((await db.select().from(issues).where(eq(issues.id, childId)))[0]?.status).toBe("todo");
   });
 
+  it("bounds cyclic issue traversal for snapshots and cancel-tree execution", async () => {
+    const childId = randomUUID();
+    await db.insert(issues).values({ id: childId, companyId, title: "Cycle child", status: "todo", priority: "medium",
+      parentId: targetIssueId, responsibleUserId: decidedByUserId });
+    await db.update(issues).set({ parentId: childId }).where(eq(issues.id, targetIssueId));
+    const created = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Cancel cycle?", body: "Body",
+      options: [{ id: "cancel", label: "Cancel", style: "destructive", effects: [{
+        type: "cancel_issue_tree", targetIssueId, staleness: "strict", reasonComment: "cleanup",
+      }] }],
+    });
+
+    expect((created.targetSnapshots as Record<string, { childCount: number }>)[targetIssueId]?.childCount).toBe(1);
+    const result = await service().decide({ id: created.id, optionId: "cancel", decidedByUserId, userActor: boardActor() });
+    expect(result.executions[0]).toMatchObject({ status: "executed", result: { cancelledIssueIds: [childId, targetIssueId] } });
+    expect(await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.companyId, companyId)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: targetIssueId, status: "cancelled" }),
+        expect.objectContaining({ id: childId, status: "cancelled" }),
+      ]));
+  });
+
   it("fails closed when the deciding user lacks assignment capability", async () => {
     const assigneeAgentId = randomUUID();
     await db.insert(agents).values({ id: assigneeAgentId, companyId, name: "Assignee", role: "engineer", status: "active", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
@@ -319,5 +341,13 @@ describePg("decisionService", () => {
       .rejects.toThrow("Decision signature verification failed");
     expect((await service().get(created.id))?.status).toBe("open");
     expect(await db.select().from(activityLog).where(eq(activityLog.action, "decision.dismissed"))).toHaveLength(0);
+  });
+
+  it("wakes the origin agent after a direct dismissal", async () => {
+    const created = await createCommentDecision();
+    const result = await service().dismiss(created.id, decidedByUserId, boardActor(), "No");
+
+    expect(result).toMatchObject({ status: "decided", chosenOptionId: "dismissed" });
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
   });
 });

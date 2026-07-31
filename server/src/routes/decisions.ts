@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { decisionInputsSchema, decisionOptionsSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { decisionService } from "../services/decisions.js";
+import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const createSchema = z.object({
@@ -36,9 +36,9 @@ function boardUserId(req: Parameters<typeof getActorInfo>[0]) {
   return req.actor.userId ?? "local-implicit-board";
 }
 
-export function decisionRoutes(db: Db) {
+export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
   const router = Router();
-  const svc = decisionService(db);
+  const svc = decisionService(db, options);
   router.post("/companies/:companyId/decisions", validate(createSchema), async (req, res) => {
     const companyId = req.params.companyId as string; assertCompanyAccess(req, companyId);
     const agent = agentContext(req); if (!agent) { res.status(403).json({ error: "Agent run context required" }); return; }

@@ -701,6 +701,15 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+  const decisionServiceOptions = {
+    wakeOriginAgent: async (input: { agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" }) => heartbeat.wakeup(input.agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: `decision_${input.outcome}`,
+      payload: { issueId: input.issueId, decisionId: input.decisionId, outcome: input.outcome },
+    }),
+  };
   // Managed instances drive bundled plugin auto-install from the managed-config
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
   // self-hosted: createApp falls back to its built-in kubernetes-only default.
@@ -738,6 +747,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    decisionServiceOptions,
     managedPluginAutoInstall,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
@@ -884,15 +894,7 @@ export async function startServer(): Promise<StartedServer> {
   };
 
   if (config.heartbeatSchedulerEnabled) {
-    const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
-    const decisionExecutor = decisionService(db as any, {
-      wakeOriginAgent: async (input) => heartbeat.wakeup(input.agentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: `decision_${input.outcome}`,
-        payload: { issueId: input.issueId, decisionId: input.decisionId, outcome: input.outcome },
-      }),
-    });
+    const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { Agent, AttentionSubject } from "@paperclipai/shared";
@@ -29,7 +29,10 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
-  const issueHref = (idOrIdentifier: string) => (prefix ? `/${prefix}/issues/${idOrIdentifier}` : `/issues/${idOrIdentifier}`);
+  const issueHref = useCallback(
+    (idOrIdentifier: string) => (prefix ? `/${prefix}/issues/${idOrIdentifier}` : `/issues/${idOrIdentifier}`),
+    [prefix],
+  );
 
   const detail = useQuery({
     queryKey: queryKeys.decisions.detail(decisionId),
@@ -120,8 +123,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       }
     });
     return (id: string) => map.get(id) ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [originIssue, referencedIds, issueQueries.map((query) => query.data).join(",")]);
+  }, [originIssue, referencedIds, issueQueries, issueHref]);
 
   const cancelTreePreview = (targetIssueId: string): DecisionIssueRef[] | null => {
     const index = cancelTreeTargetIds.indexOf(targetIssueId);
