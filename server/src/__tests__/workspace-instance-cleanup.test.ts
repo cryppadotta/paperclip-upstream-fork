@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupWorktreeInstanceArtifacts,
   readWorktreeInstancePointer,
+  stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
@@ -93,6 +94,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      expectedInstanceId: instanceId,
       worktreesDir,
     });
 
@@ -117,6 +119,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      expectedInstanceId: "default",
       worktreesDir,
       recorder,
       dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
@@ -155,6 +158,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      expectedInstanceId: "ordered-cleanup",
       worktreesDir,
       dependencies: {
         stopEmbeddedPostgres: async (dataDir) => {
@@ -188,6 +192,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      expectedInstanceId: "escaped",
       worktreesDir,
     });
 
@@ -210,11 +215,54 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      expectedInstanceId: "default",
       worktreesDir,
     });
 
     expect(result).toMatchObject({ status: "refused" });
     expect((result as { warning: string }).warning).toContain("managed instances directory");
     await expect(fs.stat(liveInstanceRoot)).resolves.toBeDefined();
+  });
+
+  it("refuses an instance pointer that belongs to a sibling worktree", async () => {
+    const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
+    const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
+    const siblingRoot = path.join(worktreesDir, "instances", "sibling-worktree");
+    await fs.mkdir(siblingRoot, { recursive: true });
+    await fs.writeFile(path.join(siblingRoot, "marker"), "keep me", "utf8");
+    await writeWorkspaceEnv(workspacePath, worktreesDir, "sibling-worktree");
+    const stopEmbeddedPostgres = vi.fn(async () => false);
+    const removeInstanceRoot = vi.fn(async () => {});
+
+    const pointer = await readWorktreeInstancePointer(workspacePath);
+    const result = await cleanupWorktreeInstanceArtifacts({
+      pointer: pointer!,
+      workspaceId: "workspace-1",
+      workspacePath,
+      expectedInstanceId: "owned-worktree",
+      worktreesDir,
+      dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
+    });
+
+    expect(result).toMatchObject({ status: "refused", instanceRoot: siblingRoot });
+    expect((result as { warning: string }).warning).toContain("does not match the expected workspace instance");
+    expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
+    expect(removeInstanceRoot).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(siblingRoot, "marker"), "utf8")).toBe("keep me");
+  });
+
+  it("treats an ESRCH signal race as an already-stopped PostgreSQL process", async () => {
+    const instanceRoot = await makeTempRoot("paperclip-postgres-exit-race-");
+    const dataDir = path.join(instanceRoot, "db");
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`, "utf8");
+    const signalError = Object.assign(new Error("process exited"), { code: "ESRCH" });
+
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, {
+      processIsAlive: () => true,
+      readVerifiedPostgresCommand: async () => `postgres -D ${dataDir}`,
+      signalProcess: () => { throw signalError; },
+      wait: async () => {},
+    })).resolves.toBe(false);
   });
 });

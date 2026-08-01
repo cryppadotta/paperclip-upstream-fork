@@ -40,6 +40,7 @@ import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
   cleanupWorktreeInstanceArtifacts,
+  deriveWorktreeInstanceId,
   readWorktreeInstancePointer,
   type WorktreeInstancePointer,
 } from "./workspace-instance-cleanup.js";
@@ -3201,12 +3202,18 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
+  let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
-    try {
-      // Capture the pointer before custom cleanup commands can remove the repo-local env file.
-      worktreeInstancePointer = await readWorktreeInstancePointer(workspacePath);
-    } catch (err) {
-      warnings.push(`Could not read worktree instance pointer: ${err instanceof Error ? err.message : String(err)}`);
+    if (!input.workspace.branchName) {
+      warnings.push("Could not clean worktree instance because the execution workspace has no authoritative branch name.");
+    } else {
+      expectedWorktreeInstanceId = deriveWorktreeInstanceId(input.workspace.branchName);
+      try {
+        // Capture the pointer before custom cleanup commands can remove the repo-local env file.
+        worktreeInstancePointer = await readWorktreeInstancePointer(workspacePath);
+      } catch (err) {
+        warnings.push(`Could not read worktree instance pointer: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
@@ -3244,12 +3251,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
-  if (worktreeInstancePointer && workspacePath) {
+  if (worktreeInstancePointer && workspacePath && expectedWorktreeInstanceId) {
     try {
       const result = await cleanupWorktreeInstanceArtifacts({
         pointer: worktreeInstancePointer,
         workspaceId: input.workspace.id,
         workspacePath,
+        expectedInstanceId: expectedWorktreeInstanceId,
         recorder: input.recorder,
       });
       if (result.status === "refused") warnings.push(result.warning);
