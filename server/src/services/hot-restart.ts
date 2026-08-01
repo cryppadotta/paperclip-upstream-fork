@@ -119,6 +119,15 @@ function asStringArray(value: unknown): string[] {
   return [...new Set(value.map(asString).filter((entry): entry is string => entry !== null))];
 }
 
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
 function isSameHotRestartRequest(left: HotRestartIntent, right: HotRestartIntent) {
   return left.requestedAt === right.requestedAt
     && left.previousServerPid === right.previousServerPid
@@ -242,7 +251,7 @@ export async function writeHotRestartIntent(input: {
   // The legacy location is shared by every instance under PAPERCLIP_HOME.
   // Claim it without replacement so concurrent staged restarts fail closed
   // instead of making the first old server consume another instance's PID.
-  await writeJsonFileExclusiveAtomic(legacyPath, intent);
+  await claimLegacyHotRestartIntent(legacyPath, intent);
   try {
     await writeJsonFileAtomic(instancePath, intent);
   } catch (error) {
@@ -290,6 +299,24 @@ async function removeMatchingHotRestartIntent(filePath: string, expected?: HotRe
     await fs.unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartIntent) {
+  try {
+    await writeJsonFileExclusiveAtomic(filePath, intent);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+
+    const existing = await readHotRestartIntentAtPath(filePath).catch(() => null);
+    if (!existing || isProcessAlive(existing.previousServerPid)) throw error;
+
+    // An interrupted restart can leave the shared claim behind after its
+    // target server exits. Remove only that exact abandoned request, then
+    // compete normally for a fresh exclusive claim.
+    await removeMatchingHotRestartIntent(filePath, existing);
+    await writeJsonFileExclusiveAtomic(filePath, intent);
   }
 }
 

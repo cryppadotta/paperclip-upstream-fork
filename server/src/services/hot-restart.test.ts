@@ -114,7 +114,7 @@ describe("hot-restart path compatibility", () => {
       process.env.PAPERCLIP_INSTANCE_ID = "blue";
       await writeHotRestartIntent({
         homeDir,
-        previousServerPid: 501,
+        previousServerPid: process.pid,
         requestedAt: new Date("2026-08-01T03:40:00.000Z"),
         requestedByRunId: "blue-deploy",
       });
@@ -131,11 +131,36 @@ describe("hot-restart path compatibility", () => {
         await fs.readFile(resolveLegacyHotRestartIntentPath(homeDir), "utf8"),
       ) as Record<string, unknown>;
       expect(legacyIntent).toMatchObject({
-        previousServerPid: 501,
+        previousServerPid: process.pid,
         requestedByRunId: "blue-deploy",
       });
       await expect(fs.stat(resolveHotRestartIntentPath(homeDir))).rejects.toMatchObject({
         code: "ENOENT",
+      });
+    });
+  });
+
+  it("reclaims an abandoned legacy handoff after its target process exits", async () => {
+    await withTempHome(async (homeDir) => {
+      process.env.PAPERCLIP_INSTANCE_ID = "blue";
+      await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: 2_147_483_647,
+        requestedAt: new Date("2026-08-01T03:50:00.000Z"),
+        requestedByRunId: "abandoned-deploy",
+      });
+
+      process.env.PAPERCLIP_INSTANCE_ID = "green";
+      await expect(writeHotRestartIntent({
+        homeDir,
+        previousServerPid: process.pid,
+        requestedAt: new Date("2026-08-01T03:51:00.000Z"),
+        requestedByRunId: "green-deploy",
+      })).resolves.toMatchObject({ requestedByRunId: "green-deploy" });
+
+      await expect(readHotRestartIntent(homeDir)).resolves.toMatchObject({
+        previousServerPid: process.pid,
+        requestedByRunId: "green-deploy",
       });
     });
   });
