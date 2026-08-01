@@ -12,6 +12,7 @@ export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
+const HOT_RESTART_LEGACY_CLAIM_LEASE_MS = 15 * 60_000;
 
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
 type ProcessStatReader = (target: string) => Promise<{ ctimeMs: number }>;
@@ -30,6 +31,7 @@ export type HotRestartIntentRun = {
 export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
+  claimExpiresAt?: string | null;
   previousServerPid: number;
   previousServerIdentity?: string | null;
   previousServerStartedAt?: string | null;
@@ -226,6 +228,7 @@ export function isObservedHotRestartTargetAlive(
       HotRestartIntent,
       "previousServerPid" | "previousServerIdentity" | "previousServerStartedAt"
     >;
+    observedAt?: Date;
   },
 ) {
   if (!observation.alive) return false;
@@ -283,10 +286,19 @@ export function isObservedHotRestartTargetAlive(
     return observedStartedAt <= requestedAt;
   }
 
-  // Never replace a live claim when both identity sources are unavailable.
-  // New request markers normally carry the server-provided boot identity,
-  // while older markers can still use OS start metadata when it is readable.
-  return true;
+  const explicitExpiry = intent.claimExpiresAt
+    ? Date.parse(intent.claimExpiresAt)
+    : Number.NaN;
+  const claimExpiresAt = Number.isFinite(explicitExpiry)
+    ? explicitExpiry
+    : requestedAt + HOT_RESTART_LEGACY_CLAIM_LEASE_MS;
+  const observedAt = observation.observedAt?.getTime() ?? Date.now();
+
+  // Current requests cannot be created without process identity. This bounded
+  // compatibility lease exists only for older markers when every identity
+  // source is unavailable, so a recycled PID cannot reserve the shared path
+  // forever. Recent legacy handoffs remain protected during their restart.
+  return Number.isFinite(claimExpiresAt) && observedAt < claimExpiresAt;
 }
 
 async function isOriginalServerProcessAlive(
@@ -404,6 +416,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt,
+    claimExpiresAt: asDateString(value.claimExpiresAt),
     previousServerPid,
     previousServerIdentity: asString(value.previousServerIdentity),
     previousServerStartedAt: asDateString(value.previousServerStartedAt),
@@ -491,9 +504,13 @@ export async function writeHotRestartIntent(input: {
       + "server boot identity and operating-system process start time are unavailable",
     );
   }
+  const requestedAt = input.requestedAt ?? new Date();
   const intent: HotRestartIntent = {
     version: 1,
-    requestedAt: (input.requestedAt ?? new Date()).toISOString(),
+    requestedAt: requestedAt.toISOString(),
+    claimExpiresAt: new Date(
+      requestedAt.getTime() + HOT_RESTART_LEGACY_CLAIM_LEASE_MS,
+    ).toISOString(),
     previousServerPid: input.previousServerPid,
     previousServerIdentity,
     previousServerStartedAt,

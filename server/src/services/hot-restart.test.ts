@@ -132,7 +132,13 @@ describe("hot-restart path compatibility", () => {
     expect(isObservedHotRestartTargetAlive(legacyIntent, {
       alive: true,
       startedAt: null,
+      observedAt: new Date("2026-08-01T01:10:00.000Z"),
     })).toBe(true);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      observedAt: new Date("2026-08-01T01:21:00.000Z"),
+    })).toBe(false);
     expect(isObservedHotRestartTargetAlive(legacyIntent, {
       alive: true,
       startedAt: null,

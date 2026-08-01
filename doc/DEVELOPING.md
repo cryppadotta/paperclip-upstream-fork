@@ -122,10 +122,10 @@ identities let a later request reclaim an abandoned marker after the operating
 system recycles the numeric PID. Older markers stay compatible and use process
 start metadata when available. When OS metadata is unavailable, the current
 server's health-reported boot time can still prove that a legacy marker predates
-the process now using its PID. Paperclip does not replace an unknown live claim
-when neither identity source is available, and it refuses to create a new
-request without at least one of them. Restore health-endpoint or OS process
-metadata access before retrying such a request.
+the process now using its PID. Paperclip refuses to create a new request without
+at least one identity source. A legacy marker with no identity metadata retains
+its claim for a 15-minute compatibility lease; after that bound it cannot let a
+recycled PID reserve the shared handoff path forever.
 
 Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
 
