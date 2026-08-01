@@ -1015,6 +1015,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       config: {
         environmentId: "env-new",
         provisionCommand: "bash ./scripts/provision.sh",
+        runtimeProvisionCommand: null,
         teardownCommand: null,
         cleanupCommand: null,
         desiredState: null,

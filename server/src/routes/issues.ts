@@ -4659,6 +4659,7 @@ export function issueRoutes(
         ? {
             environmentId: workspace.config.environmentId,
             provisionCommand: workspace.config.provisionCommand,
+            runtimeProvisionCommand: workspace.config.runtimeProvisionCommand,
             teardownCommand: workspace.config.teardownCommand,
             cleanupCommand: workspace.config.cleanupCommand,
             workspaceRuntime: workspace.config.workspaceRuntime,
@@ -4668,7 +4669,9 @@ export function issueRoutes(
         : null,
       metadata: null,
       runtimeServices: (workspace.runtimeServices ?? [])
-        .filter((service) => service.status === "starting" || service.status === "running")
+        .filter((service) =>
+          service.status === "provisioning" || service.status === "starting" || service.status === "running"
+        )
         .map(compactIssueRuntimeService),
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,

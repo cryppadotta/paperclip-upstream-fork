@@ -300,6 +300,7 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   return {
     environmentId: settings?.environmentId ?? null,
     provisionCommand: settings?.workspaceStrategy?.provisionCommand ?? null,
+    runtimeProvisionCommand: settings?.workspaceStrategy?.runtimeProvisionCommand ?? null,
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
@@ -325,6 +326,9 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
       ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
       ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
       ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
+      ...(settings.workspaceStrategy.runtimeProvisionCommand
+        ? { runtimeProvisionCommand: settings.workspaceStrategy.runtimeProvisionCommand }
+        : {}),
       ...(settings.workspaceStrategy.teardownCommand ? { teardownCommand: settings.workspaceStrategy.teardownCommand } : {}),
     };
   }

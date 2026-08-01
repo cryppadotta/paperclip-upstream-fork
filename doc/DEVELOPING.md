@@ -592,6 +592,8 @@ eval "$(pnpm paperclipai worktree env)"
 
 For project execution worktrees, Paperclip can also run a project-defined provision command after it creates or reuses an isolated git worktree. Configure this on the project's execution workspace policy (`workspaceStrategy.provisionCommand`). The command runs inside the derived worktree and receives `PAPERCLIP_WORKSPACE_*`, `PAPERCLIP_PROJECT_ID`, `PAPERCLIP_AGENT_ID`, and `PAPERCLIP_ISSUE_*` environment variables so each repo can bootstrap itself however it wants.
 
+Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
+
 ## App-Shipped Skills Catalog
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
