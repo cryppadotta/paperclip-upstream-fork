@@ -3507,37 +3507,40 @@ export function issueRoutes(
   ) {
     const actor = getActorInfo(req);
     const occurredAt = new Date().toISOString();
-    await svc.addComment(
-      issue.id,
-      `A company administrator used audited break-glass access to read this private task at ${occurredAt}.`,
-      {},
-      {
-        authorType: "system",
-        presentation: {
-          kind: "system_notice",
-          tone: "warning",
-          title: "Break-glass access used",
-          detailsDefaultOpen: false,
-          density: "compact",
+    await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await issueService(txDb).addComment(
+        issue.id,
+        `A company administrator used audited break-glass access to read this private task at ${occurredAt}.`,
+        {},
+        {
+          authorType: "system",
+          presentation: {
+            kind: "system_notice",
+            tone: "warning",
+            title: "Break-glass access used",
+            detailsDefaultOpen: false,
+            density: "compact",
+          },
         },
-      },
-    );
-    await logActivity(db, {
-      companyId: issue.companyId,
-      actorType: "user",
-      actorId: actor.actorId,
-      agentId: null,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "issue.break_glass_read",
-      entityType: "issue",
-      entityId: issue.id,
-      issueId: issue.id,
-      details: {
+      );
+      await logActivity(txDb, {
+        companyId: issue.companyId,
+        actorType: "user",
+        actorId: actor.actorId,
+        agentId: null,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.break_glass_read",
+        entityType: "issue",
+        entityId: issue.id,
         issueId: issue.id,
-        occurredAt,
-        acknowledgement: "breakGlass=true",
-      },
+        details: {
+          issueId: issue.id,
+          occurredAt,
+          acknowledgement: "breakGlass=true",
+        },
+      });
     });
   }
 
