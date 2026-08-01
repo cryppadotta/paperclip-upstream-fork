@@ -286,7 +286,7 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
@@ -300,8 +300,7 @@ describe("startServer feedback export wiring", () => {
 
   it("refuses startup when the decision signing secret is unavailable", async () => {
     delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
-    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET or PAPERCLIP_AGENT_JWT_SECRET is required");
+    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
     expect(loadConfigMock).not.toHaveBeenCalled();
   });
 
@@ -404,6 +403,7 @@ describe("startServer feedback export wiring", () => {
 describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
@@ -450,6 +450,7 @@ describe("startServer authenticated auth origin setup", () => {
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;

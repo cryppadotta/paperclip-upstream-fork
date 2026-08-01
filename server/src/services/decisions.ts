@@ -9,7 +9,8 @@ import { logActivity } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
 
-type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string; childCount: number; descendantIds?: string[] };
+type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
+  descendantCount?: number; descendantIds?: string[]; childCount?: number };
 type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" | "cancelled" }) => Promise<unknown>;
 export type DecisionServiceOptions = { wakeOriginAgent: Wake };
 const DAY = 86_400_000;
@@ -136,8 +137,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const effectAccess = await authz.decide({ actor, action, resource: resource(issue) });
         if (!effectAccess.allowed) throw forbidden("Decision effect exceeds the origin authority boundary");
       }
-      const descendantIds = await collectDescendantIds(companyId, issue.id, dbOrTx);
-      if (cancellationTargetIds.has(issue.id) && descendantIds.length) {
+      const cancellationTarget = cancellationTargetIds.has(issue.id);
+      const descendantIds = cancellationTarget ? await collectDescendantIds(companyId, issue.id, dbOrTx) : [];
+      if (cancellationTarget && descendantIds.length) {
         const descendants = await dbOrTx.select().from(issues)
           .where(and(eq(issues.companyId, companyId), inArray(issues.id, descendantIds)));
         const descendantAccess = await Promise.all(descendants.map((descendant) =>
@@ -147,8 +149,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         }
       }
       result[issue.id] = { status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
-        updatedAt: issue.updatedAt.toISOString(), childCount: descendantIds.length,
-        ...(cancellationTargetIds.has(issue.id) ? { descendantIds } : {}) };
+        updatedAt: issue.updatedAt.toISOString(),
+        ...(cancellationTarget ? { descendantCount: descendantIds.length, descendantIds } : {}) };
     }
     return result;
   }

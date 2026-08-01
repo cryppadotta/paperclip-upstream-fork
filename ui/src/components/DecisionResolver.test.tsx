@@ -51,7 +51,7 @@ vi.mock("./DecisionCard", () => ({
   ),
 }));
 
-import { DecisionResolver } from "./DecisionResolver";
+import { DecisionResolver, signedCancelTreePreviewIds } from "./DecisionResolver";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -62,6 +62,12 @@ describe("DecisionResolver", () => {
     state.issueStatus = "todo";
     container = document.createElement("div");
     document.body.appendChild(container);
+  });
+
+  it("derives cancel-tree previews from the signed descendant scope", () => {
+    expect(signedCancelTreePreviewIds("root", { descendantIds: ["signed-child", "signed-grandchild"] }))
+      .toEqual(["root", "signed-child", "signed-grandchild"]);
+    expect(signedCancelTreePreviewIds("root", undefined)).toBeNull();
   });
 
   afterEach(() => {

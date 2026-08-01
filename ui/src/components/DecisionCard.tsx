@@ -123,8 +123,9 @@ function effectSummary(
     case "resolve_blocker":
       return `Unblock ${target} — remove ${pluralize(effect.removeBlockedByIssueIds.length, "blocker")}`;
     case "cancel_issue_tree": {
-      const childCount = snapshots[effect.targetIssueId]?.childCount ?? 0;
-      return `Cancel ${target} and its sub-tree (${pluralize(childCount + 1, "issue")})`;
+      const snapshot = snapshots[effect.targetIssueId];
+      const descendantCount = snapshot?.descendantCount ?? snapshot?.descendantIds?.length ?? snapshot?.childCount ?? 0;
+      return `Cancel ${target} and its sub-tree (${pluralize(descendantCount + 1, "issue")})`;
     }
     default:
       return "Apply effect";

@@ -64,6 +64,7 @@ describePg("decisionService", () => {
   afterEach(async () => {
     delete process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE;
     delete process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS;
+    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
@@ -214,7 +215,7 @@ describePg("decisionService", () => {
       }] }],
     });
 
-    expect((created.targetSnapshots as Record<string, { childCount: number }>)[targetIssueId]?.childCount).toBe(1);
+    expect((created.targetSnapshots as Record<string, { descendantCount: number }>)[targetIssueId]?.descendantCount).toBe(1);
     const result = await service().decide({ id: created.id, optionId: "cancel", decidedByUserId, userActor: boardActor() });
     expect(result.executions[0]).toMatchObject({ status: "executed", result: { cancelledIssueIds: [childId, targetIssueId] } });
     expect(await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.companyId, companyId)))
@@ -247,9 +248,9 @@ describePg("decisionService", () => {
   it("refuses execution when the decision signing secret is unavailable", async () => {
     const created = await createCommentDecision();
     delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
-    delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "agent-jwt-secret-must-not-sign-decisions";
     await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
-      .rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET or PAPERCLIP_AGENT_JWT_SECRET is required");
+      .rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(0);
   });
 

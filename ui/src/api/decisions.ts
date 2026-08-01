@@ -19,7 +19,10 @@ export interface DecisionTargetSnapshot {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   updatedAt: string;
-  childCount: number;
+  descendantCount?: number;
+  descendantIds?: string[];
+  /** Legacy snapshots created before descendantCount was named explicitly. */
+  childCount?: number;
 }
 
 export interface Decision {

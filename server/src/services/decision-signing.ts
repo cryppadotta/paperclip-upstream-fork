@@ -3,9 +3,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const VERSION = "decision-spec-v1";
 
 export function validateDecisionSigningSecret() {
-  const value = process.env.PAPERCLIP_DECISION_SIGNING_SECRET?.trim()
-    || process.env.PAPERCLIP_AGENT_JWT_SECRET?.trim();
-  if (!value || value.length < 32) throw new Error("PAPERCLIP_DECISION_SIGNING_SECRET or PAPERCLIP_AGENT_JWT_SECRET is required");
+  const value = process.env.PAPERCLIP_DECISION_SIGNING_SECRET?.trim();
+  if (!value || value.length < 32) throw new Error("PAPERCLIP_DECISION_SIGNING_SECRET is required and must be at least 32 characters");
   return value;
 }
 

@@ -29,6 +29,10 @@ function combineIssueData(results: Array<{ data?: IssueDetail }>) {
   return results.map((result) => result.data);
 }
 
+export function signedCancelTreePreviewIds(targetIssueId: string, snapshot: { descendantIds?: string[] } | undefined) {
+  return snapshot?.descendantIds ? [targetIssueId, ...snapshot.descendantIds] : null;
+}
+
 /**
  * Container for a Decisions-v1 decision surfaced in the attention feed. Fetches
  * the full decision (`get`) plus the shared open-list (for `targetChanged`),
@@ -69,6 +73,9 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   const referencedIds = useMemo(() => {
     if (!decision) return [] as string[];
     const ids = new Set<string>(Object.keys(decision.targetSnapshots ?? {}));
+    for (const snapshot of Object.values(decision.targetSnapshots ?? {})) {
+      for (const descendantId of snapshot.descendantIds ?? []) ids.add(descendantId);
+    }
     for (const option of decision.options) {
       for (const effect of option.effects) {
         ids.add(effect.targetIssueId);
@@ -91,25 +98,6 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       staleTime: 30_000,
     })),
     combine: combineIssueData,
-  });
-
-  const cancelTreeTargetIds = useMemo(() => {
-    if (!decision) return [] as string[];
-    const ids = new Set<string>();
-    for (const option of decision.options) {
-      for (const effect of option.effects) {
-        if (effect.type === "cancel_issue_tree") ids.add(effect.targetIssueId);
-      }
-    }
-    return [...ids];
-  }, [decision]);
-
-  const treeQueries = useQueries({
-    queries: cancelTreeTargetIds.map((id) => ({
-      queryKey: queryKeys.issues.listByDescendantRoot(companyId, id),
-      queryFn: () => issuesApi.listCompact(companyId, { descendantOf: id }),
-      staleTime: 30_000,
-    })),
   });
 
   const resolveIssue = useMemo(() => {
@@ -138,25 +126,13 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     return (id: string) => map.get(id) ?? null;
   }, [originIssue, referencedIds, issueData, issueHref]);
 
-  const cancelTreePreview = (targetIssueId: string): DecisionIssueRef[] | null => {
-    const index = cancelTreeTargetIds.indexOf(targetIssueId);
-    if (index < 0) return null;
-    const rows = treeQueries[index]?.data;
-    if (!rows) return null;
-    const refs = rows.map((row) => ({
-      id: row.id,
-      identifier: row.identifier ?? null,
-      title: row.title ?? null,
-      href: issueHref(row.identifier ?? row.id),
-      status: row.status ?? null,
-    }));
-    // Ensure the root target is represented even if the descendants query omits it.
-    if (!refs.some((ref) => ref.id === targetIssueId)) {
-      const root = resolveIssue(targetIssueId);
-      if (root) return [root, ...refs];
-    }
-    return refs;
-  };
+  const cancelTreePreview = useCallback((targetIssueId: string): DecisionIssueRef[] | null => {
+    const snapshot = decision?.targetSnapshots?.[targetIssueId];
+    const signedIds = signedCancelTreePreviewIds(targetIssueId, snapshot);
+    if (!signedIds) return null;
+    const refs = signedIds.map(resolveIssue);
+    return refs.every((ref): ref is DecisionIssueRef => ref !== null) ? refs : null;
+  }, [decision?.targetSnapshots, resolveIssue]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.decisions.detail(decisionId) });
