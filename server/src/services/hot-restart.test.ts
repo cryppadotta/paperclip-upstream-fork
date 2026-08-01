@@ -90,11 +90,12 @@ describe("hot-restart path compatibility", () => {
     expect(commands).toEqual(["powershell.exe", "pwsh.exe"]);
   });
 
-  it("distinguishes recycled PIDs and bounds markers with unavailable identity", () => {
+  it("distinguishes recycled PIDs and keeps unknown live claims conservative", () => {
     const intent = {
       version: 1 as const,
       requestedAt: "2026-08-01T01:05:00.000Z",
       previousServerPid: 123,
+      previousServerIdentity: "server-boot-a",
       previousServerStartedAt: "2026-08-01T01:00:00.000Z",
       previousServerVersion: "old-version",
       drainRequired: false,
@@ -105,13 +106,25 @@ describe("hot-restart path compatibility", () => {
     expect(isObservedHotRestartTargetAlive(intent, {
       alive: true,
       startedAt: "2026-08-01T01:00:00.000Z",
+      replacement: {
+        previousServerPid: 123,
+        previousServerIdentity: "server-boot-a",
+      },
     })).toBe(true);
     expect(isObservedHotRestartTargetAlive(intent, {
       alive: true,
-      startedAt: "2026-08-01T01:06:00.000Z",
+      startedAt: null,
+      replacement: {
+        previousServerPid: 123,
+        previousServerIdentity: "server-boot-b",
+      },
     })).toBe(false);
 
-    const legacyIntent = { ...intent, previousServerStartedAt: null };
+    const legacyIntent = {
+      ...intent,
+      previousServerIdentity: null,
+      previousServerStartedAt: null,
+    };
     expect(isObservedHotRestartTargetAlive(legacyIntent, {
       alive: true,
       startedAt: "2026-08-01T01:06:00.000Z",
@@ -119,13 +132,30 @@ describe("hot-restart path compatibility", () => {
     expect(isObservedHotRestartTargetAlive(legacyIntent, {
       alive: true,
       startedAt: null,
-      observedAt: new Date("2026-08-01T01:09:59.000Z"),
     })).toBe(true);
-    expect(isObservedHotRestartTargetAlive(legacyIntent, {
-      alive: true,
-      startedAt: null,
-      observedAt: new Date("2026-08-01T01:10:01.000Z"),
-    })).toBe(false);
+  });
+
+  it("reclaims a live recycled PID when server boot identities differ", async () => {
+    await withTempHome(async (homeDir) => {
+      process.env.PAPERCLIP_INSTANCE_ID = "blue";
+      await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: process.pid,
+        previousServerIdentity: "server-boot-a",
+        requestedByRunId: "blue-deploy",
+      });
+
+      process.env.PAPERCLIP_INSTANCE_ID = "green";
+      await expect(writeHotRestartIntent({
+        homeDir,
+        previousServerPid: process.pid,
+        previousServerIdentity: "server-boot-b",
+        requestedByRunId: "green-deploy",
+      })).resolves.toMatchObject({
+        previousServerIdentity: "server-boot-b",
+        requestedByRunId: "green-deploy",
+      });
+    });
   });
 
   it("writes both paths but does not merge a legacy snapshot from another request", async () => {

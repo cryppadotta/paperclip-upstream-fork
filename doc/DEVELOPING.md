@@ -115,12 +115,13 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --s
 systemctl restart paperclip.service
 ```
 
-The staged command records the target server process start time with the PID.
-It reads process metadata through `/proc` on Linux, `ps` on macOS and BSD, and
-PowerShell on Windows. This identity lets a later request reclaim an abandoned
-marker after the operating system recycles the numeric PID. Older markers stay
-compatible. If process start metadata is unavailable, Paperclip keeps the live
-PID claim for a bounded five-minute compatibility window.
+The staged command records the target server's boot identity and operating
+system process start time with the PID. It reads process metadata through
+`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. These
+identities let a later request reclaim an abandoned marker after the operating
+system recycles the numeric PID. Older markers stay compatible and use process
+start metadata when available. Paperclip does not replace an unknown live
+claim when neither identity source is available.
 
 Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
 

@@ -12,7 +12,6 @@ export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
-const HOT_RESTART_UNKNOWN_PROCESS_IDENTITY_TTL_MS = 5 * 60_000;
 
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
 
@@ -31,6 +30,7 @@ export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
   previousServerPid: number;
+  previousServerIdentity?: string | null;
   previousServerStartedAt?: string | null;
   previousServerVersion: string | null;
   drainRequired: boolean;
@@ -221,10 +221,22 @@ export function isObservedHotRestartTargetAlive(
   observation: {
     alive: boolean;
     startedAt: string | null;
-    observedAt?: Date;
+    replacement?: Pick<
+      HotRestartIntent,
+      "previousServerPid" | "previousServerIdentity"
+    >;
   },
 ) {
   if (!observation.alive) return false;
+
+  if (
+    observation.replacement?.previousServerPid === intent.previousServerPid
+    && observation.replacement.previousServerIdentity
+    && intent.previousServerIdentity
+  ) {
+    return observation.replacement.previousServerIdentity
+      === intent.previousServerIdentity;
+  }
 
   const observedStartedAt = observation.startedAt
     ? Date.parse(observation.startedAt)
@@ -243,17 +255,25 @@ export function isObservedHotRestartTargetAlive(
     return observedStartedAt <= requestedAt;
   }
 
-  if (!Number.isFinite(requestedAt)) return false;
-  const observedAt = (observation.observedAt ?? new Date()).getTime();
-  return observedAt - requestedAt <= HOT_RESTART_UNKNOWN_PROCESS_IDENTITY_TTL_MS;
+  // Never replace a live claim when both identity sources are unavailable.
+  // New request markers normally carry the server-provided boot identity,
+  // while older markers can still use OS start metadata when it is readable.
+  return true;
 }
 
-async function isOriginalServerProcessAlive(intent: HotRestartIntent) {
+async function isOriginalServerProcessAlive(
+  intent: HotRestartIntent,
+  replacement: HotRestartIntent,
+) {
   const alive = isProcessAlive(intent.previousServerPid);
   const startedAt = alive
     ? await readProcessStartedAt(intent.previousServerPid)
     : null;
-  return isObservedHotRestartTargetAlive(intent, { alive, startedAt });
+  return isObservedHotRestartTargetAlive(intent, {
+    alive,
+    startedAt,
+    replacement,
+  });
 }
 
 async function removeStaleHotRestartLock(lockDir: string) {
@@ -357,6 +377,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     version: 1,
     requestedAt,
     previousServerPid,
+    previousServerIdentity: asString(value.previousServerIdentity),
     previousServerStartedAt: asDateString(value.previousServerStartedAt),
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
@@ -423,6 +444,7 @@ export function findMissingHotRestartSnapshotRunIds(intent: HotRestartIntent) {
 
 export async function writeHotRestartIntent(input: {
   previousServerPid: number;
+  previousServerIdentity?: string | null;
   previousServerStartedAt?: string | null;
   previousServerVersion?: string | null;
   drainRequired?: boolean;
@@ -438,6 +460,7 @@ export async function writeHotRestartIntent(input: {
     version: 1,
     requestedAt: (input.requestedAt ?? new Date()).toISOString(),
     previousServerPid: input.previousServerPid,
+    previousServerIdentity: asString(input.previousServerIdentity),
     previousServerStartedAt,
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,
@@ -516,7 +539,7 @@ async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartI
     const existing = await readHotRestartIntentAtPath(filePath).catch(() => null);
     if (
       !existing
-      || await isOriginalServerProcessAlive(existing)
+      || await isOriginalServerProcessAlive(existing, intent)
     ) {
       throw error;
     }
