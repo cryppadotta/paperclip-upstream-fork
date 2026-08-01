@@ -13,6 +13,7 @@ import {
   decisionTargetIssues,
   heartbeatRuns,
   issueComments,
+  issueRelations,
   issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -66,7 +67,7 @@ describePg("decisionService", () => {
     delete process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS;
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(activityLog);
-    await db.delete(issueComments); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
+    await db.delete(issueComments); await db.delete(issueRelations); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
   afterAll(async () => tempDb?.cleanup());
 
@@ -136,6 +137,38 @@ describePg("decisionService", () => {
     await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, originResponsibleUserId));
     const result = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
     expect(result.executions[0]).toMatchObject({ status: "failed", error: "deny_decision_intersection" });
+  });
+
+  it("removes inbound blockers without replacing them with outgoing relations", async () => {
+    const removedBlockerId = randomUUID();
+    const retainedBlockerId = randomUUID();
+    const downstreamId = randomUUID();
+    await db.insert(issues).values([
+      { id: removedBlockerId, companyId, title: "Removed blocker", status: "todo", priority: "medium", responsibleUserId: decidedByUserId },
+      { id: retainedBlockerId, companyId, title: "Retained blocker", status: "todo", priority: "medium", responsibleUserId: decidedByUserId },
+      { id: downstreamId, companyId, title: "Downstream", status: "todo", priority: "medium", responsibleUserId: decidedByUserId },
+    ]);
+    await db.insert(issueRelations).values([
+      { companyId, issueId: removedBlockerId, relatedIssueId: targetIssueId, type: "blocks" },
+      { companyId, issueId: retainedBlockerId, relatedIssueId: targetIssueId, type: "blocks" },
+      { companyId, issueId: targetIssueId, relatedIssueId: downstreamId, type: "blocks" },
+    ]);
+    const created = await service().create({
+      companyId, actor: agentActor(), agentId, runId, title: "Resolve blocker?", body: "Body",
+      options: [{ id: "yes", label: "Yes", effects: [{ type: "resolve_blocker", targetIssueId, staleness: "lenient",
+        removeBlockedByIssueIds: [removedBlockerId] }] }],
+    });
+
+    await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+
+    const relations = await db.select().from(issueRelations).where(eq(issueRelations.companyId, companyId));
+    expect(relations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueId: retainedBlockerId, relatedIssueId: targetIssueId, type: "blocks" }),
+      expect.objectContaining({ issueId: targetIssueId, relatedIssueId: downstreamId, type: "blocks" }),
+    ]));
+    expect(relations).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueId: removedBlockerId, relatedIssueId: targetIssueId, type: "blocks" }),
+    ]));
   });
 
   it("rejects mutation proposals from an origin actor with read-only access", async () => {
