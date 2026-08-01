@@ -185,8 +185,9 @@ describePg("decisionService", () => {
   });
 
   it("expires a decision atomically instead of executing after its deadline", async () => {
-    const created = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const created = await createCommentDecision("lenient");
+    await db.update(decisions).set({ expiresAt: new Date(Date.now() - 1) })
+      .where(eq(decisions.id, created.id));
     await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
       .rejects.toThrow("decision_expired");
     expect((await service().get(created.id))?.status).toBe("expired");
