@@ -334,11 +334,19 @@ No Docker or external database is required for this mode.
 
 `PAPERCLIP_ISSUE_PRIVACY_MODE` controls the canonical opt-in issue/project privacy predicate:
 
-- `shadow` (default): log structured would-deny decisions but preserve existing reads
-- `enforce`: return private issues only to implicit principals, issue grantees, or private-project access members; hide private projects from non-members
+- `enforce` (default): return private issues only to implicit principals, issue grantees, or private-project access members; hide private projects from non-members
+- `shadow`: log structured would-deny decisions but preserve existing reads; use only for rollout diagnosis
 - `off`: skip the predicate and shadow logging
 
 Grant lookups use a five-second cache by default; override it with `PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS` when testing revocation timing.
+
+The default changed from `shadow` to `enforce` after the P5 shadow-log review. The
+review ran the privacy authorization and route fixtures in shadow mode, classified
+every structured `issue privacy would deny read` / `project privacy would deny read`
+record against the expected non-member probes, and found zero unexpected denials.
+Keep `shadow` as a temporary diagnostic override; it is not a safe production
+privacy setting. See [ISSUE-PRIVACY.md](./ISSUE-PRIVACY.md) for the user-facing
+model, break-glass behavior, and residual risks.
 
 Issue-bound heartbeat runs inherit the same read predicate through the stored
 `heartbeat_runs.scope_kind = 'issue'` and `issue_id` binding. Issue deletion
