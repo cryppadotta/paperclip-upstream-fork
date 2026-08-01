@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupWorktreeInstanceArtifacts,
+  readManagedWorktreeInstanceOwnership,
   readWorktreeInstancePointer,
 } from "../services/workspace-instance-cleanup.js";
 import type { WorkspaceOperation } from "@paperclipai/shared";
@@ -93,7 +94,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
-      workspaceBranchName: instanceId,
+      expectedInstanceRoot: instanceRoot,
       worktreesDir,
     });
 
@@ -118,7 +119,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
-      workspaceBranchName: "default",
+      expectedInstanceRoot: path.join(worktreesDir, "instances", "default"),
       worktreesDir,
       recorder,
       dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
@@ -144,6 +145,18 @@ describe("worktree instance cleanup", () => {
     await expect(readWorktreeInstancePointer(workspacePath)).resolves.toBeNull();
   });
 
+  it("captures the managed instance root for persisted workspace ownership", async () => {
+    const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
+    const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
+    const instanceRoot = path.join(worktreesDir, "instances", "owned-instance");
+    await fs.mkdir(instanceRoot, { recursive: true });
+    await writeWorkspaceEnv(workspacePath, worktreesDir, "owned-instance");
+
+    await expect(
+      readManagedWorktreeInstanceOwnership(workspacePath, worktreesDir),
+    ).resolves.toEqual({ instanceId: "owned-instance", instanceRoot });
+  });
+
   it("stops embedded Postgres before deleting the instance root", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
@@ -157,7 +170,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
-      workspaceBranchName: "ordered-cleanup",
+      expectedInstanceRoot: instanceRoot,
       worktreesDir,
       dependencies: {
         stopEmbeddedPostgres: async (dataDir) => {
@@ -193,14 +206,14 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
-      workspaceBranchName: "feature/owner",
+      expectedInstanceRoot: path.join(worktreesDir, "instances", "feature-owner"),
       worktreesDir,
       recorder,
       dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
     });
 
     expect(result).toMatchObject({ status: "refused", instanceRoot: siblingInstanceRoot });
-    expect((result as { warning: string }).warning).toContain("does not match execution workspace");
+    expect((result as { warning: string }).warning).toContain("persisted instance root");
     expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
     expect(removeInstanceRoot).not.toHaveBeenCalled();
     expect(await fs.readFile(path.join(siblingInstanceRoot, "marker"), "utf8")).toBe("keep me");
@@ -208,9 +221,8 @@ describe("worktree instance cleanup", () => {
       expect.objectContaining({
         status: "skipped",
         metadata: expect.objectContaining({
-          configuredInstanceId: "feature-sibling",
-          expectedInstanceId: "feature-owner",
-          refusalReason: "instance_id_workspace_mismatch",
+          expectedInstanceRoot: path.join(worktreesDir, "instances", "feature-owner"),
+          refusalReason: "instance_root_workspace_mismatch",
         }),
       }),
     ]);
@@ -230,7 +242,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
-      workspaceBranchName: "escaped",
+      expectedInstanceRoot: path.join(worktreesDir, "instances", "escaped"),
       worktreesDir,
     });
 
@@ -253,7 +265,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
-      workspaceBranchName: "default",
+      expectedInstanceRoot: path.join(worktreesDir, "instances", "default"),
       worktreesDir,
     });
 

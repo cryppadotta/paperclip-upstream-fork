@@ -41,6 +41,7 @@ import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-c
 import {
   cleanupWorktreeInstanceArtifacts,
   readWorktreeInstancePointer,
+  WORKTREE_INSTANCE_ROOT_METADATA_KEY,
   type WorktreeInstancePointer,
 } from "./workspace-instance-cleanup.js";
 
@@ -3259,7 +3260,10 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         pointer: worktreeInstancePointer,
         workspaceId: input.workspace.id,
         workspacePath,
-        workspaceBranchName: input.workspace.branchName,
+        expectedInstanceRoot:
+          typeof input.workspace.metadata?.[WORKTREE_INSTANCE_ROOT_METADATA_KEY] === "string"
+            ? input.workspace.metadata[WORKTREE_INSTANCE_ROOT_METADATA_KEY]
+            : null,
         recorder: input.recorder,
       });
       if (result.status === "refused") warnings.push(result.warning);

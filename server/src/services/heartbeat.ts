@@ -136,6 +136,10 @@ import {
   type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
+import {
+  readManagedWorktreeInstanceOwnership,
+  WORKTREE_INSTANCE_ROOT_METADATA_KEY,
+} from "./workspace-instance-cleanup.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
@@ -13647,7 +13651,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;
     const resolvedProjectWorkspaceId = issueRef?.projectWorkspaceId ?? resolvedWorkspace.workspaceId ?? null;
     let persistedExecutionWorkspace: ExecutionWorkspace | null = null;
-    const nextExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
+    const baseExecutionWorkspaceMetadata = mergeExecutionWorkspaceMetadataForPersistence({
       existingMetadata: resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
         ? reusableExistingExecutionWorkspace?.metadata ?? null
         : null,
@@ -13662,6 +13666,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       baseRef: executionWorkspace.repoRef,
       baseRefSha: executionWorkspace.baseRefSha ?? null,
     });
+    let persistedWorktreeInstanceRoot =
+      resolvedWorkspaceReusePolicy.shouldRestoreExistingWorkspace
+      && typeof reusableExistingExecutionWorkspace?.metadata?.[WORKTREE_INSTANCE_ROOT_METADATA_KEY] === "string"
+        ? reusableExistingExecutionWorkspace.metadata[WORKTREE_INSTANCE_ROOT_METADATA_KEY]
+        : null;
+    if (
+      !persistedWorktreeInstanceRoot
+      && executionWorkspace.strategy === "git_worktree"
+      && executionWorkspace.worktreePath
+    ) {
+      try {
+        persistedWorktreeInstanceRoot = (
+          await readManagedWorktreeInstanceOwnership(executionWorkspace.worktreePath)
+        )?.instanceRoot ?? null;
+      } catch (error) {
+        logger.warn(
+          {
+            runId: run.id,
+            issueId,
+            executionWorkspaceCwd: executionWorkspace.cwd,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Could not record managed worktree instance ownership",
+        );
+      }
+    }
+    const nextExecutionWorkspaceMetadata = {
+      ...baseExecutionWorkspaceMetadata,
+      ...(persistedWorktreeInstanceRoot
+        ? { [WORKTREE_INSTANCE_ROOT_METADATA_KEY]: persistedWorktreeInstanceRoot }
+        : {}),
+    };
     const pendingForwardBranchReconcile = executionWorkspace.pendingForwardBranchReconcile ?? null;
     const branchNameForInitialPersistence =
       pendingForwardBranchReconcile?.recordedBranchName ?? executionWorkspace.branchName;
@@ -13724,10 +13760,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               projectId: resolvedProjectId,
               projectWorkspaceId: resolvedProjectWorkspaceId,
               sourceIssueId: issueRef?.id ?? null,
-              metadata: {
-                createdByRuntime: true,
-                source: executionWorkspace.source,
-              },
+              metadata: nextExecutionWorkspaceMetadata,
             },
             projectWorkspace: {
               cwd: resolvedWorkspace.cwd,

@@ -517,6 +517,34 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("fails closed instead of racing to reclaim a stale seed lock", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-stale-lock-"));
+    try {
+      const targetConfigPath = path.join(tempRoot, ".paperclip", "config.json");
+      const lockPath = path.join(tempRoot, ".paperclip", "seed.lock");
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(
+        lockPath,
+        `${JSON.stringify({
+          version: 1,
+          pid: 2_147_483_647,
+          token: "stale-owner",
+          createdAt: new Date(0).toISOString(),
+        })}\n`,
+      );
+      const seedDatabase = vi.fn();
+
+      await expect(
+        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+      ).rejects.toThrow("belongs to exited process");
+
+      expect(seedDatabase).not.toHaveBeenCalled();
+      expect(fs.existsSync(lockPath)).toBe(true);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   itEmbeddedPostgres("quarantines copied live execution state in seeded worktree databases", async () => {
     const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-quarantine-");
     const db = createDb(tempDb.connectionString);

@@ -1530,9 +1530,17 @@ async function acquireWorktreeSeedLock(lockPath: string): Promise<() => Promise<
     const malformedLockIsStale = Boolean(
       lockStat && Date.now() - lockStat.mtimeMs >= WORKTREE_SEED_LOCK_MALFORMED_STALE_MS,
     );
-    if ((currentOwner && !processIsAlive(currentOwner.pid)) || (!currentOwner && malformedLockIsStale)) {
-      await fsPromises.rm(lockPath, { force: true });
-      continue;
+    if (currentOwner && !processIsAlive(currentOwner.pid)) {
+      throw new Error(
+        `Worktree seed lock ${lockPath} belongs to exited process ${currentOwner.pid}. `
+        + "Verify that no seed is running, then remove the stale lock and retry.",
+      );
+    }
+    if (!currentOwner && malformedLockIsStale) {
+      throw new Error(
+        `Worktree seed lock ${lockPath} is stale or malformed. `
+        + "Verify that no seed is running, then remove the stale lock and retry.",
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, WORKTREE_SEED_LOCK_POLL_MS));
   }

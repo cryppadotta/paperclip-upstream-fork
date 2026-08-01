@@ -3340,6 +3340,7 @@ describe("realizeExecutionWorkspace", () => {
         sourceIssueId: "issue-1",
         metadata: {
           createdByRuntime: true,
+          worktreeInstanceRoot: instanceRoot,
         },
       },
       projectWorkspace: {
