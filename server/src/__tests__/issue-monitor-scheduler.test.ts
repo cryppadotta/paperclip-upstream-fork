@@ -141,6 +141,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     issueStatus?: "in_progress" | "in_review";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
+    identifier?: string | null;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -194,7 +195,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       priority: "medium",
       assigneeAgentId: agentId,
       issueNumber: 1,
-      identifier: `${issuePrefix}-1`,
+      identifier: input && "identifier" in input ? input.identifier : `${issuePrefix}-1`,
       executionPolicy: {
         mode: "normal",
         commentRequired: true,
@@ -507,6 +508,27 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(comments[0]?.body).toContain("maximum attempt count was reached");
     const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
     expect(activity.map((row) => row.action)).toContain("issue.monitor_escalated_to_board");
+  });
+
+  it.each([
+    { name: "missing", identifier: null, expectedLabel: null },
+    { name: "malformed", identifier: "not-a-paperclip-identifier", expectedLabel: "not-a-paperclip-identifier" },
+  ])("uses a safe label for $name monitor identifiers", async ({ identifier, expectedLabel }) => {
+    const { issueId } = await seedFixture({
+      identifier,
+      monitorAttemptCount: 1,
+      monitor: { maxAttempts: 1, recoveryPolicy: "escalate_to_board" },
+    });
+
+    await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    const comment = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId))
+      .then((rows) => rows[0]?.body ?? "");
+    expect(comment).toContain(expectedLabel ?? issueId);
+    expect(comment).not.toContain("undefined");
   });
 
   it("rejects invalid manual monitor triggers without consuming the schedule", async () => {

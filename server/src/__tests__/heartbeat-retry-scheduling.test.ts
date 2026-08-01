@@ -14,6 +14,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueThreadInteractions,
   issueRelations,
   issueTreeHoldMembers,
   issueTreeHolds,
@@ -133,6 +134,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
@@ -767,6 +769,88 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(issue?.executionRunId).toBe(scheduled.run.id);
+  });
+
+  it("ignores non-accepted plan interactions when recording retry status", async () => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "rejected" },
+    });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: {
+        issueId,
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    }).where(eq(heartbeatRuns.id, runId));
+
+    await expect(heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+      delayMs: 1_000,
+    })).resolves.toMatchObject({ outcome: "scheduled", attempt: 1 });
+  });
+
+  it("handles missing and terminal plan approval context when retries are exhausted", async () => {
+    const missing = await seedMaxTurnFixture({ scheduledRetryAttempt: 3 });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: missing.issueId, interactionId: randomUUID() },
+    }).where(eq(heartbeatRuns.id, missing.runId));
+    await expect(heartbeat.scheduleBoundedRetry(missing.runId, {
+      now: missing.now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    })).resolves.toMatchObject({ outcome: "retry_exhausted" });
+
+    await cleanupRetryFixture();
+    const terminal = await seedMaxTurnFixture({ scheduledRetryAttempt: 3, issueStatus: "done" });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: terminal.companyId,
+      issueId: terminal.issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: terminal.agentId,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: {
+          type: "issue_document",
+          issueId: terminal.issueId,
+          key: "plan",
+          revisionId: randomUUID(),
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: terminal.issueId, interactionId },
+    }).where(eq(heartbeatRuns.id, terminal.runId));
+    await expect(heartbeat.scheduleBoundedRetry(terminal.runId, {
+      now: terminal.now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    })).resolves.toMatchObject({ outcome: "retry_exhausted" });
   });
 
   it("coalesces duplicate accepted interaction continuation infra retry schedules", async () => {

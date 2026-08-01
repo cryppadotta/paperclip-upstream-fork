@@ -2220,7 +2220,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       role: "engineer",
       status: "idle",
       adapterType: "process",
-      adapterConfig: { command: process.execPath, args: ["-e", ""] },
+      adapterConfig: { command: process.execPath, args: ["-e", "setTimeout(() => {}, 250)"] },
       runtimeConfig: {},
       permissions: {},
     });
@@ -2244,6 +2244,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       requestedByActorId: "responsible-user",
     });
     expect(unscopedRun).not.toBeNull();
+    await db.update(heartbeatRuns).set({ issueCommentStatus: "pending" }).where(eq(heartbeatRuns.id, unscopedRun!.id));
     await waitForAgentRunsSettled(db, agentId);
     await heartbeat.drainActiveRunExecutions();
 
@@ -2257,6 +2258,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       requestedByActorId: "responsible-user",
     });
     expect(skippedRun).not.toBeNull();
+    await db.update(heartbeatRuns).set({ issueCommentStatus: "pending" }).where(eq(heartbeatRuns.id, skippedRun!.id));
     await waitForAgentRunsSettled(db, agentId);
     await heartbeat.drainActiveRunExecutions();
 

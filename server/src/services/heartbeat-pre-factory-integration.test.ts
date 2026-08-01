@@ -1211,6 +1211,11 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
     const noLocalCwdIssueId = randomUUID();
     const managedProjectId = randomUUID();
     const managedIssueId = randomUUID();
+    const failingManagedProjectId = randomUUID();
+    const failingManagedWorkspaceId = randomUUID();
+    const failingManagedIssueId = randomUUID();
+    const responsibleUserParentIssueId = randomUUID();
+    const responsibleUserIssueId = randomUUID();
     const existingSessionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-session-cwd-"));
     const missingSessionCwd = path.join(existingSessionCwd, "missing");
     const previousWorkspaceSync = process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
@@ -1227,6 +1232,7 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       { id: projectId, companyId, name: "Workspace-free project", status: "active" },
       { id: noLocalCwdProjectId, companyId, name: "No-local-cwd project", status: "active" },
       { id: managedProjectId, companyId, name: "Managed fallback project", status: "active" },
+      { id: failingManagedProjectId, companyId, name: "Broken managed project", status: "active" },
     ]);
     await db.insert(projectWorkspaces).values({
       id: noLocalCwdWorkspaceId,
@@ -1235,6 +1241,15 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       name: "Remote-only workspace",
       cwd: null,
       repoUrl: null,
+      isPrimary: true,
+    });
+    await db.insert(projectWorkspaces).values({
+      id: failingManagedWorkspaceId,
+      companyId,
+      projectId: failingManagedProjectId,
+      name: "Unavailable managed workspace",
+      cwd: null,
+      repoUrl: "/definitely/not/a/managed-workspace-repository",
       isPrimary: true,
     });
     await db.insert(agents).values({
@@ -1315,6 +1330,39 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
         assigneeAgentId: agentId,
         issueNumber: 5,
         identifier: "SPC-5",
+      },
+      {
+        id: failingManagedIssueId,
+        companyId,
+        title: "Broken managed workspace issue",
+        status: "in_progress",
+        priority: "medium",
+        projectId: failingManagedProjectId,
+        projectWorkspaceId: failingManagedWorkspaceId,
+        assigneeAgentId: agentId,
+        issueNumber: 6,
+        identifier: "SPC-6",
+      },
+      {
+        id: responsibleUserParentIssueId,
+        companyId,
+        title: "Responsible user parent issue",
+        status: "in_progress",
+        priority: "medium",
+        responsibleUserId: "parent-owner",
+        issueNumber: 7,
+        identifier: "SPC-7",
+      },
+      {
+        id: responsibleUserIssueId,
+        companyId,
+        title: "Inherited responsible user issue",
+        status: "in_progress",
+        priority: "medium",
+        parentId: responsibleUserParentIssueId,
+        assigneeAgentId: agentId,
+        issueNumber: 8,
+        identifier: "SPC-8",
       },
     ]);
     await db.insert(agentTaskSessions).values({
@@ -1418,6 +1466,34 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
         source: "project_primary",
       });
 
+      const failingManagedWorkspace = await runAndDrain(failingManagedIssueId);
+      expect(failingManagedWorkspace.run.stdoutExcerpt).toContain("Failed to prepare managed checkout");
+      expect(failingManagedWorkspace.run.stdoutExcerpt).toContain("has no local cwd configured");
+
+      const inheritedResponsibleUserRun = await service.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_continuation_needed",
+        payload: { issueId: responsibleUserIssueId },
+        contextSnapshot: { issueId: responsibleUserIssueId },
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat",
+      });
+      expect(inheritedResponsibleUserRun).not.toBeNull();
+      expect((await waitForRun(service, inheritedResponsibleUserRun!.id))?.responsibleUserId).toBe("parent-owner");
+      await service.waitForRunExecutionDrain(inheritedResponsibleUserRun!.id);
+
+      const automationUserRun = await service.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "manual_recovery",
+        requestedByActorType: "user",
+        requestedByActorId: "automation-requester",
+      });
+      expect(automationUserRun).not.toBeNull();
+      expect((await waitForRun(service, automationUserRun!.id))?.responsibleUserId).toBe("automation-requester");
+      await service.waitForRunExecutionDrain(automationUserRun!.id);
+
       const unscopedRun = await service.wakeup(agentId, {
         source: "on_demand",
         triggerDetail: "manual",
@@ -1468,4 +1544,59 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       await fs.rm(existingSessionCwd, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("rejects dispatch when no responsible user can be resolved", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Ownerless Coverage Company",
+      issuePrefix: "OWN",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: null,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ownerless Coverage Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(
+      heartbeatService(db).wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "ownerless_dispatch",
+        requestedByActorType: "system",
+        requestedByActorId: "heartbeat",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "responsible_user_unresolved" }),
+    });
+
+    const queuedRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: {},
+    });
+    await expect(heartbeatService(db).resumeQueuedRuns()).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        code: "responsible_user_unresolved",
+        runId: queuedRunId,
+      }),
+    });
+    await expect(heartbeatService(db).reportRunActivity(randomUUID())).resolves.toBeNull();
+  });
 });
