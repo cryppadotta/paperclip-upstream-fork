@@ -2079,6 +2079,67 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("classifies hot-restart candidates that change during the adoption update", async () => {
+    const finalized = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      includeIssue: false,
+    });
+    const vanished = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      includeIssue: false,
+    });
+
+    await withTempPaperclipHome(async () => {
+      const intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "adoption-race-version",
+        requestedAt: new Date("2026-08-01T02:10:00.000Z"),
+      });
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: [finalized, vanished].map((candidate) => ({
+          runId: candidate.runId,
+          companyId: candidate.companyId,
+          agentId: candidate.agentId,
+          issueId: null,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: process.pid,
+          processGroupId: null,
+        })),
+        capturedAt: new Date("2026-08-01T02:11:00.000Z"),
+      });
+
+      const heartbeat = heartbeatService(db, {
+        testHooks: {
+          beforeHotRestartAdoptionCas: async ({ runId }) => {
+            if (runId === finalized.runId) {
+              await db
+                .update(heartbeatRuns)
+                .set({ status: "succeeded", finishedAt: new Date("2026-08-01T02:11:30.000Z") })
+                .where(eq(heartbeatRuns.id, runId));
+            } else {
+              await db
+                .update(agentWakeupRequests)
+                .set({ runId: null })
+                .where(eq(agentWakeupRequests.id, vanished.wakeupRequestId));
+              await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+            }
+          },
+        },
+      });
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T02:12:00.000Z"),
+      );
+
+      expect(adoption.finalizedWhileDownRunIds).toContain(finalized.runId);
+      expect(adoption.lostRunIds).toContain(vanished.runId);
+    });
+  });
+
   it("classifies drain-required candidates and missing preflight rows during restart adoption", async () => {
     const draining = await seedRunFixture({
       agentStatus: "running",
@@ -2512,6 +2573,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
     expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("does not overwrite a run finalized during graceful shutdown drain", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db, {
+      testHooks: {
+        beforeShutdownInterruptCas: async () => {
+          await db
+            .update(heartbeatRuns)
+            .set({ status: "succeeded", finishedAt: new Date("2026-03-19T00:05:30.000Z") })
+            .where(eq(heartbeatRuns.id, runId));
+        },
+      },
+    });
+
+    await expect(heartbeat.drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    )).resolves.toMatchObject({ interrupted: 0, retryRunIds: [] });
+    await expect(heartbeat.getRun(runId)).resolves.toMatchObject({ status: "succeeded" });
   });
 
   it("does not enqueue duplicate restart recovery for the same interrupted run", async () => {
@@ -6515,6 +6599,152 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(agentWakeupRequests.reason, "run_liveness_continuation"),
       ));
     expect(livenessWakes).toHaveLength(0);
+  });
+
+  it("does not duplicate a preexisting bounded-continuation exhaustion comment", async () => {
+    let companyId = "";
+    let issueId = "";
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db
+        .update(heartbeatRuns)
+        .set({ continuationAttempt: 2 })
+        .where(eq(heartbeatRuns.id, ctx.runId));
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorType: "agent",
+        createdByRunId: ctx.runId,
+        body: "Bounded liveness continuation exhausted (preexisting fixture)",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const fixture = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+    });
+    companyId = fixture.companyId;
+    issueId = fixture.issueId;
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.reconcileStrandedAssignedIssues();
+    const comments = await waitForValue(async () => {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      const exhausted = rows.filter((row) => row.body.startsWith("Bounded liveness continuation exhausted"));
+      return exhausted.length > 0 ? exhausted : null;
+    });
+    expect(comments).toHaveLength(1);
+  });
+
+  it("holds a plan-only continuation while a productivity review is open", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    const managerId = randomUUID();
+    await db.insert(agents).values({
+      id: managerId,
+      companyId,
+      name: "Review manager",
+      role: "manager",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: managerId }).where(eq(agents.id, agentId));
+    const now = new Date();
+    await db.insert(heartbeatRuns).values(Array.from({ length: 10 }, (_, index) => {
+      const createdAt = new Date(now.getTime() - (index + 1) * 60_000);
+      return {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment" as const,
+        triggerDetail: "system" as const,
+        status: "succeeded" as const,
+        contextSnapshot: { issueId, taskId: issueId },
+        livenessState: "advanced" as const,
+        nextAction: "Continue implementation.",
+        startedAt: createdAt,
+        finishedAt: new Date(createdAt.getTime() + 30_000),
+        createdAt,
+        updatedAt: createdAt,
+      };
+    }));
+    const heartbeat = heartbeatService(db);
+    const reviewResult = await heartbeat.reconcileProductivityReviews({ companyId, now });
+    expect(reviewResult.created).toBe(1);
+
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", skipIssueComment: true },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "I will inspect the remaining code and implement it next.",
+      provider: "test",
+      model: "test-model",
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const sourceRun = await heartbeat.getRun(runId);
+    expect(sourceRun?.livenessState).toBe("plan_only");
+    expect(sourceRun?.livenessReason).toContain("continuation held by productivity review");
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "run_liveness_continuation")).toBe(false);
+    const activity = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.productivity_review_continuation_held"));
+    expect(activity).toHaveLength(1);
+  });
+
+  it("does not duplicate an existing plan-only continuation wake", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", skipIssueComment: true },
+    }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "run_liveness_continuation",
+        status: "queued",
+        idempotencyKey: `run_liveness_continuation:${issueId}:${runId}:plan_only:1`,
+        payload: { issueId, sourceRunId: runId, continuationAttempt: 1 },
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "I will inspect the remaining code and implement it next.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.livenessState).toBe("plan_only");
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.filter((wakeup) => wakeup.reason === "run_liveness_continuation")).toHaveLength(1);
   });
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {

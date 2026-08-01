@@ -853,6 +853,82 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     })).resolves.toMatchObject({ outcome: "retry_exhausted" });
   });
 
+  it("contains collaborator failures while recording and escalating plan approval retries", async () => {
+    const scheduledFixture = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const recordAttempts: string[] = [];
+    const recordFailureHeartbeat = heartbeatService(db, {
+      recordPlanApprovalResumeFailureRetry: async ({ run }) => {
+        recordAttempts.push(run.id);
+        throw new Error("synthetic retry recording failure");
+      },
+    });
+    await expect(recordFailureHeartbeat.scheduleBoundedRetry(scheduledFixture.runId, {
+      now: scheduledFixture.now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+      delayMs: 1_000,
+    })).resolves.toMatchObject({ outcome: "scheduled", attempt: 1 });
+    expect(recordAttempts).toEqual([scheduledFixture.runId]);
+
+    await cleanupRetryFixture();
+    const exhaustedFixture = await seedMaxTurnFixture({ scheduledRetryAttempt: 3, issueStatus: "in_review" });
+    const escalationAttempts: string[] = [];
+    const escalationFailureHeartbeat = heartbeatService(db, {
+      escalatePlanApprovalResumeFailure: async ({ run }) => {
+        escalationAttempts.push(run.id);
+        throw new Error("synthetic exhausted escalation failure");
+      },
+    });
+    await expect(escalationFailureHeartbeat.scheduleBoundedRetry(exhaustedFixture.runId, {
+      now: exhaustedFixture.now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    })).resolves.toMatchObject({ outcome: "retry_exhausted" });
+    expect(escalationAttempts).toEqual([exhaustedFixture.runId]);
+  });
+
+  it("handles a plan approval issue deleted between interaction and escalation reads", async () => {
+    const fixture = await seedMaxTurnFixture({ scheduledRetryAttempt: 3, issueStatus: "in_review" });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: fixture.agentId,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId: fixture.issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: fixture.issueId, interactionId },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+
+    const raceHeartbeat = heartbeatService(db, {
+      testHooks: {
+        beforePlanApprovalEscalationIssueRead: async () => {
+          await db
+            .delete(issueThreadInteractions)
+            .where(eq(issueThreadInteractions.id, interactionId));
+          await db.delete(issues).where(eq(issues.id, fixture.issueId));
+        },
+      },
+    });
+    await expect(raceHeartbeat.scheduleBoundedRetry(fixture.runId, {
+      now: fixture.now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 3,
+    })).resolves.toMatchObject({ outcome: "retry_exhausted" });
+  });
+
   it("coalesces duplicate accepted interaction continuation infra retry schedules", async () => {
     const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
     const interactionId = randomUUID();

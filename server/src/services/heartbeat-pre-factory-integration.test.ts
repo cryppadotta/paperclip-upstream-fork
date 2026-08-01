@@ -373,7 +373,14 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       },
     ]);
 
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, {
+      releaseEnvironmentLeases: async () => {
+        throw new Error("synthetic lease release failure");
+      },
+      refreshContinuationSummary: async () => {
+        throw new Error("synthetic continuation summary failure");
+      },
+    });
     const first = await heartbeat.invoke(agentId, "assignment", {
       issueId,
       wakeReason: "issue_assigned",
@@ -1058,6 +1065,53 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       .from(companySkillTestRuns)
       .where(eq(companySkillTestRuns.id, skillTestRunId));
     expect(completedTestRuns).toMatchObject([{ id: skillTestRunId, status: "failed" }]);
+
+    const deletedIssueId = randomUUID();
+    const deletedTestRunId = randomUUID();
+    await db.insert(issues).values({
+      id: deletedIssueId,
+      companyId,
+      title: "Deleted skill test race",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: "PST-2",
+      workMode: "skill_test",
+      harnessKind: "skill_test",
+    });
+    await db.insert(companySkillTestRuns).values({
+      id: deletedTestRunId,
+      companyId,
+      skillId,
+      inputSnapshot: "Delete before completion",
+      skillVersionId,
+      agentId,
+      agentConfigSnapshot: {},
+      issueId: deletedIssueId,
+      harnessIssueDescription: "Delete before completion",
+      status: "queued",
+      outputDocumentKey: "output",
+    });
+    const raceHeartbeat = heartbeatService(db, {
+      testHooks: {
+        beforeSkillTestRunCompletion: async ({ testRunId }) => {
+          await db.delete(companySkillTestRuns).where(eq(companySkillTestRuns.id, testRunId));
+        },
+      },
+    });
+    const raceRun = await raceHeartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId: deletedIssueId, wakeReason: "skill_test_run_created" },
+      "system",
+    );
+    expect(raceRun).not.toBeNull();
+    expect((await waitForRun(raceHeartbeat, raceRun!.id))?.status).toBe("failed");
+    await raceHeartbeat.waitForRunExecutionDrain(raceRun!.id);
+    expect(
+      await db.select().from(companySkillTestRuns).where(eq(companySkillTestRuns.id, deletedTestRunId)),
+    ).toHaveLength(0);
   }, 20_000);
 
   it("fingerprints an unrecoverable final workspace branch inspection", async () => {

@@ -284,7 +284,10 @@ import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
 import { environmentRuntimeService } from "./environment-runtime.js";
 import { skillVersionSelectionMap } from "./runtime-skill-selections.js";
-import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
+import {
+  environmentRunOrchestrator,
+  type EnvironmentReleaseResult,
+} from "./environment-run-orchestrator.js";
 import { isUnsafeSessionWorkspaceCwd } from "./session-workspace-cwd.js";
 import {
   clearHeartbeatRunRuntimeStatus,
@@ -332,6 +335,15 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   const normalized = summary.replace(/\s+/g, " ").trim();
   const redacted = redactSensitiveText(redactCurrentUserText(normalized, currentUserRedactionOptions));
   return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
+}
+
+export function redactHeartbeatProgressSummaryCandidate(
+  summary: string | undefined,
+  currentUserRedactionOptions?: CurrentUserRedactionOptions,
+) {
+  return summary
+    ? redactDetectedSuccessfulRunProgressSummaryForBoard(summary, currentUserRedactionOptions)
+    : null;
 }
 
 export function redactSuccessfulRunHandoffEvidence(
@@ -6600,10 +6612,88 @@ export function resolveNextSessionState(input: {
 
 export type HeartbeatEnvironmentRuntime = ReturnType<typeof environmentRuntimeService>;
 
+type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
+type HeartbeatAgentRow = typeof agents.$inferSelect;
+
+export interface HeartbeatServiceTestHooks {
+  beforePlanApprovalEscalationIssueRead?: (input: { runId: string; issueId: string }) => void | Promise<void>;
+  beforeSkillTestRunCompletion?: (input: { runId: string; issueId: string; testRunId: string }) => void | Promise<void>;
+  beforeIssueMonitorDispatchGuard?: (input: { claimed: { assigneeAgentId: string | null; monitorNextCheckAt: Date | null } }) => void | Promise<void>;
+  beforeRuntimeStateInsert?: (input: { agent: HeartbeatAgentRow }) => void | Promise<void>;
+  beforeRuntimeStateFallbackRead?: (input: { agentId: string }) => void | Promise<void>;
+  beforeHotRestartAdoptionCas?: (input: { runId: string }) => void | Promise<void>;
+  beforeShutdownInterruptCas?: (input: { runId: string }) => void | Promise<void>;
+  beforeScheduledRetryCancellationCas?: (input: { runId: string }) => void | Promise<void>;
+  beforeDueScheduledRetryPromotion?: (input: { run: HeartbeatRunRow }) => void | Promise<void>;
+  beforeDailyCapCancellationCas?: (input: { runId: string }) => void | Promise<void>;
+  beforeTimerHeartbeatClaimCas?: (input: { agentId: string }) => void | Promise<void>;
+  beforeQueuedRunAgentRead?: (input: { run: HeartbeatRunRow }) => void | Promise<void>;
+  queuedRunAgentRead?: (input: { run: HeartbeatRunRow }) => HeartbeatAgentRow | null | undefined | Promise<HeartbeatAgentRow | null | undefined>;
+  beforeQueuedRunInvokabilityCheck?: (input: { run: HeartbeatRunRow; agent: HeartbeatAgentRow }) => void | Promise<void>;
+  beforeQueuedRunClaimCas?: (input: { run: HeartbeatRunRow; agent: HeartbeatAgentRow }) => void | Promise<void>;
+  beforeBlockedDependencyCancellationCas?: (input: { runId: string; issueId: string }) => void | Promise<void>;
+  beforeStaleIssueCancellationCas?: (input: { runId: string; issueId: string }) => void | Promise<void>;
+  finalizeAgentRead?: (input: { agentId: string }) => HeartbeatAgentRow | null | Promise<HeartbeatAgentRow | null>;
+  beforeOrphanedRunFinalize?: (input: { runId: string }) => void | Promise<void>;
+}
+
 export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+  releaseEnvironmentLeases?: (input: {
+    heartbeatRunId: string;
+    companyId: string;
+    agentId: string;
+    status: Extract<EnvironmentLeaseStatus, "released" | "expired" | "failed">;
+    failureReason?: string;
+  }) => Promise<EnvironmentReleaseResult>;
+  refreshContinuationSummary?: typeof refreshIssueContinuationSummary;
+  recordPlanApprovalResumeFailureRetry?: (input: {
+    run: HeartbeatRunRow;
+    issueId: string | null;
+    retryRunId: string | null;
+    attempt: number;
+    maxAttempts: number;
+  }) => Promise<unknown>;
+  escalatePlanApprovalResumeFailure?: (input: {
+    run: HeartbeatRunRow;
+    issueId: string | null;
+    attempt: number;
+    maxAttempts: number;
+  }) => Promise<unknown>;
+  testHooks?: HeartbeatServiceTestHooks;
+}
+
+export function requireIssueMonitorDispatchTarget(targetAgentId: string | null | undefined): string {
+  if (!targetAgentId) throw conflict("Issue monitor has no agent target");
+  return targetAgentId;
+}
+
+export function heartbeatDateValue(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+export function latestHeartbeatDate(...values: unknown[]): Date | null {
+  let latest: Date | null = null;
+  for (const value of values) {
+    const parsed = heartbeatDateValue(value);
+    if (!parsed) continue;
+    if (!latest || parsed.getTime() > latest.getTime()) latest = parsed;
+  }
+  return latest;
+}
+
+export function truncateHeartbeatAgentErrorReason(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  const trimmed = reason.trim();
+  if (!trimmed) return null;
+  return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
 }
 
 type WorkspaceReadyCommentWriter = {
@@ -6662,6 +6752,7 @@ export function resolveHeartbeatSchedulingSuppression(
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
+  const testHooks = options.testHooks ?? {};
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -6918,6 +7009,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const interaction = await getAcceptedPlanApprovalInteractionForRun(input.run, input.issueId);
     if (!interaction || !input.issueId) return null;
 
+    await testHooks.beforePlanApprovalEscalationIssueRead?.({
+      runId: input.run.id,
+      issueId: input.issueId,
+    });
     const issue = await db
       .select()
       .from(issues)
@@ -6999,6 +7094,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (!existingRun || ["succeeded", "failed", "cancelled"].includes(existingRun.status)) return null;
 
+    await testHooks.beforeSkillTestRunCompletion?.({
+      runId: input.run.id,
+      issueId: input.issueId,
+      testRunId: existingRun.id,
+    });
     const completedRun = await companySkills.completeTestRunForIssue({
       companyId: input.run.companyId,
       issueId: input.issueId,
@@ -7036,7 +7136,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     status: string | null | undefined;
     failureReason?: string | null;
   }) {
-    const releaseResult = await envOrchestrator.releaseForRun({
+    const releaseEnvironmentLeases = options.releaseEnvironmentLeases ?? envOrchestrator.releaseForRun;
+    const releaseResult = await releaseEnvironmentLeases({
       heartbeatRunId: input.runId,
       companyId: input.companyId,
       agentId: input.agentId,
@@ -7895,6 +7996,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       activitySource: "manual" | "scheduled";
     },
   ) {
+    await testHooks.beforeIssueMonitorDispatchGuard?.({ claimed });
     if (!claimed.assigneeAgentId || !claimed.monitorNextCheckAt) {
       throw conflict("Issue monitor is not ready to dispatch");
     }
@@ -7922,12 +8024,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       : null;
     const isProviderQuotaReviewMonitor = monitor?.serviceName === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
       Boolean(reviewParticipantAgentId);
-    const targetAgentId = isProviderQuotaReviewMonitor
-      ? reviewParticipantAgentId
-      : claimed.assigneeAgentId;
-    if (!targetAgentId) {
-      throw conflict("Issue monitor has no agent target");
-    }
+    const targetAgentId = requireIssueMonitorDispatchTarget(
+      isProviderQuotaReviewMonitor ? reviewParticipantAgentId : claimed.assigneeAgentId,
+    );
     const wakeReason = isProviderQuotaReviewMonitor
       ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON
       : input.wakeReason;
@@ -8447,14 +8546,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }) {
     if (await hasResolvableSessionWorkspaceCwd(input.explicitResumeSession?.sessionParams)) return true;
     if (shouldResetTaskSessionForWake(input.contextSnapshot)) return false;
-    if (!input.taskKey) return false;
-
     const codec = getAdapterSessionCodec(input.agent.adapterType);
     const taskSession = await getTaskSession(
       input.agent.companyId,
       input.agent.id,
       input.agent.adapterType,
-      input.taskKey,
+      input.taskKey as string,
     );
     const taskSessionParams = normalizeResumeParamsForAdapter(
       input.agent.adapterType,
@@ -8870,6 +8967,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const existing = await getRuntimeState(agent.id);
     if (existing) return existing;
 
+    await testHooks.beforeRuntimeStateInsert?.({ agent });
     const inserted = await db
       .insert(agentRuntimeState)
       .values({
@@ -8885,6 +8983,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     if (inserted) return inserted;
 
+    await testHooks.beforeRuntimeStateFallbackRead?.({ agentId: agent.id });
     const ensured = await getRuntimeState(agent.id);
     if (!ensured) {
       throw new Error(`Failed to ensure runtime state for agent ${agent.id}`);
@@ -9104,11 +9203,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       )
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (existing) return;
-    await issuesSvc.addComment(input.issueId, input.comment, {
-      agentId: input.run.agentId,
-      runId: input.run.id,
-    });
+    if (!existing) {
+      await issuesSvc.addComment(input.issueId, input.comment, {
+        agentId: input.run.agentId,
+        runId: input.run.id,
+      });
+    }
   }
 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
@@ -9272,10 +9372,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(resultJson.result),
       readNonEmptyString(resultJson.message),
     ].filter((value): value is string => Boolean(value));
-    const summary = candidates[0];
-    if (!summary) return null;
-    return redactDetectedSuccessfulRunProgressSummaryForBoard(
-      summary,
+    return redactHeartbeatProgressSummaryCandidate(
+      candidates[0],
       currentUserRedactionOptions,
     );
   }
@@ -9852,7 +9950,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return null;
     try {
-      return await refreshIssueContinuationSummary({
+      const refreshContinuationSummary = options.refreshContinuationSummary ?? refreshIssueContinuationSummary;
+      return await refreshContinuationSummary({
         db,
         issueId,
         run: {
@@ -10568,6 +10667,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processPid,
         processGroupId,
       });
+      await testHooks.beforeHotRestartAdoptionCas?.({ runId: run.id });
       const updated = await db
         .update(heartbeatRuns)
         .set({
@@ -10699,6 +10799,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const message = `Interrupted by graceful server shutdown (${signal}); retry queued for restart recovery`;
+      await testHooks.beforeShutdownInterruptCas?.({ runId: run.id });
       const interruptedStatus = await setRunStatusIfRunning(run.id, "interrupted", {
         finishedAt: now,
         error: message,
@@ -10971,6 +11072,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     gate: Extract<ScheduledRetryGate, { allowed: false }>,
     now: Date,
   ) {
+    await testHooks.beforeScheduledRetryCancellationCas?.({ runId: run.id });
     const cancelled = await db
       .update(heartbeatRuns)
       .set({
@@ -11199,7 +11301,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
       if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
-        await escalatePlanApprovalResumeFailureNeedsAttention({
+        const escalatePlanApprovalResumeFailure =
+          options.escalatePlanApprovalResumeFailure ?? escalatePlanApprovalResumeFailureNeedsAttention;
+        await escalatePlanApprovalResumeFailure({
           run,
           issueId,
           attempt: Math.min(run.scheduledRetryAttempt ?? maxAttempts, maxAttempts),
@@ -11783,7 +11887,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
-      await recordPlanApprovalResumeFailureRetry({
+      const recordResumeFailure =
+        options.recordPlanApprovalResumeFailureRetry ?? recordPlanApprovalResumeFailureRetry;
+      await recordResumeFailure({
         run,
         issueId,
         retryRunId: retryRun.id,
@@ -11984,7 +12090,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!isRetryableInteractionContinuationInfrastructureFailure(run)) {
       const context = parseObject(run.contextSnapshot);
       const issueId = readNonEmptyString(context.issueId);
-      await escalatePlanApprovalResumeFailureNeedsAttention({
+      const escalatePlanApprovalResumeFailure =
+        options.escalatePlanApprovalResumeFailure ?? escalatePlanApprovalResumeFailureNeedsAttention;
+      await escalatePlanApprovalResumeFailure({
         run,
         issueId,
         attempt: Math.min(run.scheduledRetryAttempt ?? INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS, INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS),
@@ -12023,6 +12131,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const promotedRunIds: string[] = [];
 
     for (const dueRun of dueRuns) {
+      await testHooks.beforeDueScheduledRetryPromotion?.({ run: dueRun });
       const result = await promoteScheduledRetryRun(dueRun, now);
       if (result.outcome === "promoted") {
         promotedRunIds.push(result.run.id);
@@ -12040,7 +12149,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string,
     statuses: Array<"scheduled_retry" | "queued" | "running" | "cancelled">,
   ) {
-    if (statuses.length === 0) return null;
     return db
       .select({
         run: heartbeatRuns,
@@ -12315,6 +12423,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ) {
     const now = new Date();
     const reason = "Cancelled because the agent reached a per-day heartbeat budget cap before adapter invocation";
+    await testHooks.beforeDailyCapCancellationCas?.({ runId: run.id });
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,
@@ -12372,8 +12481,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Boolean(row);
   }
 
-  async function markTimerHeartbeatChecked(agentId: string, source: WakeupOptions["source"]) {
-    if (source !== "timer") return;
+  async function markTimerHeartbeatChecked(agentId: string) {
     await db
       .update(agents)
       .set({
@@ -12389,6 +12497,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     intervalSec: number,
   ) {
     const dueBefore = new Date(now.getTime() - intervalSec * 1000);
+    await testHooks.beforeTimerHeartbeatClaimCas?.({ agentId: agent.id });
     const claimed = await db
       .update(agents)
       .set({
@@ -12470,12 +12579,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
-    if (run.status !== "queued") return run;
-    const agent = await getAgent(run.agentId);
+    await testHooks.beforeQueuedRunAgentRead?.({ run });
+    const agentOverride = await testHooks.queuedRunAgentRead?.({ run });
+    const agent = agentOverride === undefined ? await getAgent(run.agentId) : agentOverride;
     if (!agent) {
       await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
       return null;
     }
+    await testHooks.beforeQueuedRunInvokabilityCheck?.({ run, agent });
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
@@ -12483,7 +12594,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
       return null;
     }
-
     const context = parseObject(run.contextSnapshot);
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
@@ -12565,6 +12675,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
+    await testHooks.beforeQueuedRunClaimCas?.({ run, agent });
     const claimed = await db
       .update(heartbeatRuns)
       .set({
@@ -12635,6 +12746,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const now = new Date();
     const reason =
       "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+    await testHooks.beforeBlockedDependencyCancellationCas?.({ runId: run.id, issueId });
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: reason,
@@ -12855,6 +12967,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
     const now = new Date();
+    await testHooks.beforeStaleIssueCancellationCas?.({ runId: run.id, issueId });
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
       error: staleness.reason,
@@ -12902,20 +13015,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
-  function truncateAgentErrorReason(reason: string | null | undefined): string | null {
-    if (!reason) return null;
-    const trimmed = reason.trim();
-    if (!trimmed) return null;
-    return trimmed.length > 500 ? `${trimmed.slice(0, 499)}…` : trimmed;
-  }
-
   async function finalizeAgentStatus(
     agentId: string,
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     failureReason?: string | null,
     options?: { keepIdleOnFailure?: boolean; wasFirstHeartbeat?: boolean },
   ) {
-    const existing = await getAgent(agentId);
+    const existing = testHooks.finalizeAgentRead
+      ? await testHooks.finalizeAgentRead({ agentId })
+      : await getAgent(agentId);
     if (!existing) return;
 
     if (existing.status === "paused" || existing.status === "terminated") {
@@ -12939,7 +13047,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // Persist a human-readable reason on the agent record when it enters
         // error so operators see it on the agent page without digging into run
         // events; clear it whenever the agent leaves error.
-        errorReason: nextStatus === "error" ? truncateAgentErrorReason(failureReason) : null,
+        errorReason: nextStatus === "error" ? truncateHeartbeatAgentErrorReason(failureReason) : null,
         lastHeartbeatAt: new Date(),
         updatedAt: new Date(),
       })
@@ -12990,25 +13098,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   function countValue(value: unknown) {
     const parsed = Number(value ?? 0);
     return Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : 0;
-  }
-
-  function dateValue(value: unknown) {
-    if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-    if (typeof value === "string" || typeof value === "number") {
-      const parsed = new Date(value);
-      return Number.isNaN(parsed.getTime()) ? null : parsed;
-    }
-    return null;
-  }
-
-  function latestDate(...values: unknown[]) {
-    let latest: Date | null = null;
-    for (const value of values) {
-      const parsed = dateValue(value);
-      if (!parsed) continue;
-      if (!latest || parsed.getTime() > latest.getTime()) latest = parsed;
-    }
-    return latest;
   }
 
   async function buildRunLivenessInput(
@@ -13153,7 +13242,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         workspaceOperationsCreated: countValue(workspaceOperationStats?.count),
         activityEventsCreated: countValue(activityStats?.count),
         toolOrActionEventsCreated: countValue(eventStats?.count),
-        latestEvidenceAt: latestDate(
+        latestEvidenceAt: latestHeartbeatDate(
           commentStats?.latestAt,
           documentStats?.latestAt,
           workProductStats?.latestAt,
@@ -13463,6 +13552,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         : null;
 
+      await testHooks.beforeOrphanedRunFinalize?.({ runId: run.id });
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
@@ -17668,7 +17758,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
         reason: "No assigned todo or in_progress issue requires this agent before timer adapter invocation.",
       });
-      await markTimerHeartbeatChecked(agentId, source);
+      await markTimerHeartbeatChecked(agentId);
       return null;
     }
 
