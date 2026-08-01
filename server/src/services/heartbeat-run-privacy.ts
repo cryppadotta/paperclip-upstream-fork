@@ -1,11 +1,16 @@
+import type { Db } from "@paperclipai/db";
+import { issues } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import type { AuthorizationActor, AuthorizationDecision } from "./authorization.js";
 
 type RunIssueBinding = {
   companyId: string;
+  scopeKind?: "company" | "issue" | null;
   issueId?: string | null;
 };
 
 export async function canActorReadHeartbeatRun(
+  db: Db,
   access: {
     decide(input: {
       actor: AuthorizationActor;
@@ -24,7 +29,15 @@ export async function canActorReadHeartbeatRun(
   actor: AuthorizationActor,
   run: RunIssueBinding,
 ): Promise<boolean> {
-  if (!run.issueId) return true;
+  if (run.scopeKind === "company") return true;
+  if (!run.issueId) return false;
+
+  const issueExists = await db
+    .select({ id: issues.id })
+    .from(issues)
+    .where(and(eq(issues.id, run.issueId), eq(issues.companyId, run.companyId)))
+    .then((rows) => rows.length > 0);
+  if (!issueExists) return false;
 
   const decision = await access.decide({
     actor,

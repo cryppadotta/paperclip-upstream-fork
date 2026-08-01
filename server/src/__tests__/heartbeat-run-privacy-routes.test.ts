@@ -1,10 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentRuntimeState,
+  activityLog,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -35,13 +40,17 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(workspaceOperations);
     await db.delete(heartbeatRunEvents);
     await db.delete(issueAccessGrants);
+    await db.delete(agentRuntimeState);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -55,6 +64,8 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
     const ownerAgentId = randomUUID();
     const grantedAgentId = randomUUID();
     const otherAgentId = randomUUID();
+    const ownerUserId = `owner-${randomUUID()}`;
+    const otherUserId = `other-${randomUUID()}`;
     const issueId = randomUUID();
     const privateRunId = randomUUID();
     const maintenanceRunId = randomUUID();
@@ -66,6 +77,21 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
       issuePrefix: "RPR",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(authUsers).values([ownerUserId, otherUserId].map((id) => ({
+      id,
+      name: id === ownerUserId ? "Owner user" : "Other user",
+      email: `${id}@example.test`,
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })));
+    await db.insert(companyMemberships).values([ownerUserId, otherUserId].map((principalId) => ({
+      companyId,
+      principalType: "user",
+      principalId,
+      status: "active",
+      membershipRole: "operator",
+    })));
     await db.insert(agents).values([
       {
         id: ownerAgentId,
@@ -107,6 +133,7 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
       visibility: "private",
       privacyRootIssueId: issueId,
       status: "in_progress",
+      responsibleUserId: ownerUserId,
       assigneeAgentId: ownerAgentId,
     });
     await db.insert(issueAccessGrants).values({
@@ -124,6 +151,7 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
         id: privateRunId,
         companyId,
         agentId: ownerAgentId,
+        scopeKind: "issue",
         issueId,
         invocationSource: "assignment",
         status: "running",
@@ -139,6 +167,7 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
         id: maintenanceRunId,
         companyId,
         agentId: ownerAgentId,
+        scopeKind: "company",
         issueId: null,
         invocationSource: "timer",
         status: "succeeded",
@@ -170,7 +199,18 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
       logRef: "missing-private-operation-log.ndjson",
     });
 
-    return { companyId, ownerAgentId, grantedAgentId, otherAgentId, issueId, privateRunId, maintenanceRunId, operationId };
+    return {
+      companyId,
+      ownerAgentId,
+      grantedAgentId,
+      otherAgentId,
+      ownerUserId,
+      otherUserId,
+      issueId,
+      privateRunId,
+      maintenanceRunId,
+      operationId,
+    };
   }
 
   function createApp(companyId: string, agentId: string) {
@@ -187,6 +227,24 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
     });
     app.use("/api", agentRoutes(db));
     app.use("/api", activityRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createBoardApp(companyId: string, userId: string) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId,
+        companyIds: [companyId],
+        source: "session",
+        isInstanceAdmin: false,
+      };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
     app.use(errorHandler);
     return app;
   }
@@ -264,6 +322,43 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
       .get(`/api/heartbeat-runs/${fixture.privateRunId}/issues`);
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
+  });
+
+  it("conceals private runs from unauthorized cancellation and watchdog mutations", async () => {
+    const fixture = await seedFixture();
+
+    const deniedCancel = await request(createBoardApp(fixture.companyId, fixture.otherUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`);
+    expect(deniedCancel.status).toBe(404);
+
+    const deniedWatchdog = await request(createApp(fixture.companyId, fixture.otherAgentId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/watchdog-decisions`)
+      .send({ decision: "continue" });
+    expect(deniedWatchdog.status).toBe(404);
+
+    const allowedWatchdog = await request(createBoardApp(fixture.companyId, fixture.ownerUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/watchdog-decisions`)
+      .send({ decision: "continue" });
+    expect(allowedWatchdog.status).toBe(200);
+
+    await db.update(heartbeatRuns)
+      .set({ status: "succeeded" })
+      .where(eq(heartbeatRuns.id, fixture.privateRunId));
+    const allowedCancel = await request(createBoardApp(fixture.companyId, fixture.ownerUserId))
+      .post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`);
+    expect(allowedCancel.status).toBe(200);
+    expect(allowedCancel.body.id).toBe(fixture.privateRunId);
+  });
+
+  it("preserves issue and run bindings while confidential operation history exists", async () => {
+    const fixture = await seedFixture();
+
+    await expect(db.delete(issues).where(eq(issues.id, fixture.issueId))).rejects.toThrow();
+    await expect(db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId))).rejects.toThrow();
+
+    const deniedDetail = await request(createApp(fixture.companyId, fixture.otherAgentId))
+      .get(`/api/heartbeat-runs/${fixture.privateRunId}`);
+    expect(deniedDetail.status).toBe(404);
   });
 
   it("logs would-deny decisions without enforcing them in shadow mode", async () => {

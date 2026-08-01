@@ -340,8 +340,11 @@ No Docker or external database is required for this mode.
 
 Grant lookups use a five-second cache by default; override it with `PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS` when testing revocation timing.
 
-Issue-bound heartbeat runs inherit the same read predicate through
-`heartbeat_runs.issue_id`. In enforce mode, direct run detail, transcript,
+Issue-bound heartbeat runs inherit the same read predicate through the stored
+`heartbeat_runs.scope_kind = 'issue'` and `issue_id` binding. The database
+rejects incomplete bindings and restricts deletion of referenced issues and
+workspace-operation history, so confidential runs cannot become company-level
+maintenance runs through foreign-key nulling. In enforce mode, direct run detail, transcript,
 event, log, and workspace-operation reads return `404` to non-members. Company
 run-history and live-run lists retain a metadata-only row with timing, status,
 token usage, and cost for budget oversight; issue identifiers, summaries, and

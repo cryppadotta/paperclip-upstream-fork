@@ -65,8 +65,8 @@ describeEmbeddedPostgres("heartbeat run issue privacy migration", () => {
 
     await applyPendingMigrations(database.connectionString);
 
-    const rows = await sql<{ id: string; issue_id: string | null }[]>`
-      SELECT "id", "issue_id"
+    const rows = await sql<{ id: string; issue_id: string | null; scope_kind: string }[]>`
+      SELECT "id", "issue_id", "scope_kind"
       FROM "heartbeat_runs"
       WHERE "id" IN (${firstRunId}, ${secondRunId}, ${maintenanceRunId})
       ORDER BY "id"
@@ -75,6 +75,9 @@ describeEmbeddedPostgres("heartbeat run issue privacy migration", () => {
     expect(issueByRun.get(firstRunId)).toBe(firstIssueId);
     expect(issueByRun.get(secondRunId)).toBe(secondIssueId);
     expect(issueByRun.get(maintenanceRunId)).toBeNull();
+    expect(rows.find((row) => row.id === firstRunId)?.scope_kind).toBe("issue");
+    expect(rows.find((row) => row.id === secondRunId)?.scope_kind).toBe("issue");
+    expect(rows.find((row) => row.id === maintenanceRunId)?.scope_kind).toBe("company");
 
     const [parity] = await sql<{ expected_count: number; populated_count: number }[]>`
       SELECT
@@ -92,5 +95,44 @@ describeEmbeddedPostgres("heartbeat run issue privacy migration", () => {
         AND "indexname" = 'heartbeat_runs_company_issue_created_idx'
     `;
     expect(indexes).toHaveLength(1);
+  }, 30_000);
+
+  it("fails closed when a legacy issue claim cannot be resolved", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-run-issue-privacy-invalid-");
+    cleanups.push(database.cleanup);
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => sql.end());
+
+    await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
+
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const agentId = randomUUID();
+    const foreignIssueId = randomUUID();
+    await sql`
+      INSERT INTO "companies" ("id", "name", "issue_prefix")
+      VALUES
+        (${companyId}, 'Run Privacy', 'RPI'),
+        (${otherCompanyId}, 'Other Company', 'RPO')
+    `;
+    await sql`
+      INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "adapter_config")
+      VALUES (${agentId}, ${companyId}, 'Runner', 'engineer', 'process', '{}'::jsonb)
+    `;
+    await sql`
+      INSERT INTO "issues" ("id", "company_id", "title", "identifier")
+      VALUES (${foreignIssueId}, ${otherCompanyId}, 'Foreign task', 'RPO-1')
+    `;
+    await sql`
+      INSERT INTO "heartbeat_runs" ("company_id", "agent_id", "status", "context_snapshot")
+      VALUES
+        (${companyId}, ${agentId}, 'succeeded', ${sql.json({ issueId: "not-a-uuid" })}),
+        (${companyId}, ${agentId}, 'succeeded', ${sql.json({ issueId: randomUUID() })}),
+        (${companyId}, ${agentId}, 'succeeded', ${sql.json({ issueId: foreignIssueId })})
+    `;
+
+    await expect(applyPendingMigrations(database.connectionString)).rejects.toThrow(
+      /unresolved issue-scoped run/i,
+    );
   }, 30_000);
 });

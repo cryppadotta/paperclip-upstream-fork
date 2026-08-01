@@ -1938,6 +1938,7 @@ const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
+  scopeKind: heartbeatRuns.scopeKind,
   issueId: heartbeatRuns.issueId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
@@ -2092,6 +2093,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  scopeKind: heartbeatRuns.scopeKind,
   issueId: heartbeatRuns.issueId,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
@@ -9365,6 +9367,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          scopeKind: "issue",
           issueId,
           invocationSource: "automation",
           triggerDetail: "system",
@@ -9616,6 +9619,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          scopeKind: issueId ? "issue" : "company",
           issueId,
           invocationSource: "automation",
           triggerDetail: "system",
@@ -10897,6 +10901,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          scopeKind: issueId ? "issue" : "company",
           issueId,
           invocationSource: "automation",
           triggerDetail: "system",
@@ -15837,6 +15842,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: deferredAgent.companyId,
             agentId: deferredAgent.id,
+            scopeKind: "issue",
             issueId: issue.id,
             invocationSource: promotedSource,
             triggerDetail: promotedTriggerDetail,
@@ -15992,6 +15998,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: issue.companyId,
             agentId: recoveryAgent.id,
+            scopeKind: "issue",
             issueId: issue.id,
             invocationSource: "automation",
             triggerDetail: "system",
@@ -16159,6 +16166,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: issue.companyId,
           agentId: recoveryAgent.id,
+          scopeKind: "issue",
           issueId: issue.id,
           invocationSource: "automation",
           triggerDetail: "system",
@@ -17277,6 +17285,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: agent.companyId,
             agentId,
+            scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",
             issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
             invocationSource: source,
             triggerDetail,
@@ -17452,6 +17461,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: agent.companyId,
           agentId,
+          scopeKind: readNonEmptyString(enrichedContextSnapshot.issueId) ? "issue" : "company",
           issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
           invocationSource: source,
           triggerDetail,

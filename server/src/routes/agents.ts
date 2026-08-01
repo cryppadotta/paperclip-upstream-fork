@@ -121,6 +121,12 @@ import {
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
 
+type RunReadBinding = {
+  companyId: string;
+  scopeKind?: "company" | "issue" | null;
+  issueId?: string | null;
+};
+
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
   if (!Number.isFinite(parsed)) return RUN_LOG_DEFAULT_LIMIT_BYTES;
@@ -205,14 +211,14 @@ export function agentRoutes(
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
-  async function actorCanReadRun(req: Request, run: { companyId: string; issueId?: string | null }) {
-    return canActorReadHeartbeatRun(access, req.actor, run);
+  async function actorCanReadRun(req: Request, run: RunReadBinding) {
+    return canActorReadHeartbeatRun(db, access, req.actor, run);
   }
 
   async function assertRunReadAllowed(
     req: Request,
     res: Response,
-    run: { companyId: string; issueId?: string | null },
+    run: RunReadBinding,
     notFoundMessage = "Heartbeat run not found",
   ) {
     if (await actorCanReadRun(req, run)) return true;
@@ -221,7 +227,7 @@ export function agentRoutes(
   }
 
   async function serializeRunListRow<
-    T extends Record<string, unknown> & { companyId: string; issueId?: string | null },
+    T extends Record<string, unknown> & RunReadBinding,
   >(req: Request, run: T) {
     return await actorCanReadRun(req, run) ? run : redactHeartbeatRunListRow(run);
   }
@@ -3714,6 +3720,7 @@ export function agentRoutes(
       lastOutputStream: heartbeatRuns.lastOutputStream,
       lastOutputBytes: heartbeatRuns.lastOutputBytes,
       processStartedAt: heartbeatRuns.processStartedAt,
+      scopeKind: heartbeatRuns.scopeKind,
       issueId: heartbeatRuns.issueId,
       inputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'inputTokens')::numeric`.as("inputTokens"),
       cachedInputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric`.as("cachedInputTokens"),
@@ -3797,6 +3804,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {
@@ -3818,6 +3826,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
     const decision = typeof req.body?.decision === "string" ? req.body.decision : "";
     if (!["snooze", "continue", "dismissed_false_positive"].includes(decision)) {
       res.status(400).json({ error: "Unsupported watchdog decision" });
@@ -3903,6 +3912,7 @@ export function agentRoutes(
       : null;
     if (!(await assertRunReadAllowed(req, res, {
       companyId: operation.companyId,
+      scopeKind: operationRun?.scopeKind ?? (operation.issueId ? "issue" : null),
       issueId: operationRun?.issueId ?? operation.issueId ?? null,
     }, "Workspace operation not found"))) return;
 

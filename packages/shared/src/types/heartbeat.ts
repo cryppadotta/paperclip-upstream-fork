@@ -68,6 +68,7 @@ export interface HeartbeatRun {
   id: string;
   companyId: string;
   agentId: string;
+  scopeKind: "company" | "issue";
   issueId: string | null;
   invocationSource: HeartbeatInvocationSource;
   triggerDetail: WakeupTriggerDetail | null;

@@ -1,4 +1,17 @@
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  bigint,
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+  type AnyPgColumn,
+} from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -10,7 +23,11 @@ export const heartbeatRuns = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     agentId: uuid("agent_id").notNull().references(() => agents.id),
-    issueId: uuid("issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
+    scopeKind: text("scope_kind")
+      .$type<"company" | "issue">()
+      .notNull()
+      .default("company"),
+    issueId: uuid("issue_id").references((): AnyPgColumn => issues.id, { onDelete: "restrict" }),
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
@@ -61,6 +78,11 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    scopeBindingCheck: check(
+      "heartbeat_runs_scope_binding_check",
+      sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
+        OR (${table.scopeKind} = 'issue' AND ${table.issueId} IS NOT NULL)`,
+    ),
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
       table.companyId,
       table.agentId,

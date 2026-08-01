@@ -300,7 +300,7 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, run.companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, run.companyId))) return;
-    if (!(await canActorReadHeartbeatRun(access, req.actor, run))) {
+    if (!(await canActorReadHeartbeatRun(db, access, req.actor, run))) {
       res.json([]);
       return;
     }
