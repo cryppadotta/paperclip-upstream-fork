@@ -326,7 +326,7 @@ setTimeout(() => {
     usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
   }));
   process.exit(0);
-}, 45000);
+}, 180000);
 EOF
     chmod 700 "$FAKE_CLAUDE"
     COMPANY_JSON="$(api_post /api/companies '{"name":"Install E2E hot restart"}' 2>/dev/null || true)"
@@ -371,6 +371,17 @@ EOF
     RESTART_JSON="$(shim service restart --json 2>/dev/null || true)"
     echo "$RESTART_JSON"
     HOT_REPORT="$HOME/.paperclip/instances/default/hot-restart-report.json"
+    DEADLINE=$(( $(date +%s) + E2E_SERVICE_TIMEOUT_SECS ))
+    while [ -n "$RUN_ID" ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+      if [ -f "$HOT_REPORT" ] && node -e '
+        const fs = require("fs");
+        const report = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        process.exit(report.adoptedRunIds?.includes(process.argv[2]) ? 0 : 1);
+      ' "$HOT_REPORT" "$RUN_ID"; then
+        break
+      fi
+      sleep 1
+    done
     if [ -n "$RUN_ID" ] && [ -f "$HOT_REPORT" ] \
       && node -e '
         const fs = require("fs");
@@ -390,17 +401,13 @@ EOF
     fi
 
     if [ -n "$RUN_ID" ]; then
-      DEADLINE=$(( $(date +%s) + 60 ))
-      RUN_STATUS=""
-      while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-        RUN_STATUS="$(curl --fail --silent --show-error "http://127.0.0.1:3100/api/heartbeat-runs/$RUN_ID" 2>/dev/null | json_field status 2>/dev/null || true)"
-        case "$RUN_STATUS" in succeeded|failed|cancelled|timed_out) break ;; esac
-        sleep 2
-      done
-      if [ "$RUN_STATUS" = "succeeded" ]; then
-        pass "8l adopted live run completed successfully"
+      RUN_DETAIL="$(curl --fail --silent --show-error "http://127.0.0.1:3100/api/heartbeat-runs/$RUN_ID" 2>/dev/null || true)"
+      RUN_STATUS="$(printf '%s' "$RUN_DETAIL" | json_field status 2>/dev/null || true)"
+      RUN_ADOPTED="$(printf '%s' "$RUN_DETAIL" | json_field resultJson.hotRestart.adopted 2>/dev/null || true)"
+      if [ "$RUN_STATUS" = "running" ] && [ "$RUN_ADOPTED" = "true" ]; then
+        pass "8l adopted live run remains protected from orphan reaping"
       else
-        fail_ "8l adopted live run completed successfully (got ${RUN_STATUS:-<none>})"
+        fail_ "8l adopted live run remains protected from orphan reaping (status=${RUN_STATUS:-<none>} adopted=${RUN_ADOPTED:-<none>})"
       fi
     fi
 

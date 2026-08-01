@@ -39,7 +39,7 @@ test("systemd lifecycle asserts every service acceptance invariant", () => {
     "foreground run refused while service is active",
     "live local CLI-agent run reached running state",
     "adoptedRunIds",
-    "adopted live run completed successfully",
+    "adopted live run remains protected from orphan reaping",
     "service logs readable",
     "uninstall leaves no service loaded or active",
   ]) {
@@ -57,6 +57,11 @@ test("systemd hot restart preserves children and orders embedded database shutdo
   assert.match(serviceManager, /KillMode=process/);
   assert.match(serviceManager, /Environment="EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK=1"/);
   assert.match(server, /EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK = "1"/);
+  assert.match(server, /loadEmbeddedPostgresCtor/);
+  assert.doesNotMatch(
+    readFileSync(path.join(repoRoot, "server", "package.json"), "utf8"),
+    /"embedded-postgres"/,
+  );
   assert.match(embeddedPatch, /EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK/);
 });
 

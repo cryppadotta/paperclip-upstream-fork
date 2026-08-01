@@ -20,6 +20,7 @@ import {
   inspectMigrations,
   applyPendingMigrations,
   createEmbeddedPostgresLogBuffer,
+  loadEmbeddedPostgresCtor,
   prepareEmbeddedPostgresNativeRuntime,
   reconcilePendingMigrationHistory,
   formatDatabaseBackupResult,
@@ -352,17 +353,18 @@ export async function startServer(): Promise<StartedServer> {
     activeDatabaseConnectionString = config.databaseUrl;
     startupDbInfo = { mode: "external-postgres", connectionString: config.databaseUrl };
   } else {
-    const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
       // embedded-postgres registers async-exit-hook handlers as an import side
       // effect. Those handlers stop PostgreSQL immediately on SIGINT/SIGTERM,
       // racing Paperclip's later heartbeat snapshot query. Paperclip explicitly
       // stops the managed cluster in its own ordered shutdown path instead.
-      const mod = await loadWithoutCoordinatedShutdownSignalHooks(
-        () => import(moduleName),
+      // Load through @paperclipai/db, whose npm package deliberately bundles
+      // the repository-patched embedded-postgres runtime. A direct server
+      // dependency would resolve an unpatched registry copy after packaging.
+      EmbeddedPostgres = await loadWithoutCoordinatedShutdownSignalHooks(
+        () => loadEmbeddedPostgresCtor(),
       );
-      EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
     } catch {
       throw new Error(
         "Embedded PostgreSQL mode requires dependency `embedded-postgres`. Reinstall dependencies (without omitting required packages), or set DATABASE_URL for external Postgres.",
