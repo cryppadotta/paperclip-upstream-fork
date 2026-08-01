@@ -1462,6 +1462,7 @@ type WorktreeSeedLockEntry = {
   version: 1;
   state: "choosing" | "ready";
   pid: number;
+  processIdentity: string;
   token: string;
   ticket?: number;
 };
@@ -1474,6 +1475,8 @@ function parseWorktreeSeedLockEntry(value: string): WorktreeSeedLockEntry | null
       || (parsed.state !== "choosing" && parsed.state !== "ready")
       || !Number.isInteger(parsed.pid)
       || (parsed.pid ?? 0) <= 0
+      || typeof parsed.processIdentity !== "string"
+      || !parsed.processIdentity
       || typeof parsed.token !== "string"
       || !parsed.token
       || (parsed.state === "ready" && (!Number.isSafeInteger(parsed.ticket) || (parsed.ticket ?? 0) <= 0))
@@ -1486,12 +1489,37 @@ function parseWorktreeSeedLockEntry(value: string): WorktreeSeedLockEntry | null
   }
 }
 
-function worktreeSeedLockOwnerIsAlive(pid: number): boolean {
+function readWorktreeSeedProcessIdentity(pid: number): string | null {
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fieldsAfterCommand = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      const startTicks = fieldsAfterCommand[19];
+      if (!startTicks) return null;
+      const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return `linux:${bootId}:${startTicks}`;
+    }
+    if (process.platform === "win32") {
+      const startedAt = execFileSync(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+        ],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trim();
+      return startedAt ? `win32:${startedAt}` : null;
+    }
+    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return startedAt ? `${process.platform}:${startedAt}` : null;
+  } catch {
+    return null;
   }
 }
 
@@ -1526,7 +1554,7 @@ async function listLiveWorktreeSeedLocks(lockDir: string): Promise<WorktreeSeedL
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    if (!entry || !worktreeSeedLockOwnerIsAlive(entry.pid)) {
+    if (!entry || readWorktreeSeedProcessIdentity(entry.pid) !== entry.processIdentity) {
       await fsPromises.rm(entryPath, { force: true });
       continue;
     }
@@ -1538,6 +1566,10 @@ async function listLiveWorktreeSeedLocks(lockDir: string): Promise<WorktreeSeedL
 async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
   const lockDir = path.resolve(path.dirname(configPath));
   const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const processIdentity = readWorktreeSeedProcessIdentity(process.pid);
+  if (!processIdentity) {
+    throw new Error(`Unable to determine process identity before locking worktree seed state at ${lockDir}.`);
+  }
   const entryPath = path.join(lockDir, `${WORKTREE_SEED_LOCK_PREFIX}${token}${WORKTREE_SEED_LOCK_SUFFIX}`);
   const deadline = Date.now() + WORKTREE_SEED_LOCK_TIMEOUT_MS;
   await fsPromises.mkdir(lockDir, { recursive: true });
@@ -1545,6 +1577,7 @@ async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promi
     version: 1,
     state: "choosing",
     pid: process.pid,
+    processIdentity,
     token,
   });
 
@@ -1559,6 +1592,7 @@ async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promi
       version: 1,
       state: "ready",
       pid: process.pid,
+      processIdentity,
       token,
       ticket,
     });

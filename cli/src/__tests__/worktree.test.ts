@@ -432,6 +432,7 @@ describe("worktree helpers", () => {
         version: 1,
         state: "ready",
         pid: 2_147_483_647,
+        processIdentity: "dead-process",
         token: "abandoned",
         ticket: 1,
       })}\n`);
@@ -441,7 +442,19 @@ describe("worktree helpers", () => {
           version: 1,
           state: "choosing",
           pid: 2_147_483_647,
+          processIdentity: "dead-process",
           token: "abandoned-choosing",
+        })}\n`,
+      );
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", "seed.lock.reused-pid.json"),
+        `${JSON.stringify({
+          version: 1,
+          state: "ready",
+          pid: process.pid,
+          processIdentity: "previous-process-with-same-pid",
+          token: "reused-pid",
+          ticket: 1,
         })}\n`,
       );
 
