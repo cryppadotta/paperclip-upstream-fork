@@ -229,13 +229,30 @@ export function isObservedHotRestartTargetAlive(
 ) {
   if (!observation.alive) return false;
 
-  if (
-    observation.replacement?.previousServerPid === intent.previousServerPid
-    && observation.replacement.previousServerIdentity
-    && intent.previousServerIdentity
-  ) {
-    return observation.replacement.previousServerIdentity
-      === intent.previousServerIdentity;
+  if (observation.replacement?.previousServerPid === intent.previousServerPid) {
+    if (
+      observation.replacement.previousServerIdentity
+      && intent.previousServerIdentity
+    ) {
+      return observation.replacement.previousServerIdentity
+        === intent.previousServerIdentity;
+    }
+
+    if (
+      observation.replacement.previousServerIdentity
+      && !intent.previousServerIdentity
+    ) {
+      const replacementStartedAt = Date.parse(
+        observation.replacement.previousServerIdentity,
+      );
+      const requestedAt = Date.parse(intent.requestedAt);
+      if (Number.isFinite(replacementStartedAt) && Number.isFinite(requestedAt)) {
+        // The health endpoint's processStartedAt value is also the current
+        // server boot identity. If that process started after an older marker
+        // was requested, the shared numeric PID was necessarily recycled.
+        return replacementStartedAt <= requestedAt;
+      }
+    }
   }
 
   const observedStartedAt = observation.startedAt

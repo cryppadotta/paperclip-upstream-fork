@@ -133,6 +133,22 @@ describe("hot-restart path compatibility", () => {
       alive: true,
       startedAt: null,
     })).toBe(true);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      replacement: {
+        previousServerPid: 123,
+        previousServerIdentity: "2026-08-01T01:04:00.000Z",
+      },
+    })).toBe(true);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      replacement: {
+        previousServerPid: 123,
+        previousServerIdentity: "2026-08-01T01:06:00.000Z",
+      },
+    })).toBe(false);
   });
 
   it("reclaims a live recycled PID when server boot identities differ", async () => {
