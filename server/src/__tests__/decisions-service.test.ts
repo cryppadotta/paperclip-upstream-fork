@@ -294,6 +294,25 @@ describePg("decisionService", () => {
     expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
   });
 
+  it("retries a terminal continuation after a crash between effects and wake delivery", async () => {
+    const created = await createCommentDecision();
+    const crashingService = decisionService(db, { wakeOriginAgent: async () => {
+      throw new Error("simulated post-execution crash");
+    } });
+
+    await expect(crashingService.decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
+      .rejects.toThrow("simulated post-execution crash");
+    expect((await service().get(created.id))?.executionStatus).toBe("succeeded");
+    expect((await service().get(created.id))?.metadata).toMatchObject({ continuationPending: true });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+
+    await service().sweepExpired();
+
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
+    expect((await service().get(created.id))?.metadata).toMatchObject({ continuationPending: false });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+  });
+
   it("adds open decisions to the attention feed and badge count", async () => {
     const created = await createCommentDecision();
     const feed = await attentionService(db).list(companyId, { userId: decidedByUserId });

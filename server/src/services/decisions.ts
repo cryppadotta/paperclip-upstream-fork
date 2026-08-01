@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
@@ -425,7 +425,34 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const rows = await db.select().from(decisionEffectExecutions).where(eq(decisionEffectExecutions.decisionId, decision.id));
     const successful = rows.filter((row) => row.status === "executed").length;
     const status = rows.every((row) => row.status === "executed") ? "succeeded" : successful ? "partial" : "failed";
-    await db.update(decisions).set({ executionStatus: status, updatedAt: new Date() }).where(eq(decisions.id, decision.id));
+    await db.update(decisions).set({ executionStatus: status, updatedAt: new Date(), metadata: { ...decision.metadata,
+      ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(eq(decisions.id, decision.id));
+    return outcome(decision.id);
+  }
+
+  async function deliverContinuation(
+    decision: typeof decisions.$inferSelect,
+    outcome: "decided" | "expired",
+  ) {
+    const metadata = decision.metadata as Record<string, unknown>;
+    if (decision.continuationPolicy !== "wake_origin_agent" || metadata.continuationPending !== true) return;
+    // Delivery is intentionally at-least-once: a crash after wakeup but before
+    // this acknowledgement can retry, while a crash before wakeup cannot lose
+    // the continuation. Heartbeat wakeups coalesce concurrent queued work.
+    await options.wakeOriginAgent({ companyId: decision.companyId, agentId: decision.originAgentId,
+      issueId: decision.originIssueId, decisionId: decision.id, outcome });
+    await db.update(decisions).set({
+      metadata: sql`coalesce(${decisions.metadata}, '{}'::jsonb) || jsonb_build_object(
+        'continuationPending', false,
+        'continuationDeliveredAt', ${new Date().toISOString()}::text
+      )`,
+      updatedAt: new Date(),
+    }).where(and(eq(decisions.id, decision.id), sql`${decisions.metadata} ->> 'continuationPending' = 'true'`));
+  }
+
+  async function resumeDecision(decision: typeof decisions.$inferSelect, userActor: AuthorizationActor) {
+    const result = decision.executionStatus === "running" ? await runEffects(decision, userActor) : await outcome(decision.id);
+    await deliverContinuation(result, "decided");
     return outcome(decision.id);
   }
 
@@ -436,22 +463,22 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     if (!verifyDecisionSpec(spec({ id: current.id, options: current.options, targetSnapshots: current.targetSnapshots as Record<string, Snapshot> }), current.signedSpec)) throw forbidden("Decision signature verification failed");
     if (current.status === "decided" && input.idempotencyKey && metadata.decideIdempotencyKey === input.idempotencyKey) {
       if (current.decidedByUserId !== input.decidedByUserId) throw forbidden("Decision replay belongs to a different user");
-      return current.executionStatus === "running" ? runEffects(current, input.userActor) : outcome(current.id);
+      return resumeDecision(current, input.userActor);
     }
     if (current.status === "decided" && current.chosenOptionId === input.optionId &&
       sameInputValues(current.inputValues ?? {}, input.inputValues ?? {})) {
       if (current.decidedByUserId !== input.decidedByUserId) throw forbidden("Decision replay belongs to a different user");
-      return current.executionStatus === "running" ? runEffects(current, input.userActor) : outcome(current.id);
+      return resumeDecision(current, input.userActor);
     }
     if (current.status !== "open") throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     if (current.expiresAt <= new Date()) {
-      const [expired] = await db.update(decisions).set({ status: "expired", updatedAt: new Date(), metadata: { ...metadata, expiredReason: "ttl" } })
+      const [expired] = await db.update(decisions).set({ status: "expired", updatedAt: new Date(), metadata: { ...metadata, expiredReason: "ttl",
+        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } })
         .where(and(eq(decisions.id, current.id), eq(decisions.status, "open"), lte(decisions.expiresAt, new Date()))).returning();
       if (expired) {
         await logActivity(db, { companyId: expired.companyId, actorType: "system", actorId: "decision-expiry-sweeper", agentId: expired.originAgentId,
           runId: expired.originRunId, action: "decision.expired", entityType: "decision", entityId: expired.id, details: { expiredReason: "ttl" } });
-        if (expired.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: expired.companyId, agentId: expired.originAgentId,
-          issueId: expired.originIssueId, decisionId: expired.id, outcome: "expired" });
+        await deliverContinuation(expired, "expired");
       }
       throw conflict("decision_expired", { code: "decision_expired" });
     }
@@ -460,7 +487,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     for (const field of current.inputs ?? []) { const value = values[field.id] ?? ""; if (field.required && !value.trim()) throw unprocessable(`Input ${field.id} is required`); if (field.maxLength && value.length > field.maxLength) throw unprocessable(`Input ${field.id} is too long`); }
     const [claimed] = await db.update(decisions).set({ status: "decided", executionStatus: "running", chosenOptionId: input.optionId, inputValues: values,
       decidedByUserId: input.decidedByUserId, decidedAt: new Date(), updatedAt: new Date(), metadata: { ...metadata,
-        decideIdempotencyKey: input.idempotencyKey ?? null, ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}) } })
+        decideIdempotencyKey: input.idempotencyKey ?? null,
+        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}),
+        ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}) } })
       .where(and(eq(decisions.id, current.id), eq(decisions.status, "open"))).returning();
     if (!claimed) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, claimed.originRunId)).then((rows) => rows[0] ?? null);
@@ -468,9 +497,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       responsibleUserIdOverride: input.decidedByUserId, action: input.dismissed ? "decision.dismissed" : "decision.decided", entityType: "decision", entityId: claimed.id,
       details: { chosenOptionId: input.optionId, decidedByUserId: input.decidedByUserId, originResponsibleUserId: run?.responsibleUserId ?? null,
         ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}) } });
-    const result = await runEffects(claimed, input.userActor);
-    if (claimed.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: claimed.companyId, agentId: claimed.originAgentId, issueId: claimed.originIssueId, decisionId: claimed.id, outcome: "decided" });
-    return result;
+    return resumeDecision(claimed, input.userActor);
   }
 
   async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null }) {
@@ -488,15 +515,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const empty = current.options.find((option) => option.effects.length === 0);
     if (empty) return decide({ id, optionId: empty.id, decidedByUserId: userId, userActor, dismissed: true, dismissReason: reason });
     const [updated] = await db.update(decisions).set({ status: "decided", executionStatus: "succeeded", chosenOptionId: "dismissed", decidedByUserId: userId,
-      decidedAt: new Date(), updatedAt: new Date(), metadata: { ...current.metadata, dismissed: true, dismissReason: reason ?? null } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning();
+      decidedAt: new Date(), updatedAt: new Date(), metadata: { ...current.metadata, dismissed: true, dismissReason: reason ?? null,
+        ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning();
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     await logActivity(db, { companyId: updated.companyId, actorType: "system", actorId: "decision-executor", agentId: updated.originAgentId,
       runId: updated.originRunId, responsibleUserIdOverride: userId, action: "decision.dismissed", entityType: "decision", entityId: updated.id,
       details: { chosenOptionId: "dismissed", decidedByUserId: userId, dismissed: true } });
-    const result = await outcome(id);
-    if (updated.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent({ companyId: updated.companyId, agentId: updated.originAgentId,
-      issueId: updated.originIssueId, decisionId: updated.id, outcome: "decided" });
-    return result;
+    await deliverContinuation(updated, "decided");
+    return outcome(id);
   }
 
   async function createBundle(input: { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; title: string; summary: string;
@@ -526,8 +552,16 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const recovered = await runEffects(decision, await recoveryActor(decision.companyId, decision.decidedByUserId));
       if (recovered.executionStatus === "running") continue;
       resumed += 1;
-      if (decision.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: decision.companyId,
-        agentId: decision.originAgentId, issueId: decision.originIssueId, decisionId: decision.id, outcome: "decided" });
+      await deliverContinuation(recovered, "decided");
+    }
+    const pendingContinuations = await db.select().from(decisions)
+      .where(and(eq(decisions.continuationPolicy, "wake_origin_agent"),
+        sql`${decisions.metadata} ->> 'continuationPending' = 'true'`,
+        or(eq(decisions.status, "expired"), and(eq(decisions.status, "decided"),
+          inArray(decisions.executionStatus, ["succeeded", "partial", "failed"])))))
+      .orderBy(asc(decisions.updatedAt)).limit(batchSize);
+    for (const decision of pendingContinuations) {
+      await deliverContinuation(decision, decision.status === "expired" ? "expired" : "decided");
     }
     const ttlRows = await db.select().from(decisions)
       .where(and(eq(decisions.status, "open"), lte(decisions.expiresAt, now)))
@@ -547,10 +581,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const targetGone = targets.length !== strictTargetIds.size || targets.some((target) => target.status === "cancelled");
       if (!targetGone && decision.expiresAt >= now) continue;
       const reason = targetGone ? "target_gone" : "ttl";
-      const [updated] = await db.update(decisions).set({ status: "expired", updatedAt: now, metadata: { ...decision.metadata, expiredReason: reason } }).where(and(eq(decisions.id, decision.id), eq(decisions.status, "open"))).returning();
+      const [updated] = await db.update(decisions).set({ status: "expired", updatedAt: now, metadata: { ...decision.metadata, expiredReason: reason,
+        ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, decision.id), eq(decisions.status, "open"))).returning();
       if (!updated) continue; expired += 1;
       await logActivity(db, { companyId: updated.companyId, actorType: "system", actorId: "decision-expiry-sweeper", agentId: updated.originAgentId, runId: updated.originRunId, action: "decision.expired", entityType: "decision", entityId: updated.id, details: { expiredReason: reason } });
-      if (updated.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: updated.companyId, agentId: updated.originAgentId, issueId: updated.originIssueId, decisionId: updated.id, outcome: "expired" }); }
+      await deliverContinuation(updated, "expired"); }
     return { expired, resumed };
   }
 
