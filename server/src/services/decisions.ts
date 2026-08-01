@@ -10,7 +10,7 @@ import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string; childCount: number; descendantIds?: string[] };
-type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" }) => Promise<unknown>;
+type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" | "cancelled" }) => Promise<unknown>;
 export type DecisionServiceOptions = { wakeOriginAgent: Wake };
 const DAY = 86_400_000;
 
@@ -432,7 +432,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
 
   async function deliverContinuation(
     decision: typeof decisions.$inferSelect,
-    outcome: "decided" | "expired",
+    outcome: "decided" | "expired" | "cancelled",
   ) {
     const metadata = decision.metadata as Record<string, unknown>;
     if (decision.continuationPolicy !== "wake_origin_agent" || metadata.continuationPending !== true) return;
@@ -503,10 +503,16 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null }) {
     const current = await get(id); if (!current) throw notFound("Decision not found");
     if (actor.actorType === "agent" && actor.actorId !== current.originAgentId) throw forbidden("Only the origin agent may cancel");
-    const [updated] = await db.update(decisions).set({ status: "cancelled", updatedAt: new Date() }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning();
+    if (current.status === "cancelled") {
+      await deliverContinuation(current, "cancelled");
+      return (await get(id))!;
+    }
+    const [updated] = await db.update(decisions).set({ status: "cancelled", updatedAt: new Date(), metadata: { ...current.metadata,
+      ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning();
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
     await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id });
-    return updated;
+    await deliverContinuation(updated, "cancelled");
+    return (await get(id))!;
   }
 
   async function dismiss(id: string, userId: string, userActor: AuthorizationActor, reason?: string | null) {
@@ -557,11 +563,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const pendingContinuations = await db.select().from(decisions)
       .where(and(eq(decisions.continuationPolicy, "wake_origin_agent"),
         sql`${decisions.metadata} ->> 'continuationPending' = 'true'`,
-        or(eq(decisions.status, "expired"), and(eq(decisions.status, "decided"),
+        or(inArray(decisions.status, ["expired", "cancelled"]), and(eq(decisions.status, "decided"),
           inArray(decisions.executionStatus, ["succeeded", "partial", "failed"])))))
       .orderBy(asc(decisions.updatedAt)).limit(batchSize);
     for (const decision of pendingContinuations) {
-      await deliverContinuation(decision, decision.status === "expired" ? "expired" : "decided");
+      await deliverContinuation(decision, decision.status === "expired" ? "expired" : decision.status === "cancelled" ? "cancelled" : "decided");
     }
     const ttlRows = await db.select().from(decisions)
       .where(and(eq(decisions.status, "open"), lte(decisions.expiresAt, now)))

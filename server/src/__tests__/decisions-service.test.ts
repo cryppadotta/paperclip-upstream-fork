@@ -313,6 +313,16 @@ describePg("decisionService", () => {
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
   });
 
+  it("delivers the continuation when the origin agent cancels a decision", async () => {
+    const created = await createCommentDecision();
+
+    const cancelled = await service().cancel(created.id, { actorType: "agent", actorId: agentId, runId });
+
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.metadata).toMatchObject({ continuationPending: false });
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "cancelled" }]);
+  });
+
   it("adds open decisions to the attention feed and badge count", async () => {
     const created = await createCommentDecision();
     const feed = await attentionService(db).list(companyId, { userId: decidedByUserId });
