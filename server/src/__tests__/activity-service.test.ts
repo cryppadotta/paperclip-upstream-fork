@@ -142,10 +142,21 @@ describeEmbeddedPostgres("activity service", () => {
       permissions: {},
     });
 
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Summarize a completed run",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+
     await db.insert(heartbeatRuns).values({
       id: runId,
       companyId,
       agentId,
+      scopeKind: "issue",
+      issueId,
       invocationSource: "assignment",
       status: "succeeded",
       contextSnapshot: { issueId },
@@ -256,6 +267,8 @@ describeEmbeddedPostgres("activity service", () => {
       id: runId,
       companyId,
       agentId,
+      scopeKind: "issue",
+      issueId,
       invocationSource: "assignment",
       status: "succeeded",
       startedAt: new Date("2026-04-18T20:00:00.000Z"),
@@ -350,6 +363,8 @@ describeEmbeddedPostgres("activity service", () => {
         id: runId,
         companyId,
         agentId,
+        scopeKind: "issue",
+        issueId,
         invocationSource: "assignment",
         status: "succeeded",
         startedAt: new Date("2026-04-18T20:00:00.000Z"),
@@ -365,6 +380,8 @@ describeEmbeddedPostgres("activity service", () => {
         id: otherRunId,
         companyId,
         agentId,
+        scopeKind: "issue",
+        issueId,
         invocationSource: "assignment",
         status: "succeeded",
         startedAt: new Date("2026-04-18T20:05:00.000Z"),
@@ -472,6 +489,8 @@ describeEmbeddedPostgres("activity service", () => {
       id: runId,
       companyId,
       agentId,
+      scopeKind: "issue",
+      issueId,
       invocationSource: "assignment",
       status: "succeeded",
       startedAt: new Date("2026-04-18T20:10:00.000Z"),

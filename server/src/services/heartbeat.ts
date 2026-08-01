@@ -10511,7 +10511,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null;
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
-    const issueId = readNonEmptyString(contextSnapshot.issueId);
+    // A retry inherits the durable authorization scope of its source run. Do
+    // not promote an untrusted or legacy contextSnapshot.issueId into a new
+    // issue binding: that could either violate the FK or misclassify history.
+    const issueId = run.scopeKind === "issue" ? run.issueId : null;
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -10901,7 +10904,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
-          scopeKind: issueId ? "issue" : "company",
+          scopeKind: run.scopeKind,
           issueId,
           invocationSource: "automation",
           triggerDetail: "system",
