@@ -263,6 +263,7 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
+  findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
@@ -9721,11 +9722,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (!intent.shutdownSnapshot) {
       logger.warn(
-        { previousServerPid: intent.previousServerPid },
+        {
+          previousServerPid: intent.previousServerPid,
+          preflightActiveRunIds: intent.preflightActiveRunIds,
+        },
         "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
       );
     }
     const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
+    const missingSnapshotRunIds = findMissingHotRestartSnapshotRunIds(intent);
+    if (missingSnapshotRunIds.length > 0) {
+      logger.error(
+        { previousServerPid: intent.previousServerPid, missingSnapshotRunIds },
+        "hot-restart shutdown snapshot omitted preflight live runs; reporting them as lost",
+      );
+    }
     const currentRows = candidates.length > 0
       ? await db
         .select({
@@ -9741,7 +9752,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const reportRuns: HotRestartReportRun[] = [];
     const adoptedRunIds: string[] = [];
     const finalizedWhileDownRunIds: string[] = [];
-    const lostRunIds: string[] = [];
+    const lostRunIds: string[] = [...missingSnapshotRunIds];
     const skippedRunIds: string[] = [];
 
     const classify = (
@@ -9868,7 +9879,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       skippedRunIds,
       runs: reportRuns,
     });
-    await removeHotRestartIntent();
+    await removeHotRestartIntent(undefined, intent);
 
     logger.info(
       {
@@ -9877,6 +9888,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adoptedRunIds,
         finalizedWhileDownRunIds,
         lostRunIds,
+        missingSnapshotRunIds,
         skippedRunIds,
       },
       "hot-restart adoption report written",

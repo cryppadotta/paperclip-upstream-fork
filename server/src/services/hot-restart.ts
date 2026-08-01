@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import {
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot,
+} from "../home-paths.js";
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
@@ -23,6 +27,7 @@ export type HotRestartIntent = {
   previousServerVersion: string | null;
   drainRequired: boolean;
   requestedByRunId: string | null;
+  preflightActiveRunIds: string[];
   shutdownSnapshot?: {
     capturedAt: string;
     signal: "SIGINT" | "SIGTERM";
@@ -59,8 +64,16 @@ function resolveHotRestartPath(filename: string, homeDir?: string) {
   return path.join(resolvePaperclipInstanceRoot({ homeDir }), filename);
 }
 
+function resolveLegacyHotRestartPath(filename: string, homeDir?: string) {
+  return path.join(resolvePaperclipHomeDir(homeDir), filename);
+}
+
 export function resolveHotRestartIntentPath(homeDir?: string) {
   return resolveHotRestartPath(HOT_RESTART_INTENT_FILENAME, homeDir);
+}
+
+export function resolveLegacyHotRestartIntentPath(homeDir?: string) {
+  return resolveLegacyHotRestartPath(HOT_RESTART_INTENT_FILENAME, homeDir);
 }
 
 export function resolveHotRestartReportPath(homeDir?: string) {
@@ -88,6 +101,18 @@ function asNumber(value: unknown): number | null {
 
 function asBoolean(value: unknown): boolean {
   return value === true;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(asString).filter((entry): entry is string => entry !== null))];
+}
+
+function isSameHotRestartRequest(left: HotRestartIntent, right: HotRestartIntent) {
+  return left.requestedAt === right.requestedAt
+    && left.previousServerPid === right.previousServerPid
+    && left.drainRequired === right.drainRequired
+    && left.requestedByRunId === right.requestedByRunId;
 }
 
 function parseRun(value: unknown): HotRestartIntentRun | null {
@@ -123,6 +148,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
     requestedByRunId: asString(value.requestedByRunId),
+    preflightActiveRunIds: asStringArray(value.preflightActiveRunIds),
   };
 
   const snapshot = isRecord(value.shutdownSnapshot) ? value.shutdownSnapshot : null;
@@ -140,9 +166,9 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   return intent;
 }
 
-export async function readHotRestartIntent(homeDir?: string) {
+async function readHotRestartIntentAtPath(filePath: string) {
   try {
-    const raw = await fs.readFile(resolveHotRestartIntentPath(homeDir), "utf8");
+    const raw = await fs.readFile(filePath, "utf8");
     return parseHotRestartIntent(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -150,11 +176,44 @@ export async function readHotRestartIntent(homeDir?: string) {
   }
 }
 
+export async function readHotRestartIntent(homeDir?: string) {
+  const instanceIntent = await readHotRestartIntentAtPath(resolveHotRestartIntentPath(homeDir));
+  let legacyIntent: HotRestartIntent | null;
+  try {
+    legacyIntent = await readHotRestartIntentAtPath(resolveLegacyHotRestartIntentPath(homeDir));
+  } catch (error) {
+    if (instanceIntent) return instanceIntent;
+    throw error;
+  }
+
+  if (!instanceIntent) {
+    // The home-root marker predates instances. Only the default instance may
+    // consume it without an instance-root request to correlate against.
+    return resolvePaperclipInstanceId() === "default" ? legacyIntent : null;
+  }
+  if (!legacyIntent || !isSameHotRestartRequest(instanceIntent, legacyIntent)) {
+    return instanceIntent;
+  }
+
+  // A pre-instance server rewrites only the legacy marker when it captures
+  // its shutdown snapshot. Preserve the instance-scoped request fields while
+  // importing that snapshot only after the immutable request identity matches.
+  return legacyIntent.shutdownSnapshot
+    ? { ...instanceIntent, shutdownSnapshot: legacyIntent.shutdownSnapshot }
+    : instanceIntent;
+}
+
+export function findMissingHotRestartSnapshotRunIds(intent: HotRestartIntent) {
+  const snapshotRunIds = new Set(intent.shutdownSnapshot?.activeRuns.map((run) => run.runId) ?? []);
+  return intent.preflightActiveRunIds.filter((runId) => !snapshotRunIds.has(runId));
+}
+
 export async function writeHotRestartIntent(input: {
   previousServerPid: number;
   previousServerVersion?: string | null;
   drainRequired?: boolean;
   requestedByRunId?: string | null;
+  preflightActiveRunIds?: string[];
   requestedAt?: Date;
   homeDir?: string;
 }) {
@@ -165,8 +224,18 @@ export async function writeHotRestartIntent(input: {
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,
     requestedByRunId: input.requestedByRunId ?? null,
+    preflightActiveRunIds: asStringArray(input.preflightActiveRunIds),
   };
-  await writeJsonFileAtomic(resolveHotRestartIntentPath(input.homeDir), intent);
+  const instancePath = resolveHotRestartIntentPath(input.homeDir);
+  await writeJsonFileAtomic(instancePath, intent);
+  try {
+    // Compatibility handoff for the immediately preceding server version,
+    // which still watches PAPERCLIP_HOME rather than the instance root.
+    await writeJsonFileAtomic(resolveLegacyHotRestartIntentPath(input.homeDir), intent);
+  } catch (error) {
+    await fs.unlink(instancePath).catch(() => undefined);
+    throw error;
+  }
   return intent;
 }
 
@@ -186,6 +255,11 @@ export async function writeHotRestartShutdownSnapshot(input: {
     },
   };
   await writeJsonFileAtomic(resolveHotRestartIntentPath(input.homeDir), updated);
+  const legacyPath = resolveLegacyHotRestartIntentPath(input.homeDir);
+  const legacyIntent = await readHotRestartIntentAtPath(legacyPath).catch(() => null);
+  if (legacyIntent && isSameHotRestartRequest(legacyIntent, input.intent)) {
+    await writeJsonFileAtomic(legacyPath, updated);
+  }
   return updated;
 }
 
@@ -194,12 +268,23 @@ export async function writeHotRestartReport(report: HotRestartReport, homeDir?: 
   return report;
 }
 
-export async function removeHotRestartIntent(homeDir?: string) {
+async function removeMatchingHotRestartIntent(filePath: string, expected?: HotRestartIntent) {
   try {
-    await fs.unlink(resolveHotRestartIntentPath(homeDir));
+    if (expected) {
+      const current = await readHotRestartIntentAtPath(filePath);
+      if (!current || !isSameHotRestartRequest(current, expected)) return;
+    }
+    await fs.unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+export async function removeHotRestartIntent(homeDir?: string, expected?: HotRestartIntent) {
+  await Promise.all([
+    removeMatchingHotRestartIntent(resolveHotRestartIntentPath(homeDir), expected),
+    removeMatchingHotRestartIntent(resolveLegacyHotRestartIntentPath(homeDir), expected),
+  ]);
 }
 
 export function shouldHonorHotRestartIntentForProcess(

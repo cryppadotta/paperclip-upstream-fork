@@ -1,4 +1,7 @@
 #!/usr/bin/env -S node --import tsx
+import { eq } from "drizzle-orm";
+import { createDb, heartbeatRuns } from "../packages/db/src/index.js";
+import { loadConfig } from "../server/src/config.js";
 import {
   resolveHotRestartIntentPath,
   writeHotRestartIntent,
@@ -8,7 +11,7 @@ function usage(): never {
   console.error([
     "Usage: tsx scripts/request-hot-restart.ts --server-pid <pid> [--drain-required]",
     "",
-    "Writes a one-shot hot-restart intent marker under PAPERCLIP_HOME.",
+    "Writes an instance-scoped hot-restart intent plus a legacy home-root handoff marker.",
   ].join("\n"));
   process.exit(2);
 }
@@ -66,12 +69,31 @@ async function readPreviousServerVersion() {
   }
 }
 
+async function readPreflightActiveRunIds() {
+  const config = loadConfig();
+  const dbUrl = process.env.DATABASE_URL?.trim()
+    || config.databaseUrl
+    || `postgres://paperclip:paperclip@127.0.0.1:${config.embeddedPostgresPort}/paperclip`;
+  const db = createDb(dbUrl);
+  try {
+    const rows = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return rows.map((row) => row.id);
+  } finally {
+    await db.$client.end({ timeout: 1 });
+  }
+}
+
 const { serverPid, drainRequired } = readArgs(process.argv.slice(2));
+const preflightActiveRunIds = drainRequired ? [] : await readPreflightActiveRunIds();
 const intent = await writeHotRestartIntent({
   previousServerPid: serverPid,
   previousServerVersion: await readPreviousServerVersion(),
   drainRequired,
   requestedByRunId: process.env.PAPERCLIP_RUN_ID?.trim() || null,
+  preflightActiveRunIds,
 });
 
 console.log(JSON.stringify({
@@ -80,4 +102,5 @@ console.log(JSON.stringify({
   previousServerPid: intent.previousServerPid,
   previousServerVersion: intent.previousServerVersion,
   drainRequired: intent.drainRequired,
+  preflightActiveRunIds: intent.preflightActiveRunIds,
 }, null, 2));
