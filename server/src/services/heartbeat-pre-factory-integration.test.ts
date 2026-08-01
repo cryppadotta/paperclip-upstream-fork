@@ -11,6 +11,7 @@ import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclip
 import {
   agents,
   agentRuntimeState,
+  agentTaskSessions,
   companies,
   companySkills,
   companySkillTestRuns,
@@ -66,6 +67,7 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
   let removeWorktreeGitMetadata = false;
   const capturedConfigs: Record<string, unknown>[] = [];
   const capturedContexts: Record<string, unknown>[] = [];
+  const capturedRunIds: string[] = [];
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("heartbeat-pre-factory-");
@@ -77,6 +79,7 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       executionCount += 1;
       capturedConfigs.push(context.config);
       capturedContexts.push(context.context);
+      capturedRunIds.push(context.runId);
         if (removeWorktreeGitMetadata) {
           const workspace = context.context.paperclipWorkspace as { cwd?: string } | undefined;
           if (workspace?.cwd) await fs.rm(path.join(workspace.cwd, ".git"), { force: true });
@@ -1193,6 +1196,276 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
         await expect(heartbeat.scheduleBoundedRetry(run!.id, { delayMs: 60_000 }))
           .resolves.toMatchObject({ outcome: "scheduled" });
       }
+    }
+  }, 30_000);
+
+  it("covers sparse skill, session-compaction, and workspace fallback contexts", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentIssueId = randomUUID();
+    const issueId = randomUUID();
+    const skillTestIssueId = randomUUID();
+    const projectId = randomUUID();
+    const noLocalCwdProjectId = randomUUID();
+    const noLocalCwdWorkspaceId = randomUUID();
+    const noLocalCwdIssueId = randomUUID();
+    const managedProjectId = randomUUID();
+    const managedIssueId = randomUUID();
+    const existingSessionCwd = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-session-cwd-"));
+    const missingSessionCwd = path.join(existingSessionCwd, "missing");
+    const previousWorkspaceSync = process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
+    process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC = "false";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Sparse Context Company",
+      issuePrefix: "SPC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "company-owner",
+    });
+    await db.insert(projects).values([
+      { id: projectId, companyId, name: "Workspace-free project", status: "active" },
+      { id: noLocalCwdProjectId, companyId, name: "No-local-cwd project", status: "active" },
+      { id: managedProjectId, companyId, name: "Managed fallback project", status: "active" },
+    ]);
+    await db.insert(projectWorkspaces).values({
+      id: noLocalCwdWorkspaceId,
+      companyId,
+      projectId: noLocalCwdProjectId,
+      name: "Remote-only workspace",
+      cwd: null,
+      repoUrl: null,
+      isPrimary: true,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Sparse Context Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          sessionCompaction: {
+            enabled: true,
+            maxSessionRuns: 1,
+            maxRawInputTokens: 0,
+            maxSessionAgeHours: 0,
+          },
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Responsible parent",
+        status: "in_progress",
+        priority: "medium",
+        responsibleUserId: "parent-owner",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: "SPC-1",
+      },
+      {
+        id: issueId,
+        companyId,
+        title: "Session workspace issue",
+        status: "in_progress",
+        priority: "medium",
+        parentId: parentIssueId,
+        assigneeAgentId: agentId,
+        issueNumber: 2,
+        identifier: "SPC-2",
+      },
+      {
+        id: skillTestIssueId,
+        companyId,
+        title: "Sparse skill test issue",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "skill_test",
+        harnessKind: "skill_test",
+        projectId,
+        assigneeAgentId: agentId,
+        assigneeAdapterOverrides: { useProjectWorkspace: false },
+        issueNumber: 3,
+        identifier: "SPC-3",
+      },
+      {
+        id: noLocalCwdIssueId,
+        companyId,
+        title: "No local cwd issue",
+        status: "in_progress",
+        priority: "medium",
+        projectId: noLocalCwdProjectId,
+        assigneeAgentId: agentId,
+        issueNumber: 4,
+        identifier: "SPC-4",
+      },
+      {
+        id: managedIssueId,
+        companyId,
+        title: "Managed workspace issue",
+        status: "in_progress",
+        priority: "medium",
+        projectId: managedProjectId,
+        assigneeAgentId: agentId,
+        issueNumber: 5,
+        identifier: "SPC-5",
+      },
+    ]);
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: workspaceAdapterType,
+      taskKey: issueId,
+      sessionParamsJson: { sessionId: "empty-session", cwd: existingSessionCwd },
+      sessionDisplayId: "empty-session",
+    });
+
+    const service = heartbeatService(db);
+    const updateTaskSession = async (sessionId: string, cwd: string) => {
+      await db.update(agentTaskSessions).set({
+        sessionParamsJson: { sessionId, cwd },
+        sessionDisplayId: sessionId,
+      }).where(eq(agentTaskSessions.taskKey, issueId));
+    };
+    const runAndDrain = async (targetIssueId: string, context: Record<string, unknown> = {}) => {
+      const capturedContextIndex = capturedContexts.length;
+      const acceptedPlanContext = { workspaceRefreshReason: "accepted_plan_confirmation", ...context };
+      const run = await service.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "issue_commented",
+        payload: { issueId: targetIssueId, ...acceptedPlanContext },
+        contextSnapshot: { issueId: targetIssueId, ...acceptedPlanContext },
+        requestedByActorType: "user",
+        requestedByActorId: "requesting-user",
+      });
+      expect(run).not.toBeNull();
+      const completedRun = await waitForRun(service, run!.id);
+      expect(completedRun?.status).toBe("succeeded");
+      await service.waitForRunExecutionDrain(run!.id);
+      const capturedContextIndexForRun = capturedRunIds
+        .slice(capturedContextIndex)
+        .findIndex((capturedRunId) => capturedRunId === run!.id);
+      const capturedContext = capturedContextIndexForRun >= 0
+        ? capturedContexts[capturedContextIndex + capturedContextIndexForRun]
+        : undefined;
+      return {
+        run: completedRun!,
+        context: capturedContext as {
+          paperclipWorkspace?: { cwd?: string; source?: string; warnings?: string[] };
+        },
+      };
+    };
+
+    try {
+      const existingWorkspace = await runAndDrain(issueId, { responsibleUserId: "context-owner" });
+      expect(existingWorkspace.context.paperclipWorkspace).toMatchObject({
+        cwd: existingSessionCwd,
+        source: "task_session",
+      });
+
+      const lightSessionId = "run-light-session";
+      const lightHistoryRunId = randomUUID();
+      await updateTaskSession(lightSessionId, existingSessionCwd);
+      await db.insert(heartbeatRuns).values({
+        id: lightHistoryRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "succeeded",
+        sessionIdAfter: lightSessionId,
+        resultJson: {},
+        contextSnapshot: { issueId },
+        responsibleUserId: "parent-owner",
+        createdAt: new Date("2026-07-01T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+      });
+      await runAndDrain(issueId, { resumeFromRunId: lightHistoryRunId });
+
+      await updateTaskSession("missing-session", missingSessionCwd);
+      const missingWorkspace = await runAndDrain(issueId);
+      expect(missingWorkspace.run.stdoutExcerpt).toContain("is not available");
+
+      await updateTaskSession("unsafe-session", "/tmp");
+      const unsafeWorkspace = await runAndDrain(issueId, { resetSession: false });
+      expect(unsafeWorkspace.run.stdoutExcerpt).toContain("rejected as untrusted");
+
+      const projectFallback = await runAndDrain(skillTestIssueId, { resumeFromRunId: randomUUID() });
+      expect(projectFallback.run.stdoutExcerpt).toContain(
+        "No project workspace directory is currently available",
+      );
+
+      const noLocalCwd = await runAndDrain(noLocalCwdIssueId, {
+        projectWorkspaceId: randomUUID(),
+      });
+      expect(noLocalCwd.run.stdoutExcerpt).toContain("Selected project workspace");
+      expect(noLocalCwd.context.paperclipWorkspace?.source).toBe("project_primary");
+
+      const managedWorkspace = await runAndDrain(managedIssueId);
+      expect(managedWorkspace.context.paperclipWorkspace).toMatchObject({
+        cwd: resolveManagedProjectWorkspaceDir({
+          companyId,
+          projectId: managedProjectId,
+          repoName: null,
+        }),
+        source: "project_primary",
+      });
+
+      const unscopedRun = await service.wakeup(agentId, {
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "manual",
+        payload: { resetSession: false },
+        contextSnapshot: { resetSession: false },
+        requestedByActorType: "user",
+        requestedByActorId: "requesting-user",
+      });
+      expect(unscopedRun).not.toBeNull();
+      expect((await waitForRun(service, unscopedRun!.id))?.status).toBe("succeeded");
+      await service.waitForRunExecutionDrain(unscopedRun!.id);
+
+      const heavySessionId = "run-heavy-session";
+      await updateTaskSession(heavySessionId, existingSessionCwd);
+      await db.insert(heartbeatRuns).values([
+        {
+          companyId,
+          agentId,
+          invocationSource: "on_demand",
+          triggerDetail: "manual",
+          status: "succeeded",
+          sessionIdAfter: heavySessionId,
+          resultJson: {},
+          contextSnapshot: { issueId },
+          responsibleUserId: "parent-owner",
+          createdAt: new Date("2026-07-01T00:00:00.000Z"),
+          updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+        },
+        {
+          companyId,
+          agentId,
+          invocationSource: "on_demand",
+          triggerDetail: "manual",
+          status: "succeeded",
+          sessionIdAfter: heavySessionId,
+          resultJson: {},
+          contextSnapshot: { issueId },
+          responsibleUserId: "parent-owner",
+          createdAt: new Date("2026-07-01T01:00:00.000Z"),
+          updatedAt: new Date("2026-07-01T01:00:00.000Z"),
+        },
+      ]);
+      await runAndDrain(issueId);
+    } finally {
+      if (previousWorkspaceSync === undefined) delete process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
+      else process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC = previousWorkspaceSync;
+      await fs.rm(existingSessionCwd, { recursive: true, force: true });
     }
   }, 30_000);
 });

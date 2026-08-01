@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentRuntimeState,
@@ -2457,5 +2457,162 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect((wakeupRequest?.payload as Record<string, unknown> | null)?.transientRetryNotBefore).toBe(
       retryNotBefore.toISOString(),
     );
+  });
+
+  it("suppresses non-max-turn retries when the agent becomes non-invokable", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-22T10:00:00.000Z");
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      errorFamily: "transient_upstream",
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+
+    await expect(heartbeat.scheduleBoundedRetry(runId, { now, delayMs: 1_000 })).resolves.toMatchObject({
+      outcome: "not_scheduled",
+      errorCode: "agent_not_invokable",
+    });
+  });
+
+  it("schedules a max-turn continuation without issue context", async () => {
+    const fixture = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, fixture.runId));
+
+    await expect(heartbeat.scheduleBoundedRetry(fixture.runId, {
+      now: fixture.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    })).resolves.toMatchObject({ outcome: "scheduled", attempt: 1 });
+  });
+
+  it("rechecks every max-turn issue invariant inside the scheduling transaction", async () => {
+    const variants = [
+      {
+        errorCode: "issue_not_found",
+        mutate: async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], issueId: string) => {
+          await tx.delete(issues).where(eq(issues.id, issueId));
+        },
+      },
+      {
+        errorCode: "issue_reassigned",
+        mutate: async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], issueId: string) => {
+          await tx.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+        },
+      },
+      {
+        errorCode: "issue_terminal_status",
+        mutate: async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], issueId: string) => {
+          await tx.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+        },
+      },
+      {
+        errorCode: "issue_not_in_progress",
+        mutate: async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], issueId: string) => {
+          await tx.update(issues).set({ status: "todo" }).where(eq(issues.id, issueId));
+        },
+      },
+      {
+        errorCode: "issue_execution_lock_changed",
+        mutate: async (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], issueId: string) => {
+          await tx.update(issues).set({ executionRunId: null }).where(eq(issues.id, issueId));
+        },
+      },
+    ] as const;
+
+    for (const variant of variants) {
+      const fixture = await seedMaxTurnFixture();
+      const originalTransaction = db.transaction.bind(db);
+      const transactionSpy = vi.spyOn(db, "transaction").mockImplementationOnce((async (
+        callback: Parameters<typeof db.transaction>[0],
+        config?: Parameters<typeof db.transaction>[1],
+      ) => originalTransaction(async (tx) => {
+        await variant.mutate(tx, fixture.issueId);
+        return callback(tx);
+      }, config)) as typeof db.transaction);
+      try {
+        await expect(heartbeat.scheduleBoundedRetry(fixture.runId, {
+          now: fixture.now,
+          retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+          wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+          maxAttempts: 2,
+          delayMs: 1_000,
+        })).resolves.toMatchObject({
+          outcome: "not_scheduled",
+          errorCode: variant.errorCode,
+        });
+      } finally {
+        transactionSpy.mockRestore();
+      }
+    }
+  });
+
+  it("reports retry-now compare-and-set races", async () => {
+    for (const nextStatus of ["queued", "cancelled"] as const) {
+      const fixture = await seedMaxTurnFixture();
+      const scheduled = await heartbeat.scheduleBoundedRetry(fixture.runId, {
+        now: fixture.now,
+        retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+        wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+        maxAttempts: 2,
+        delayMs: 60_000,
+      });
+      expect(scheduled.outcome).toBe("scheduled");
+      if (scheduled.outcome !== "scheduled") continue;
+
+      const originalTransaction = db.transaction.bind(db);
+      const transactionSpy = vi.spyOn(db, "transaction").mockImplementationOnce((async (
+        callback: Parameters<typeof db.transaction>[0],
+        config?: Parameters<typeof db.transaction>[1],
+      ) => originalTransaction(async (tx) => {
+        await tx.update(heartbeatRuns).set({ status: nextStatus }).where(eq(heartbeatRuns.id, scheduled.run.id));
+        return callback(tx);
+      }, config)) as typeof db.transaction);
+      try {
+        await expect(heartbeat.retryScheduledRetryNow({ issueId: fixture.issueId })).resolves.toMatchObject({
+          outcome: nextStatus === "queued" ? "already_promoted" : "no_scheduled_retry",
+        });
+      } finally {
+        transactionSpy.mockRestore();
+      }
+    }
+  });
+
+  it("reports a promotion race after retry-now updates the schedule", async () => {
+    const fixture = await seedMaxTurnFixture();
+    const scheduled = await heartbeat.scheduleBoundedRetry(fixture.runId, {
+      now: fixture.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 60_000,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementationOnce((async (
+      callback: Parameters<typeof db.transaction>[0],
+      config?: Parameters<typeof db.transaction>[1],
+    ) => {
+      const result = await originalTransaction(callback, config);
+      await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, scheduled.run.id));
+      return result;
+    }) as typeof db.transaction);
+    try {
+      await expect(heartbeat.retryScheduledRetryNow({ issueId: fixture.issueId })).resolves.toMatchObject({
+        outcome: "already_promoted",
+        scheduledRetry: { status: "queued" },
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
   });
 });

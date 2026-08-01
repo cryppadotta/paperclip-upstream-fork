@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   activityLog,
@@ -582,5 +582,59 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId));
     expect(JSON.stringify(activity.map((row) => row.details))).not.toContain("provider.example");
     expect(activity.find((row) => row.action === "issue.monitor_triggered")?.details).not.toHaveProperty("externalRef");
+  });
+
+  it("skips a due monitor when another scheduler wins the claim", async () => {
+    const { issueId } = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi.spyOn(db, "transaction").mockImplementationOnce((async (
+      callback: Parameters<typeof db.transaction>[0],
+      config?: Parameters<typeof db.transaction>[1],
+    ) => originalTransaction(async (tx) => {
+      await tx
+        .update(issues)
+        .set({ monitorWakeRequestedAt: tickAt })
+        .where(eq(issues.id, issueId));
+      return callback(tx);
+    }, config)) as typeof db.transaction);
+
+    try {
+      await expect(heartbeat.tickTimers(tickAt)).resolves.toMatchObject({
+        checked: 1,
+        enqueued: 0,
+        skipped: 0,
+      });
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
+
+  it("releases a monitor claim after an unexpected dispatch failure", async () => {
+    const { issueId } = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const originalTransaction = db.transaction.bind(db);
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementationOnce(originalTransaction as typeof db.transaction)
+      .mockRejectedValueOnce(new Error("synthetic dispatch failure"));
+
+    try {
+      await expect(heartbeat.tickTimers(tickAt)).resolves.toMatchObject({
+        checked: 1,
+        enqueued: 0,
+        skipped: 0,
+      });
+      const issue = await db
+        .select({ monitorWakeRequestedAt: issues.monitorWakeRequestedAt })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]);
+      expect(issue?.monitorWakeRequestedAt).toBeNull();
+    } finally {
+      transactionSpy.mockRestore();
+    }
   });
 });

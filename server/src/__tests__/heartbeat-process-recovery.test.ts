@@ -2428,6 +2428,49 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(retryRun?.id);
   });
 
+  it("terminates both tracked and database-only processes during graceful shutdown", async () => {
+    const tracked = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+    });
+    const databaseOnly = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+      processPid: 23456,
+      processGroupId: null,
+    });
+    const nonInvokable = await seedRunFixture({
+      agentStatus: "paused",
+      includeIssue: false,
+    });
+    runningProcesses.set(tracked.runId, {
+      child: { pid: 12345 } as ChildProcess,
+      graceSec: 0,
+      processGroupId: null,
+    });
+    mockTerminateLocalService.mockResolvedValue(undefined);
+
+    const result = await heartbeatService(db).drainRunningRunsForShutdown(
+      "SIGTERM",
+      new Date("2026-03-19T00:06:00.000Z"),
+    );
+
+    expect(result.interruptedRunIds).toEqual(expect.arrayContaining([
+      tracked.runId,
+      databaseOnly.runId,
+      nonInvokable.runId,
+    ]));
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 12345, processGroupId: null }),
+      { forceAfterMs: 1000 },
+    );
+    expect(mockTerminateLocalService).toHaveBeenCalledWith(
+      expect.objectContaining({ pid: 23456, processGroupId: null }),
+      undefined,
+    );
+    expect(runningProcesses.has(tracked.runId)).toBe(false);
+  });
+
   it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
     const { runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
