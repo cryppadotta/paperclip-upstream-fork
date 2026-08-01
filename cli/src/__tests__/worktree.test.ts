@@ -426,13 +426,37 @@ describe("worktree helpers", () => {
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(true);
 
       const incompleteLockPath = path.join(targetRoot, ".paperclip", "seed.lock");
+      fs.rmSync(path.join(targetRoot, ".paperclip", "seed-complete"));
+      markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
       fs.writeFileSync(incompleteLockPath, "");
       const staleTime = new Date(Date.now() - 60_000);
       fs.utimesSync(incompleteLockPath, staleTime, staleTime);
-      await expect(
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
-      ).resolves.toEqual({ seeded: false, reason: "complete_marker" });
+
+      const recoveredSeedDatabase = vi.fn().mockImplementation(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        return {
+          backupSummary: "recovered.sql",
+          pausedScheduledRoutines: 0,
+          executionQuarantine: {
+            disabledTimerHeartbeats: 0,
+            resetRunningAgents: 0,
+            quarantinedInProgressIssues: 0,
+            unassignedTodoIssues: 0,
+            unassignedReviewIssues: 0,
+          },
+          reboundWorkspaces: [],
+        };
+      });
+      const recoveredSeeds = await Promise.all(
+        Array.from({ length: 8 }, () => (
+          ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase: recoveredSeedDatabase })
+        )),
+      );
+
+      expect(recoveredSeedDatabase).toHaveBeenCalledTimes(1);
+      expect(recoveredSeeds.filter((result) => result.seeded)).toHaveLength(1);
       expect(fs.existsSync(incompleteLockPath)).toBe(false);
+      expect(fs.existsSync(`${incompleteLockPath}.reclaim`)).toBe(false);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

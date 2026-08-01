@@ -1455,18 +1455,47 @@ function readWorktreeSeedPendingMarker(filePath: string): WorktreeSeedPendingMar
 }
 
 const WORKTREE_SEED_LOCK_FILE = "seed.lock";
+const WORKTREE_SEED_RECLAIM_FILE = "seed.lock.reclaim";
 const WORKTREE_SEED_LOCK_TIMEOUT_MS = 30 * 60 * 1_000;
 const WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS = 5_000;
 
+async function worktreeSeedLockExists(lockPath: string): Promise<boolean> {
+  try {
+    await fsPromises.access(lockPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function removeOwnedWorktreeSeedLock(lockPath: string, token: string): Promise<void> {
+  try {
+    if ((await fsPromises.readFile(lockPath, "utf8")).trim() === token) {
+      await fsPromises.rm(lockPath, { force: true });
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
   const lockPath = path.resolve(path.dirname(configPath), WORKTREE_SEED_LOCK_FILE);
+  const reclaimPath = path.resolve(path.dirname(configPath), WORKTREE_SEED_RECLAIM_FILE);
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
   const deadline = Date.now() + WORKTREE_SEED_LOCK_TIMEOUT_MS;
   await fsPromises.mkdir(path.dirname(lockPath), { recursive: true });
 
   while (true) {
     try {
+      if (await worktreeSeedLockExists(reclaimPath)) {
+        throw Object.assign(new Error("Seed lock reclamation is in progress."), { code: "EEXIST" });
+      }
       await fsPromises.writeFile(lockPath, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      if (await worktreeSeedLockExists(reclaimPath)) {
+        await removeOwnedWorktreeSeedLock(lockPath, token);
+        throw Object.assign(new Error("Seed lock reclamation is in progress."), { code: "EEXIST" });
+      }
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -1484,11 +1513,37 @@ async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promi
         }
         const incompleteLockIsStale = ownerIsAlive === null
           && Date.now() - (await fsPromises.stat(lockPath)).mtimeMs >= WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS;
-        if (
-          (ownerIsAlive === false || incompleteLockIsStale)
-          && (await fsPromises.readFile(lockPath, "utf8")).trim() === existingToken
-        ) {
-          await fsPromises.rm(lockPath, { force: true });
+        if (ownerIsAlive === false || incompleteLockIsStale) {
+          const reclaimToken = `${token}:reclaim`;
+          try {
+            await fsPromises.writeFile(reclaimPath, `${reclaimToken}\n`, {
+              encoding: "utf8",
+              mode: 0o600,
+              flag: "wx",
+            });
+            const currentToken = (await fsPromises.readFile(lockPath, "utf8")).trim();
+            if (currentToken === existingToken) {
+              const currentOwnerPid = Number.parseInt(currentToken.split(":", 1)[0] ?? "", 10);
+              let currentOwnerIsAlive: boolean | null = null;
+              if (Number.isInteger(currentOwnerPid) && currentOwnerPid > 0) {
+                try {
+                  process.kill(currentOwnerPid, 0);
+                  currentOwnerIsAlive = true;
+                } catch (processError) {
+                  currentOwnerIsAlive = (processError as NodeJS.ErrnoException).code !== "ESRCH";
+                }
+              }
+              const currentIncompleteLockIsStale = currentOwnerIsAlive === null
+                && Date.now() - (await fsPromises.stat(lockPath)).mtimeMs >= WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS;
+              if (currentOwnerIsAlive === false || currentIncompleteLockIsStale) {
+                await fsPromises.rm(lockPath, { force: true });
+              }
+            }
+          } catch (reclaimError) {
+            if ((reclaimError as NodeJS.ErrnoException).code !== "EEXIST") throw reclaimError;
+          } finally {
+            await removeOwnedWorktreeSeedLock(reclaimPath, reclaimToken);
+          }
           continue;
         }
       } catch (readError) {
@@ -1508,13 +1563,7 @@ async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promi
   try {
     return await callback();
   } finally {
-    try {
-      if ((await fsPromises.readFile(lockPath, "utf8")).trim() === token) {
-        await fsPromises.rm(lockPath, { force: true });
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    await removeOwnedWorktreeSeedLock(lockPath, token);
   }
 }
 
