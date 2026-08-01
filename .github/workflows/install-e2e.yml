@@ -45,7 +45,7 @@ jobs:
             ref: current
           - case: fork-repo
             repo: cryppadotta/paperclip-prs
-            ref: 5346a8c2464fb674a5f205ae8724b35ae7f3f44e
+            ref: 8671d8cfe1810de32b89783f2407b277c23b52ef
     steps:
       - uses: actions/checkout@v7
 
