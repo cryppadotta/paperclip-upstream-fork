@@ -93,6 +93,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      workspaceBranchName: instanceId,
       worktreesDir,
     });
 
@@ -117,6 +118,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      workspaceBranchName: "default",
       worktreesDir,
       recorder,
       dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
@@ -155,6 +157,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      workspaceBranchName: "ordered-cleanup",
       worktreesDir,
       dependencies: {
         stopEmbeddedPostgres: async (dataDir) => {
@@ -174,6 +177,45 @@ describe("worktree instance cleanup", () => {
     expect(calls).toEqual(["stop", "remove"]);
   });
 
+  it("refuses a pointer rewritten to another workspace's managed instance", async () => {
+    const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
+    const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
+    const siblingInstanceRoot = path.join(worktreesDir, "instances", "feature-sibling");
+    await fs.mkdir(path.join(siblingInstanceRoot, "db"), { recursive: true });
+    await fs.writeFile(path.join(siblingInstanceRoot, "marker"), "keep me", "utf8");
+    await writeWorkspaceEnv(workspacePath, worktreesDir, "feature-sibling");
+    const { recorder, operations } = createRecorderDouble();
+    const stopEmbeddedPostgres = vi.fn(async () => false);
+    const removeInstanceRoot = vi.fn(async () => {});
+
+    const pointer = await readWorktreeInstancePointer(workspacePath);
+    const result = await cleanupWorktreeInstanceArtifacts({
+      pointer: pointer!,
+      workspaceId: "workspace-1",
+      workspacePath,
+      workspaceBranchName: "feature/owner",
+      worktreesDir,
+      recorder,
+      dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
+    });
+
+    expect(result).toMatchObject({ status: "refused", instanceRoot: siblingInstanceRoot });
+    expect((result as { warning: string }).warning).toContain("does not match execution workspace");
+    expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
+    expect(removeInstanceRoot).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(siblingInstanceRoot, "marker"), "utf8")).toBe("keep me");
+    expect(operations).toEqual([
+      expect.objectContaining({
+        status: "skipped",
+        metadata: expect.objectContaining({
+          configuredInstanceId: "feature-sibling",
+          expectedInstanceId: "feature-owner",
+          refusalReason: "instance_id_workspace_mismatch",
+        }),
+      }),
+    ]);
+  });
+
   it("refuses a managed-root symlink that canonically escapes the guard", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const outsideRoot = await makeTempRoot("paperclip-outside-instance-");
@@ -188,6 +230,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      workspaceBranchName: "escaped",
       worktreesDir,
     });
 
@@ -210,6 +253,7 @@ describe("worktree instance cleanup", () => {
       pointer: pointer!,
       workspaceId: "workspace-1",
       workspacePath,
+      workspaceBranchName: "default",
       worktreesDir,
     });
 

@@ -7,6 +7,7 @@ export const DEFAULT_WORKTREE_HOME = "~/.paperclip-worktrees";
 export const WORKTREE_SEED_MODES = ["minimal", "full"] as const;
 export const WORKTREE_SEED_PENDING_MARKER = "seed-pending";
 export const WORKTREE_SEED_COMPLETE_MARKER = "seed-complete";
+export const WORKTREE_SEED_LOCK_MARKER = "seed.lock";
 
 export type WorktreeSeedMode = (typeof WORKTREE_SEED_MODES)[number];
 
@@ -55,6 +56,7 @@ export type WorktreeUiBranding = {
 export type WorktreeSeedMarkerPaths = {
   pending: string;
   complete: string;
+  lock: string;
 };
 
 export function resolveWorktreeSeedMarkerPaths(configPath: string): WorktreeSeedMarkerPaths {
@@ -62,6 +64,7 @@ export function resolveWorktreeSeedMarkerPaths(configPath: string): WorktreeSeed
   return {
     pending: path.resolve(configDir, WORKTREE_SEED_PENDING_MARKER),
     complete: path.resolve(configDir, WORKTREE_SEED_COMPLETE_MARKER),
+    lock: path.resolve(configDir, WORKTREE_SEED_LOCK_MARKER),
   };
 }
 

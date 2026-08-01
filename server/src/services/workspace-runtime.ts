@@ -3259,6 +3259,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         pointer: worktreeInstancePointer,
         workspaceId: input.workspace.id,
         workspacePath,
+        workspaceBranchName: input.workspace.branchName,
         recorder: input.recorder,
       });
       if (result.status === "refused") warnings.push(result.warning);

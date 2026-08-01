@@ -12,6 +12,16 @@ const execFileAsync = promisify(execFile);
 const INSTANCE_ID_RE = /^[A-Za-z0-9_-]+$/;
 const POSTGRES_STOP_TIMEOUT_MS = 10_000;
 
+function sanitizeWorktreeInstanceId(rawValue: string): string {
+  const normalized = rawValue
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-_]+|[-_]+$/g, "");
+  return normalized || "worktree";
+}
+
 export type WorktreeInstancePointer = {
   envPath: string;
   envContents: string;
@@ -138,7 +148,7 @@ export async function readWorktreeInstancePointer(workspacePath: string): Promis
 }
 
 function resolveConfiguredInstanceRoot(pointer: WorktreeInstancePointer):
-  | { instanceRoot: string }
+  | { instanceRoot: string; instanceId: string }
   | { warning: string; instanceRoot: string | null } {
   const env = parseEnvContents(pointer.envContents);
   const configuredHome = env.PAPERCLIP_HOME?.trim();
@@ -160,13 +170,14 @@ function resolveConfiguredInstanceRoot(pointer: WorktreeInstancePointer):
       warning: `Refusing worktree instance cleanup from ${pointer.envPath}: PAPERCLIP_HOME is not absolute.`,
     };
   }
-  return { instanceRoot: path.resolve(expandedHome, "instances", instanceId) };
+  return { instanceRoot: path.resolve(expandedHome, "instances", instanceId), instanceId };
 }
 
 export async function cleanupWorktreeInstanceArtifacts(input: {
   pointer: WorktreeInstancePointer;
   workspaceId: string;
   workspacePath: string;
+  workspaceBranchName: string | null;
   recorder?: WorkspaceOperationRecorder | null;
   worktreesDir?: string;
   dependencies?: WorktreeInstanceCleanupDependencies;
@@ -179,6 +190,7 @@ export async function cleanupWorktreeInstanceArtifacts(input: {
   );
   const managedInstancesDir = path.join(managedWorktreesDir, "instances");
   const configuredInstanceRoot = configured.instanceRoot;
+  const configuredInstanceId = "instanceId" in configured ? configured.instanceId : null;
   let warning = "warning" in configured ? configured.warning : "";
   const recordRefusal = async (metadata: Record<string, unknown>) => {
     if (!input.recorder) return;
@@ -200,6 +212,22 @@ export async function cleanupWorktreeInstanceArtifacts(input: {
   if (!configuredInstanceRoot || !isStrictChildPath(configuredInstanceRoot, managedInstancesDir)) {
     warning ||= `Refusing to remove instance directory "${configuredInstanceRoot ?? "unknown"}" because it is outside "${managedInstancesDir}".`;
     await recordRefusal({ refusalReason: "outside_managed_instances_dir" });
+    return { status: "refused", instanceRoot: configuredInstanceRoot, warning };
+  }
+
+  const expectedInstanceId = input.workspaceBranchName
+    ? sanitizeWorktreeInstanceId(input.workspaceBranchName)
+    : null;
+  if (!expectedInstanceId || configuredInstanceId !== expectedInstanceId) {
+    warning = expectedInstanceId
+      ? `Refusing to remove instance directory "${configuredInstanceRoot}" because its instance ID "${configuredInstanceId ?? "unknown"}" does not match execution workspace ${input.workspaceId} branch "${input.workspaceBranchName}" (expected "${expectedInstanceId}").`
+      : `Refusing to remove instance directory "${configuredInstanceRoot}" because execution workspace ${input.workspaceId} has no persisted branch identity.`;
+    await recordRefusal({
+      configuredInstanceId,
+      expectedInstanceId,
+      workspaceBranchName: input.workspaceBranchName,
+      refusalReason: "instance_id_workspace_mismatch",
+    });
     return { status: "refused", instanceRoot: configuredInstanceRoot, warning };
   }
 

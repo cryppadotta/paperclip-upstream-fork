@@ -451,6 +451,67 @@ describe("worktree helpers", () => {
 
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(true);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(false);
+      expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes concurrent ensure-seeded calls across the seed marker lock", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-lock-"));
+    try {
+      const sourceConfigPath = path.join(tempRoot, "source", "config.json");
+      const targetRoot = path.join(tempRoot, "worktree");
+      const targetConfigPath = path.join(targetRoot, ".paperclip", "config.json");
+      const targetPaths = resolveWorktreeLocalPaths({
+        cwd: targetRoot,
+        homeDir: path.join(tempRoot, "worktree-home"),
+        instanceId: "ensure-seeded-lock",
+      });
+      const sourceConfig = buildSourceConfig();
+      const targetConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths: targetPaths,
+        serverPort: 3197,
+        databasePort: 54997,
+      });
+      fs.mkdirSync(path.dirname(sourceConfigPath), { recursive: true });
+      fs.mkdirSync(path.dirname(targetConfigPath), { recursive: true });
+      fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig)}\n`);
+      fs.writeFileSync(targetConfigPath, `${JSON.stringify(targetConfig)}\n`);
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", ".env"),
+        `PAPERCLIP_HOME=${targetPaths.homeDir}\nPAPERCLIP_INSTANCE_ID=${targetPaths.instanceId}\n`,
+      );
+      markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
+
+      const seedDatabase = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return {
+          backupSummary: "snapshot.sql",
+          pausedScheduledRoutines: 0,
+          executionQuarantine: {
+            disabledTimerHeartbeats: 0,
+            resetRunningAgents: 0,
+            quarantinedInProgressIssues: 0,
+            unassignedTodoIssues: 0,
+            unassignedReviewIssues: 0,
+          },
+          reboundWorkspaces: [],
+        };
+      });
+
+      const results = await Promise.all([
+        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+      ]);
+
+      expect(results).toEqual(expect.arrayContaining([
+        expect.objectContaining({ seeded: true, reason: "seeded" }),
+        { seeded: false, reason: "complete_marker" },
+      ]));
+      expect(seedDatabase).toHaveBeenCalledTimes(1);
+      expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
