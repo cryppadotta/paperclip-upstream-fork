@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -1536,7 +1537,7 @@ async function writeWorktreeSeedLockEntry(
   entryPath: string,
   entry: WorktreeSeedLockEntry,
 ): Promise<void> {
-  const tempPath = `${entryPath}.tmp-${Math.random().toString(16).slice(2)}`;
+  const tempPath = `${entryPath}.tmp-${randomUUID()}`;
   try {
     await fsPromises.writeFile(tempPath, `${JSON.stringify(entry)}\n`, {
       encoding: "utf8",
@@ -1579,7 +1580,7 @@ async function listLiveWorktreeSeedLocks(lockDir: string): Promise<WorktreeSeedL
 
 async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
   const lockDir = path.resolve(path.dirname(configPath));
-  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const token = `${process.pid}-${Date.now()}-${randomUUID()}`;
   const processIdentity = readWorktreeSeedProcessIdentity(process.pid);
   if (!processIdentity) {
     throw new Error(`Unable to determine process identity before locking worktree seed state at ${lockDir}.`);
