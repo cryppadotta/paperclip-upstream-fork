@@ -1682,11 +1682,14 @@ describe("agent issue mutation checkout ownership", () => {
       explanation: "Target agent requires approval before task assignment.",
     }));
     decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:mutate",
+      allowed: input.action === "issue:read" || input.action === "issue:mutate",
       action: input.action,
-      reason: input.action === "issue:mutate" ? "allow_self" : "deny_policy_restricted",
+      reason:
+        input.action === "issue:read" || input.action === "issue:mutate"
+          ? "allow_self"
+          : "deny_policy_restricted",
       explanation:
-        input.action === "issue:mutate"
+        input.action === "issue:read" || input.action === "issue:mutate"
           ? "Allowed because the actor owns the assigned issue."
           : "Target agent requires approval before task assignment.",
     }));
@@ -2044,9 +2047,12 @@ describe("agent issue mutation checkout ownership", () => {
       // Base boundary denied AND tasks:assign denied: the watchdog grant lets the
       // mutation past the ownership boundary, but the assignment guard must still bite.
       mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-        allowed: input.action === "company_scope:read",
+        allowed: input.action === "company_scope:read" || input.action === "issue:read",
         action: input.action,
-        reason: input.action === "company_scope:read" ? "allow_explicit_grant" : "deny_policy_restricted",
+        reason:
+          input.action === "company_scope:read" || input.action === "issue:read"
+            ? "allow_explicit_grant"
+            : "deny_policy_restricted",
         explanation:
           input.action === "tasks:assign"
             ? "Target agent requires approval before task assignment."
