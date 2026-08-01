@@ -145,6 +145,20 @@ describe("workspace-ready comment builders", () => {
     });
   });
 
+  it("keeps service labels within the comment metadata boundary", () => {
+    const metadata = buildWorkspaceReadyMetadata({
+      workspace: workspace(),
+      runtimeServices: [runtimeService({ serviceName: `  ${"s".repeat(150)}  ` })],
+    });
+    const serviceLabel = metadata.sections[1]?.rows[0];
+
+    expect(serviceLabel).toEqual({
+      type: "key_value",
+      label: `${"s".repeat(119)}…`,
+      value: "http://localhost:3100",
+    });
+  });
+
   it("includes a distinct worktree row and preserves the existing markdown body", () => {
     const input = {
       workspace: workspace({

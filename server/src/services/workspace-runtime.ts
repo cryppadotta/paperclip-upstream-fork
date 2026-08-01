@@ -5097,6 +5097,15 @@ type WorkspaceReadyCommentInput = {
   runtimeServices: RuntimeServiceRef[];
 };
 
+const COMMENT_METADATA_LABEL_MAX_LENGTH = 120;
+
+function workspaceReadyServiceLabel(serviceName: string): string {
+  const label = serviceName.trim() || "Service";
+  return label.length > COMMENT_METADATA_LABEL_MAX_LENGTH
+    ? `${label.slice(0, COMMENT_METADATA_LABEL_MAX_LENGTH - 1)}…`
+    : label;
+}
+
 export function buildWorkspaceReadyPresentation(
   input: WorkspaceReadyCommentInput,
 ): IssueCommentPresentation {
@@ -5129,7 +5138,7 @@ export function buildWorkspaceReadyMetadata(
   const serviceRows: IssueCommentMetadata["sections"][number]["rows"] = input.runtimeServices.map(
     (service) => ({
       type: "key_value",
-      label: service.serviceName,
+      label: workspaceReadyServiceLabel(service.serviceName),
       value: `${service.url ?? "running"}${service.reused ? " (reused)" : ""}`,
     }),
   );
