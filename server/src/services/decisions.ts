@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gt, gte, inArray, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
@@ -98,6 +98,15 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const issueId = typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null;
     if (!issueId) throw unprocessable("Origin run is not issue-scoped");
     return { run, issueId };
+  }
+
+  async function recoveryActor(companyId: string, userId: string): Promise<AuthorizationActor> {
+    const membership = await db.select({ companyId: companyMemberships.companyId, membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status }).from(companyMemberships).where(and(eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId), eq(companyMemberships.status, "active")))
+      .then((rows) => rows[0] ?? null);
+    if (!membership) return { type: "none", source: "none" };
+    return { type: "board", userId, companyIds: [companyId], memberships: [membership], source: "session" };
   }
 
   async function collectDescendantIds(companyId: string, rootId: string, dbOrTx: Db) {
@@ -500,6 +509,23 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
 
   async function sweepExpired(now = new Date()) {
     const batchSize = Math.max(1, Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100));
+    const configuredRecoveryGraceMs = Number(process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS ?? 60_000);
+    const recoveryGraceMs = Number.isFinite(configuredRecoveryGraceMs) && configuredRecoveryGraceMs >= 0
+      ? configuredRecoveryGraceMs
+      : 60_000;
+    const runningRows = await db.select().from(decisions)
+      .where(and(eq(decisions.status, "decided"), eq(decisions.executionStatus, "running"),
+        lte(decisions.updatedAt, new Date(now.getTime() - recoveryGraceMs))))
+      .orderBy(asc(decisions.updatedAt)).limit(batchSize);
+    let resumed = 0;
+    for (const decision of runningRows) {
+      if (!decision.decidedByUserId) continue;
+      const recovered = await runEffects(decision, await recoveryActor(decision.companyId, decision.decidedByUserId));
+      if (recovered.executionStatus === "running") continue;
+      resumed += 1;
+      if (decision.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: decision.companyId,
+        agentId: decision.originAgentId, issueId: decision.originIssueId, decisionId: decision.id, outcome: "decided" });
+    }
     const ttlRows = await db.select().from(decisions)
       .where(and(eq(decisions.status, "open"), lte(decisions.expiresAt, now)))
       .orderBy(asc(decisions.expiresAt)).limit(batchSize);
@@ -522,7 +548,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       if (!updated) continue; expired += 1;
       await logActivity(db, { companyId: updated.companyId, actorType: "system", actorId: "decision-expiry-sweeper", agentId: updated.originAgentId, runId: updated.originRunId, action: "decision.expired", entityType: "decision", entityId: updated.id, details: { expiredReason: reason } });
       if (updated.continuationPolicy === "wake_origin_agent") await options.wakeOriginAgent?.({ companyId: updated.companyId, agentId: updated.originAgentId, issueId: updated.originIssueId, decisionId: updated.id, outcome: "expired" }); }
-    return { expired };
+    return { expired, resumed };
   }
 
   return { create, createBundle, get, list, stats, outcome, decide, cancel, dismiss, sweepExpired };

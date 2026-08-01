@@ -63,6 +63,7 @@ describePg("decisionService", () => {
 
   afterEach(async () => {
     delete process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE;
+    delete process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS;
     await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
@@ -277,6 +278,20 @@ describePg("decisionService", () => {
     const resumed = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
     expect(resumed.executionStatus).toBe("succeeded");
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+  });
+
+  it("recovers stale running decisions from the bounded server sweep", async () => {
+    process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS = "0";
+    const created = await createCommentDecision();
+    await db.update(decisions).set({ status: "decided", executionStatus: "running", chosenOptionId: "yes", decidedByUserId,
+      inputValues: {}, updatedAt: new Date(Date.now() - 1_000) }).where(eq(decisions.id, created.id));
+    await db.insert(decisionEffectExecutions).values({ decisionId: created.id, effectIndex: 0, effectType: "comment_on_issue",
+      targetIssueId, status: "claimed" });
+
+    expect(await service().sweepExpired()).toEqual({ expired: 0, resumed: 1 });
+    expect((await service().get(created.id))?.executionStatus).toBe("succeeded");
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: created.id, outcome: "decided" }]);
   });
 
   it("adds open decisions to the attention feed and badge count", async () => {

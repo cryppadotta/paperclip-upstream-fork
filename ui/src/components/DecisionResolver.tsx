@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { Agent, AttentionSubject } from "@paperclipai/shared";
@@ -166,18 +166,6 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       invalidate();
     },
   });
-
-  const resumeAttemptedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (decision?.status !== "decided" || decision.executionStatus !== "running" || !decision.chosenOptionId) return;
-    if (resumeAttemptedRef.current === decision.id) return;
-    resumeAttemptedRef.current = decision.id;
-    decideMutation.mutate({
-      optionId: decision.chosenOptionId,
-      inputValues: decision.inputValues ?? {},
-      idempotencyKey: null,
-    });
-  }, [decision, decideMutation]);
 
   const dismissMutation = useMutation({
     mutationFn: (reason: string | undefined) => decisionsApi.dismiss(decisionId, reason),
