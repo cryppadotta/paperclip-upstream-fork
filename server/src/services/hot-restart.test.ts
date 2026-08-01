@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
+  removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
   writeHotRestartIntent,
@@ -162,6 +163,57 @@ describe("hot-restart path compatibility", () => {
         previousServerPid: process.pid,
         requestedByRunId: "green-deploy",
       });
+    });
+  });
+
+  it("expires an abandoned handoff even when its PID has been recycled", async () => {
+    await withTempHome(async (homeDir) => {
+      process.env.PAPERCLIP_INSTANCE_ID = "blue";
+      await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: process.pid,
+        requestedAt: new Date("2020-01-01T00:00:00.000Z"),
+        requestedByRunId: "expired-deploy",
+      });
+
+      process.env.PAPERCLIP_INSTANCE_ID = "green";
+      await expect(writeHotRestartIntent({
+        homeDir,
+        previousServerPid: process.pid,
+        requestedByRunId: "green-deploy",
+      })).resolves.toMatchObject({ requestedByRunId: "green-deploy" });
+
+      await expect(readHotRestartIntent(homeDir)).resolves.toMatchObject({
+        requestedByRunId: "green-deploy",
+      });
+    });
+  });
+
+  it("does not let matching cleanup delete a replacement handoff", async () => {
+    await withTempHome(async (homeDir) => {
+      process.env.PAPERCLIP_INSTANCE_ID = "blue";
+      const abandonedIntent = await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: 2_147_483_647,
+        requestedAt: new Date("2026-08-01T03:55:00.000Z"),
+        requestedByRunId: "abandoned-deploy",
+      });
+
+      process.env.PAPERCLIP_INSTANCE_ID = "green";
+      await Promise.all([
+        removeHotRestartIntent(homeDir, abandonedIntent),
+        writeHotRestartIntent({
+          homeDir,
+          previousServerPid: process.pid,
+          requestedAt: new Date("2026-08-01T03:56:00.000Z"),
+          requestedByRunId: "replacement-deploy",
+        }),
+      ]);
+
+      const legacyIntent = JSON.parse(
+        await fs.readFile(resolveLegacyHotRestartIntentPath(homeDir), "utf8"),
+      ) as Record<string, unknown>;
+      expect(legacyIntent).toMatchObject({ requestedByRunId: "replacement-deploy" });
     });
   });
 

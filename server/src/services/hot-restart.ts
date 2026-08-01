@@ -8,6 +8,10 @@ import {
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
+const LEGACY_HOT_RESTART_LOCK_SUFFIX = ".lock";
+const LEGACY_HOT_RESTART_LOCK_STALE_MS = 30_000;
+const LEGACY_HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
+const LEGACY_HOT_RESTART_INTENT_MAX_AGE_MS = 5 * 60_000;
 
 export type HotRestartIntentRun = {
   runId: string;
@@ -125,6 +129,76 @@ function isProcessAlive(pid: number) {
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
+function isExpiredHotRestartIntent(intent: HotRestartIntent) {
+  const requestedAt = Date.parse(intent.requestedAt);
+  return !Number.isFinite(requestedAt)
+    || Date.now() - requestedAt > LEGACY_HOT_RESTART_INTENT_MAX_AGE_MS;
+}
+
+async function removeStaleLegacyHotRestartLock(lockDir: string) {
+  let shouldRemove = false;
+  try {
+    const owner = JSON.parse(
+      await fs.readFile(path.join(lockDir, "owner.json"), "utf8"),
+    ) as { pid?: unknown; createdAt?: unknown };
+    const pid = typeof owner.pid === "number" ? owner.pid : 0;
+    const createdAt = typeof owner.createdAt === "string"
+      ? Date.parse(owner.createdAt)
+      : Number.NaN;
+    const ageMs = Number.isFinite(createdAt)
+      ? Date.now() - createdAt
+      : LEGACY_HOT_RESTART_LOCK_STALE_MS + 1;
+    shouldRemove = !isProcessAlive(pid) || ageMs > LEGACY_HOT_RESTART_LOCK_STALE_MS;
+  } catch {
+    const stat = await fs.stat(lockDir).catch(() => null);
+    shouldRemove = !stat
+      || Date.now() - stat.mtimeMs > LEGACY_HOT_RESTART_LOCK_STALE_MS;
+  }
+  if (!shouldRemove) return false;
+  await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
+
+async function acquireLegacyHotRestartLock(filePath: string) {
+  const lockDir = `${filePath}${LEGACY_HOT_RESTART_LOCK_SUFFIX}`;
+  const deadline = Date.now() + LEGACY_HOT_RESTART_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      await fs.mkdir(lockDir);
+      try {
+        await fs.writeFile(
+          path.join(lockDir, "owner.json"),
+          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
+      }
+      return async () => {
+        await fs.rm(lockDir, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (await removeStaleLegacyHotRestartLock(lockDir)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for hot-restart compatibility lock at ${lockDir}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+
+async function withLegacyHotRestartLock<T>(filePath: string, operation: () => Promise<T>) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const release = await acquireLegacyHotRestartLock(filePath);
+  try {
+    return await operation();
+  } finally {
+    await release();
   }
 }
 
@@ -251,11 +325,14 @@ export async function writeHotRestartIntent(input: {
   // The legacy location is shared by every instance under PAPERCLIP_HOME.
   // Claim it without replacement so concurrent staged restarts fail closed
   // instead of making the first old server consume another instance's PID.
-  await claimLegacyHotRestartIntent(legacyPath, intent);
+  await withLegacyHotRestartLock(legacyPath, () => claimLegacyHotRestartIntent(legacyPath, intent));
   try {
     await writeJsonFileAtomic(instancePath, intent);
   } catch (error) {
-    await removeMatchingHotRestartIntent(legacyPath, intent).catch(() => undefined);
+    await withLegacyHotRestartLock(
+      legacyPath,
+      () => removeMatchingHotRestartIntent(legacyPath, intent),
+    ).catch(() => undefined);
     throw error;
   }
   return intent;
@@ -278,10 +355,12 @@ export async function writeHotRestartShutdownSnapshot(input: {
   };
   await writeJsonFileAtomic(resolveHotRestartIntentPath(input.homeDir), updated);
   const legacyPath = resolveLegacyHotRestartIntentPath(input.homeDir);
-  const legacyIntent = await readHotRestartIntentAtPath(legacyPath).catch(() => null);
-  if (legacyIntent && isSameHotRestartRequest(legacyIntent, input.intent)) {
-    await writeJsonFileAtomic(legacyPath, updated);
-  }
+  await withLegacyHotRestartLock(legacyPath, async () => {
+    const legacyIntent = await readHotRestartIntentAtPath(legacyPath).catch(() => null);
+    if (legacyIntent && isSameHotRestartRequest(legacyIntent, input.intent)) {
+      await writeJsonFileAtomic(legacyPath, updated);
+    }
+  });
   return updated;
 }
 
@@ -310,7 +389,12 @@ async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartI
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 
     const existing = await readHotRestartIntentAtPath(filePath).catch(() => null);
-    if (!existing || isProcessAlive(existing.previousServerPid)) throw error;
+    if (
+      !existing
+      || (isProcessAlive(existing.previousServerPid) && !isExpiredHotRestartIntent(existing))
+    ) {
+      throw error;
+    }
 
     // An interrupted restart can leave the shared claim behind after its
     // target server exits. Remove only that exact abandoned request, then
@@ -321,10 +405,12 @@ async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartI
 }
 
 export async function removeHotRestartIntent(homeDir?: string, expected?: HotRestartIntent) {
-  await Promise.all([
-    removeMatchingHotRestartIntent(resolveHotRestartIntentPath(homeDir), expected),
-    removeMatchingHotRestartIntent(resolveLegacyHotRestartIntentPath(homeDir), expected),
-  ]);
+  await removeMatchingHotRestartIntent(resolveHotRestartIntentPath(homeDir), expected);
+  const legacyPath = resolveLegacyHotRestartIntentPath(homeDir);
+  await withLegacyHotRestartLock(
+    legacyPath,
+    () => removeMatchingHotRestartIntent(legacyPath, expected),
+  );
 }
 
 export function shouldHonorHotRestartIntentForProcess(
