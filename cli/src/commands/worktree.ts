@@ -1454,116 +1454,136 @@ function readWorktreeSeedPendingMarker(filePath: string): WorktreeSeedPendingMar
   return parsed as WorktreeSeedPendingMarker;
 }
 
-const WORKTREE_SEED_LOCK_FILE = "seed.lock";
-const WORKTREE_SEED_RECLAIM_FILE = "seed.lock.reclaim";
+const WORKTREE_SEED_LOCK_PREFIX = "seed.lock.";
+const WORKTREE_SEED_LOCK_SUFFIX = ".json";
 const WORKTREE_SEED_LOCK_TIMEOUT_MS = 30 * 60 * 1_000;
-const WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS = 5_000;
 
-async function worktreeSeedLockExists(lockPath: string): Promise<boolean> {
+type WorktreeSeedLockEntry = {
+  version: 1;
+  state: "choosing" | "ready";
+  pid: number;
+  token: string;
+  ticket?: number;
+};
+
+function parseWorktreeSeedLockEntry(value: string): WorktreeSeedLockEntry | null {
   try {
-    await fsPromises.access(lockPath);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
+    const parsed = JSON.parse(value) as Partial<WorktreeSeedLockEntry>;
+    if (
+      parsed.version !== 1
+      || (parsed.state !== "choosing" && parsed.state !== "ready")
+      || !Number.isInteger(parsed.pid)
+      || (parsed.pid ?? 0) <= 0
+      || typeof parsed.token !== "string"
+      || !parsed.token
+      || (parsed.state === "ready" && (!Number.isSafeInteger(parsed.ticket) || (parsed.ticket ?? 0) <= 0))
+    ) {
+      return null;
+    }
+    return parsed as WorktreeSeedLockEntry;
+  } catch {
+    return null;
   }
 }
 
-async function removeOwnedWorktreeSeedLock(lockPath: string, token: string): Promise<void> {
+function worktreeSeedLockOwnerIsAlive(pid: number): boolean {
   try {
-    if ((await fsPromises.readFile(lockPath, "utf8")).trim() === token) {
-      await fsPromises.rm(lockPath, { force: true });
-    }
+    process.kill(pid, 0);
+    return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
+}
+
+async function writeWorktreeSeedLockEntry(
+  entryPath: string,
+  entry: WorktreeSeedLockEntry,
+): Promise<void> {
+  const tempPath = `${entryPath}.tmp-${Math.random().toString(16).slice(2)}`;
+  try {
+    await fsPromises.writeFile(tempPath, `${JSON.stringify(entry)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await fsPromises.rename(tempPath, entryPath);
+  } finally {
+    await fsPromises.rm(tempPath, { force: true });
+  }
+}
+
+async function listLiveWorktreeSeedLocks(lockDir: string): Promise<WorktreeSeedLockEntry[]> {
+  const entries: WorktreeSeedLockEntry[] = [];
+  for (const name of await fsPromises.readdir(lockDir)) {
+    if (!name.startsWith(WORKTREE_SEED_LOCK_PREFIX) || !name.endsWith(WORKTREE_SEED_LOCK_SUFFIX)) {
+      continue;
+    }
+    const entryPath = path.join(lockDir, name);
+    let entry: WorktreeSeedLockEntry | null;
+    try {
+      entry = parseWorktreeSeedLockEntry(await fsPromises.readFile(entryPath, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!entry || !worktreeSeedLockOwnerIsAlive(entry.pid)) {
+      await fsPromises.rm(entryPath, { force: true });
+      continue;
+    }
+    entries.push(entry);
+  }
+  return entries;
 }
 
 async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
-  const lockPath = path.resolve(path.dirname(configPath), WORKTREE_SEED_LOCK_FILE);
-  const reclaimPath = path.resolve(path.dirname(configPath), WORKTREE_SEED_RECLAIM_FILE);
-  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const lockDir = path.resolve(path.dirname(configPath));
+  const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const entryPath = path.join(lockDir, `${WORKTREE_SEED_LOCK_PREFIX}${token}${WORKTREE_SEED_LOCK_SUFFIX}`);
   const deadline = Date.now() + WORKTREE_SEED_LOCK_TIMEOUT_MS;
-  await fsPromises.mkdir(path.dirname(lockPath), { recursive: true });
+  await fsPromises.mkdir(lockDir, { recursive: true });
+  await writeWorktreeSeedLockEntry(entryPath, {
+    version: 1,
+    state: "choosing",
+    pid: process.pid,
+    token,
+  });
 
-  while (true) {
-    try {
-      if (await worktreeSeedLockExists(reclaimPath)) {
-        throw Object.assign(new Error("Seed lock reclamation is in progress."), { code: "EEXIST" });
-      }
-      await fsPromises.writeFile(lockPath, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      if (await worktreeSeedLockExists(reclaimPath)) {
-        await removeOwnedWorktreeSeedLock(lockPath, token);
-        throw Object.assign(new Error("Seed lock reclamation is in progress."), { code: "EEXIST" });
-      }
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      try {
-        const existingToken = (await fsPromises.readFile(lockPath, "utf8")).trim();
-        const ownerPid = Number.parseInt(existingToken.split(":", 1)[0] ?? "", 10);
-        let ownerIsAlive: boolean | null = null;
-        if (Number.isInteger(ownerPid) && ownerPid > 0) {
-          try {
-            process.kill(ownerPid, 0);
-            ownerIsAlive = true;
-          } catch (processError) {
-            ownerIsAlive = (processError as NodeJS.ErrnoException).code !== "ESRCH";
-          }
-        }
-        const incompleteLockIsStale = ownerIsAlive === null
-          && Date.now() - (await fsPromises.stat(lockPath)).mtimeMs >= WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS;
-        if (ownerIsAlive === false || incompleteLockIsStale) {
-          const reclaimToken = `${token}:reclaim`;
-          try {
-            await fsPromises.writeFile(reclaimPath, `${reclaimToken}\n`, {
-              encoding: "utf8",
-              mode: 0o600,
-              flag: "wx",
-            });
-            const currentToken = (await fsPromises.readFile(lockPath, "utf8")).trim();
-            if (currentToken === existingToken) {
-              const currentOwnerPid = Number.parseInt(currentToken.split(":", 1)[0] ?? "", 10);
-              let currentOwnerIsAlive: boolean | null = null;
-              if (Number.isInteger(currentOwnerPid) && currentOwnerPid > 0) {
-                try {
-                  process.kill(currentOwnerPid, 0);
-                  currentOwnerIsAlive = true;
-                } catch (processError) {
-                  currentOwnerIsAlive = (processError as NodeJS.ErrnoException).code !== "ESRCH";
-                }
-              }
-              const currentIncompleteLockIsStale = currentOwnerIsAlive === null
-                && Date.now() - (await fsPromises.stat(lockPath)).mtimeMs >= WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS;
-              if (currentOwnerIsAlive === false || currentIncompleteLockIsStale) {
-                await fsPromises.rm(lockPath, { force: true });
-              }
-            }
-          } catch (reclaimError) {
-            if ((reclaimError as NodeJS.ErrnoException).code !== "EEXIST") throw reclaimError;
-          } finally {
-            await removeOwnedWorktreeSeedLock(reclaimPath, reclaimToken);
-          }
-          continue;
-        }
-      } catch (readError) {
-        if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw readError;
-      }
+  try {
+    const ticket = Math.max(
+      0,
+      ...(await listLiveWorktreeSeedLocks(lockDir))
+        .filter((entry) => entry.state === "ready")
+        .map((entry) => entry.ticket ?? 0),
+    ) + 1;
+    await writeWorktreeSeedLockEntry(entryPath, {
+      version: 1,
+      state: "ready",
+      pid: process.pid,
+      token,
+      ticket,
+    });
+
+    while (true) {
+      const entries = await listLiveWorktreeSeedLocks(lockDir);
+      const anotherEntryIsChoosing = entries.some((entry) => entry.token !== token && entry.state === "choosing");
+      const firstReadyEntry = entries
+        .filter((entry): entry is WorktreeSeedLockEntry & { ticket: number } => (
+          entry.state === "ready" && entry.ticket !== undefined
+        ))
+        .sort((left, right) => left.ticket - right.ticket || left.token.localeCompare(right.token))[0];
+      if (!anotherEntryIsChoosing && firstReadyEntry?.token === token) break;
       if (Date.now() >= deadline) {
         throw new Error(
           `Another worktree database seed is still running. ` +
-          `If no seed process is active, remove the stale lock at ${lockPath} and retry.`,
+          `If no seed process is active, remove stale seed lock entries from ${lockDir} and retry.`,
         );
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
-  }
 
-  try {
     return await callback();
   } finally {
-    await removeOwnedWorktreeSeedLock(lockPath, token);
+    await fsPromises.rm(entryPath, { force: true });
   }
 }
 

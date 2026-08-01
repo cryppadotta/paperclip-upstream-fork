@@ -425,12 +425,25 @@ describe("worktree helpers", () => {
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(false);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(true);
 
-      const incompleteLockPath = path.join(targetRoot, ".paperclip", "seed.lock");
+      const abandonedLockPath = path.join(targetRoot, ".paperclip", "seed.lock.abandoned.json");
       fs.rmSync(path.join(targetRoot, ".paperclip", "seed-complete"));
       markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
-      fs.writeFileSync(incompleteLockPath, "");
-      const staleTime = new Date(Date.now() - 60_000);
-      fs.utimesSync(incompleteLockPath, staleTime, staleTime);
+      fs.writeFileSync(abandonedLockPath, `${JSON.stringify({
+        version: 1,
+        state: "ready",
+        pid: 2_147_483_647,
+        token: "abandoned",
+        ticket: 1,
+      })}\n`);
+      fs.writeFileSync(
+        path.join(targetRoot, ".paperclip", "seed.lock.abandoned-choosing.json"),
+        `${JSON.stringify({
+          version: 1,
+          state: "choosing",
+          pid: 2_147_483_647,
+          token: "abandoned-choosing",
+        })}\n`,
+      );
 
       const recoveredSeedDatabase = vi.fn().mockImplementation(async () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -455,8 +468,10 @@ describe("worktree helpers", () => {
 
       expect(recoveredSeedDatabase).toHaveBeenCalledTimes(1);
       expect(recoveredSeeds.filter((result) => result.seeded)).toHaveLength(1);
-      expect(fs.existsSync(incompleteLockPath)).toBe(false);
-      expect(fs.existsSync(`${incompleteLockPath}.reclaim`)).toBe(false);
+      expect(
+        fs.readdirSync(path.join(targetRoot, ".paperclip"))
+          .filter((name) => name.startsWith("seed.lock.")),
+      ).toEqual([]);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
