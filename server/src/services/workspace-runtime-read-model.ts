@@ -42,7 +42,20 @@ export function selectConfiguredRuntimeServiceRows(
   const selectedRows: Array<WorkspaceRuntimeServiceRow & { configIndex: number | null }> = [];
 
   for (const command of listWorkspaceServiceCommandDefinitions(workspaceRuntime)) {
-    const matchedRow = matchWorkspaceRuntimeServiceToCommand(command, availableRows);
+    const reuseScope = command.rawConfig.reuseScope;
+    const expectedScope =
+      reuseScope === "project_workspace" ||
+      reuseScope === "execution_workspace" ||
+      reuseScope === "agent" ||
+      reuseScope === "run"
+        ? reuseScope
+        : command.lifecycle === "shared"
+          ? "project_workspace"
+          : "run";
+    const matchedRow = matchWorkspaceRuntimeServiceToCommand(
+      command,
+      availableRows.filter((row) => row.scopeType === expectedScope),
+    );
     if (!matchedRow) continue;
     selectedRows.push({
       ...matchedRow,

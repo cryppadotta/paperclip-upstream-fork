@@ -83,4 +83,38 @@ describe("selectConfiguredRuntimeServiceRows", () => {
       }),
     ]);
   });
+
+  it("matches configured services only to rows with the configured reuse scope", () => {
+    const staleProjectScopedWorker = runtimeServiceRow({
+      serviceName: "worker",
+      command: "pnpm worker",
+    });
+    const executionScopedWorker = runtimeServiceRow({
+      executionWorkspaceId: randomUUID(),
+      scopeType: "execution_workspace",
+      scopeId: randomUUID(),
+      serviceName: "worker",
+      command: "pnpm worker",
+    });
+
+    const selected = selectConfiguredRuntimeServiceRows(
+      [staleProjectScopedWorker, executionScopedWorker],
+      {
+        services: [
+          {
+            name: "worker",
+            command: "pnpm worker",
+            reuseScope: "execution_workspace",
+          },
+        ],
+      },
+    );
+
+    expect(selected).toEqual([
+      expect.objectContaining({
+        id: executionScopedWorker.id,
+        configIndex: 0,
+      }),
+    ]);
+  });
 });

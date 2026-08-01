@@ -880,8 +880,13 @@ function noActiveRuntimeServicesForWorkspaceCondition(row: ExecutionWorkspaceRow
   const activeServiceConditions = inheritedProjectWorkspaceId
     ? and(
         eq(workspaceRuntimeServices.companyId, row.companyId),
-        eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
-        eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        or(
+          and(
+            eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
+            eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+          ),
+          eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
+        ),
         ne(workspaceRuntimeServices.status, "stopped"),
       )
     : and(
@@ -898,7 +903,6 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   rows: ExecutionWorkspaceRow[],
 ) {
   const inheritedRows = rows.filter((row) => usesInheritedProjectRuntimeServices(row));
-  const directRows = rows.filter((row) => !usesInheritedProjectRuntimeServices(row));
   const projectWorkspaceIds = inheritedRows
     .map((row) => row.projectWorkspaceId)
     .filter((value): value is string => Boolean(value));
@@ -907,7 +911,7 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
     listCurrentRuntimeServicesForExecutionWorkspaces(
       db,
       companyId,
-      directRows.map((row) => row.id),
+      rows.map((row) => row.id),
     ),
     listCurrentRuntimeServicesForProjectWorkspaces(
       db,
@@ -947,12 +951,28 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   );
 
   return new Map(
-    rows.map((row) => [
-      row.id,
-      usesInheritedProjectRuntimeServices(row)
-        ? (effectiveProjectRuntimeServices.get(row.projectWorkspaceId!) ?? [])
-        : (executionRuntimeServices.get(row.id) ?? []),
-    ]),
+    rows.map((row) => {
+      if (!usesInheritedProjectRuntimeServices(row)) {
+        return [row.id, executionRuntimeServices.get(row.id) ?? []] as const;
+      }
+
+      const workspaceRuntime = projectRuntimeConfigByWorkspaceId.get(row.projectWorkspaceId!) ?? null;
+      const executionScopedRows = selectConfiguredRuntimeServiceRows(
+        (executionRuntimeServices.get(row.id) ?? []).filter(
+          (runtimeService) => runtimeService.scopeType !== "project_workspace",
+        ),
+        workspaceRuntime,
+      );
+      const effectiveRows = [
+        ...(effectiveProjectRuntimeServices.get(row.projectWorkspaceId!) ?? []),
+        ...executionScopedRows,
+      ].sort(
+        (left, right) =>
+          (left.configIndex ?? Number.MAX_SAFE_INTEGER) -
+          (right.configIndex ?? Number.MAX_SAFE_INTEGER),
+      );
+      return [row.id, effectiveRows] as const;
+    }),
   );
 }
 
@@ -1776,8 +1796,13 @@ export function executionWorkspaceService(db: Db) {
             usesInheritedProjectRuntimeServices(lockedRow)
               ? and(
                   eq(workspaceRuntimeServices.companyId, lockedRow.companyId),
-                  eq(workspaceRuntimeServices.projectWorkspaceId, lockedRow.projectWorkspaceId!),
-                  eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+                  or(
+                    and(
+                      eq(workspaceRuntimeServices.projectWorkspaceId, lockedRow.projectWorkspaceId!),
+                      eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+                    ),
+                    eq(workspaceRuntimeServices.executionWorkspaceId, lockedRow.id),
+                  ),
                 )
               : and(
                   eq(workspaceRuntimeServices.companyId, lockedRow.companyId),

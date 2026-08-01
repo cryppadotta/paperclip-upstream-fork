@@ -2342,12 +2342,13 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 30_000);
 
-  it("inherits only runtime-service rows matching the current project workspace configuration", async () => {
+  it("inherits only runtime-service rows matching the current project workspace configuration and reuse scopes", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const currentWebServiceId = randomUUID();
+    const currentWorkerServiceId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -2372,7 +2373,14 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       metadata: {
         runtimeConfig: {
           workspaceRuntime: {
-            services: [{ name: "web", command: "pnpm dev" }],
+            services: [
+              { name: "web", command: "pnpm dev" },
+              {
+                name: "worker",
+                command: "pnpm worker",
+                reuseScope: "execution_workspace",
+              },
+            ],
           },
           desiredState: "stopped",
         },
@@ -2442,6 +2450,24 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         healthStatus: "unknown",
         updatedAt: new Date("2026-07-31T10:00:00.000Z"),
       },
+      {
+        id: currentWorkerServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+        serviceName: "worker",
+        status: "running",
+        lifecycle: "shared",
+        reuseKey: "current-worker",
+        command: "pnpm worker",
+        cwd: "/tmp/configured-runtime-selection",
+        provider: "local_process",
+        healthStatus: "healthy",
+        updatedAt: new Date("2026-07-31T11:00:00.000Z"),
+      },
     ]);
 
     const [workspace] = await svc.list(companyId);
@@ -2451,17 +2477,22 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         serviceName: "web",
         configIndex: 0,
       }),
+      expect.objectContaining({
+        id: currentWorkerServiceId,
+        serviceName: "worker",
+        configIndex: 1,
+      }),
     ]);
 
     const overview = await svc.listOverview(companyId, { limit: 10, offset: 0 });
     expect(overview.items[0]).toMatchObject({
-      serviceCount: 1,
-      runningServiceCount: 0,
+      serviceCount: 2,
+      runningServiceCount: 1,
       hasRuntimeConfig: true,
       primaryService: {
-        id: currentWebServiceId,
-        serviceName: "web",
-        status: "stopped",
+        id: currentWorkerServiceId,
+        serviceName: "worker",
+        status: "running",
       },
     });
   });
