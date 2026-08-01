@@ -83,6 +83,7 @@ function createRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
     createdAt: new Date("2026-04-20T11:58:00.000Z"),
     updatedAt: new Date("2026-04-20T11:59:00.000Z"),
     ...overrides,
+    scopeKind: overrides.scopeKind ?? "company",
   };
 }
 

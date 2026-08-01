@@ -140,6 +140,7 @@ function makeHeartbeatRun(overrides: Partial<HeartbeatRun>): HeartbeatRun {
     nextAction: null,
     contextSnapshot: null,
     ...overrides,
+    scopeKind: overrides.scopeKind ?? "company",
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
   };

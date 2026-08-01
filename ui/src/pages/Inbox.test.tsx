@@ -849,6 +849,7 @@ describe("FailedRunInboxRow", () => {
       continuationAttempt: 0,
       lastUsefulActionAt: null,
       nextAction: null,
+      scopeKind: "company",
       stdoutExcerpt: null,
       stderrExcerpt: null,
       contextSnapshot: null,
