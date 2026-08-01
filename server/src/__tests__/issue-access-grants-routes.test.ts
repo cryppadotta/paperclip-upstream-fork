@@ -14,6 +14,8 @@ import {
   issueReferenceMentions,
   issueRelations,
   issues,
+  projectAccessMembers,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -44,6 +46,7 @@ function agentActor(companyId: string, agentId: string): Express.Request["actor"
 
 async function createApp(db: Db, actor: Express.Request["actor"]) {
   const { issueRoutes } = await import("../routes/issues.js");
+  const { projectRoutes } = await import("../routes/projects.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -51,6 +54,7 @@ async function createApp(db: Db, actor: Express.Request["actor"]) {
     next();
   });
   app.use("/api", issueRoutes(db, {} as any));
+  app.use("/api", projectRoutes(db));
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(err.status ?? 500).json({ error: err.message ?? "Internal server error" });
   });
@@ -75,6 +79,8 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
     await db.delete(issueAccessGrants);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
+    await db.delete(projectAccessMembers);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(authUsers);
@@ -144,6 +150,12 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
         },
       },
     ]).returning();
+    const privateProject = await db.insert(projects).values({
+      companyId,
+      name: "Secret launch project",
+      visibility: "private",
+      status: "planned",
+    }).returning().then((rows) => rows[0]!);
     const privateIssueId = randomUUID();
     await db.insert(issues).values({
       id: privateIssueId,
@@ -152,6 +164,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
       title: "Confidential root",
       status: "backlog",
       priority: "medium",
+      projectId: privateProject.id,
       visibility: "private",
       privacyRootIssueId: privateIssueId,
       responsibleUserId: ownerId,
@@ -164,6 +177,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
       title: "Confidential child",
       status: "backlog",
       priority: "medium",
+      projectId: privateProject.id,
       visibility: "private",
       privacyRootIssueId: privateIssueId,
       responsibleUserId: ownerId,
@@ -184,6 +198,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
       sharedUserId,
       assignedAgent: assignedAgent!,
       sharedAgent: sharedAgent!,
+      privateProject,
       privateIssueId,
       privateChild,
       openIssue,
@@ -294,6 +309,58 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
     expect(await db.select().from(issueAccessGrants)).toHaveLength(2);
     const createdActivities = await db.select().from(activityLog);
     expect(createdActivities.filter((row) => row.action === "issue_access_grant.created")).toHaveLength(2);
+  }, 20_000);
+
+  it("keeps private project metadata hidden from user and agent issue grantees", async () => {
+    const fixture = await seedFixture();
+    await db.insert(issueAccessGrants).values([
+      {
+        issueId: fixture.privateIssueId,
+        subjectType: "user",
+        subjectId: fixture.sharedUserId,
+        source: "explicit",
+        grantedByUserId: fixture.ownerId,
+      },
+      {
+        issueId: fixture.privateIssueId,
+        subjectType: "agent",
+        subjectId: fixture.sharedAgent.id,
+        source: "explicit",
+        grantedByUserId: fixture.ownerId,
+      },
+    ]);
+
+    const granteeApps = [
+      await createApp(db, boardActor(fixture.companyId, fixture.sharedUserId)),
+      await createApp(db, agentActor(fixture.companyId, fixture.sharedAgent.id)),
+    ];
+
+    for (const app of granteeApps) {
+      const detail = await request(app).get(`/api/issues/${fixture.privateIssueId}`);
+      expect(detail.status, JSON.stringify(detail.body)).toBe(200);
+      expect(detail.body.projectId).toBe(fixture.privateProject.id);
+      expect(detail.body.project).toBeNull();
+
+      const heartbeatContext = await request(app)
+        .get(`/api/issues/${fixture.privateIssueId}/heartbeat-context`);
+      expect(heartbeatContext.status, JSON.stringify(heartbeatContext.body)).toBe(200);
+      expect(heartbeatContext.body.issue.projectId).toBe(fixture.privateProject.id);
+      expect(heartbeatContext.body.project).toBeNull();
+
+      await request(app).get(`/api/projects/${fixture.privateProject.id}`).expect(404);
+
+      const projectList = await request(app)
+        .get(`/api/companies/${fixture.companyId}/projects`);
+      expect(projectList.status, JSON.stringify(projectList.body)).toBe(200);
+      expect(projectList.body.map((project: { id: string }) => project.id))
+        .not.toContain(fixture.privateProject.id);
+
+      const projectSearch = await request(app)
+        .get(`/api/companies/${fixture.companyId}/search?q=Secret%20launch&scope=projects`);
+      expect(projectSearch.status, JSON.stringify(projectSearch.body)).toBe(200);
+      expect(projectSearch.body.results.map((project: { id: string }) => project.id))
+        .not.toContain(fixture.privateProject.id);
+    }
   }, 20_000);
 
   it("returns exact locked stubs only through visible blocker and mention edges", async () => {

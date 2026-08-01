@@ -3500,6 +3500,14 @@ export function issueRoutes(
     }).then((decision) => decision.allowed);
   }
 
+  async function visibleIssueProject<T extends { id: string; companyId: string }>(
+    req: Request,
+    project: T | null,
+  ): Promise<T | null> {
+    if (!project) return null;
+    return (await canActorReadProject(req, project)) ? project : null;
+  }
+
   async function assertCanManageIssuePrivacy(
     req: Request,
     res: Response,
@@ -5592,6 +5600,7 @@ export function issueRoutes(
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
+    const visibleProject = await visibleIssueProject(req, project);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
       issue.companyId,
@@ -5658,12 +5667,12 @@ export function issueRoutes(
         status: ancestor.status,
         priority: ancestor.priority,
       })),
-      project: project
+      project: visibleProject
         ? {
-            id: project.id,
-            name: project.name,
-            status: project.status,
-            targetDate: project.targetDate,
+            id: visibleProject.id,
+            name: visibleProject.name,
+            status: visibleProject.status,
+            targetDate: visibleProject.targetDate,
           }
         : null,
       goal: goal
@@ -5887,9 +5896,7 @@ export function issueRoutes(
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
     const [visibleProject, mentionedProjectVisibility] = await Promise.all([
-      project
-        ? canActorReadProject(req, project).then((allowed) => allowed ? project : null)
-        : Promise.resolve(null),
+      visibleIssueProject(req, project),
       Promise.all(mentionedProjects.map((mentionedProject) => canActorReadProject(req, mentionedProject))),
     ]);
     const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
