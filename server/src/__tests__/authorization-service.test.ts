@@ -20,7 +20,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
+import {
+  __clearIssuePrivacyGrantCacheForTests,
+  __getIssuePrivacyGrantCacheSizeForTests,
+  authorizationService,
+  canActorReadIssuePrivacy,
+  ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES,
+  type AuthorizationActor,
+} from "../services/authorization.js";
 import { logger } from "../middleware/logger.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -2297,6 +2304,30 @@ describeEmbeddedPostgres("authorization service", () => {
       else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
       if (previousTtl === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS;
       else process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS = previousTtl;
+    }
+  });
+
+  it("bounds the private issue grant cache across distinct issues", async () => {
+    __clearIssuePrivacyGrantCacheForTests();
+    try {
+      const actor: AuthorizationActor = { type: "board", userId: randomUUID(), source: "session" };
+      for (let index = 0; index < ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES + 5; index += 1) {
+        const issueId = randomUUID();
+        await expect(canActorReadIssuePrivacy(db, actor, {
+          id: issueId,
+          companyId: randomUUID(),
+          visibility: "private",
+          privacyRootIssueId: issueId,
+          responsibleUserId: null,
+          createdByUserId: null,
+          assigneeUserId: null,
+          assigneeAgentId: null,
+        })).resolves.toBe(false);
+      }
+
+      expect(__getIssuePrivacyGrantCacheSizeForTests()).toBe(ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES);
+    } finally {
+      __clearIssuePrivacyGrantCacheForTests();
     }
   });
 });

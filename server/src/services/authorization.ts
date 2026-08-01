@@ -470,7 +470,38 @@ export type IssuePrivacyRow = {
   assigneeAgentId: string | null;
 };
 
+export const ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES = 256;
 const issuePrivacyGrantCache = new Map<string, { expiresAt: number; promise: Promise<boolean> }>();
+
+export function __getIssuePrivacyGrantCacheSizeForTests() {
+  return issuePrivacyGrantCache.size;
+}
+
+export function __clearIssuePrivacyGrantCacheForTests() {
+  issuePrivacyGrantCache.clear();
+}
+
+function pruneExpiredIssuePrivacyGrantCache(now: number) {
+  for (const [key, entry] of issuePrivacyGrantCache) {
+    if (entry.expiresAt <= now) issuePrivacyGrantCache.delete(key);
+  }
+}
+
+function setIssuePrivacyGrantCacheEntry(
+  key: string,
+  entry: { expiresAt: number; promise: Promise<boolean> },
+) {
+  if (issuePrivacyGrantCache.size >= ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES) {
+    pruneExpiredIssuePrivacyGrantCache(Date.now());
+  }
+  issuePrivacyGrantCache.delete(key);
+  issuePrivacyGrantCache.set(key, entry);
+  while (issuePrivacyGrantCache.size > ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES) {
+    const oldestKey = issuePrivacyGrantCache.keys().next().value as string | undefined;
+    if (oldestKey === undefined) return;
+    issuePrivacyGrantCache.delete(oldestKey);
+  }
+}
 
 export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
   const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
@@ -507,7 +538,11 @@ async function actorHasIssuePrivacyGrant(db: Db, actor: AuthorizationActor, issu
   const cacheKey = `${principal.type}:${principal.id}:${issue.id}:${rootId}`;
   const now = Date.now();
   const cached = issuePrivacyGrantCache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.promise;
+  if (cached && cached.expiresAt > now) {
+    setIssuePrivacyGrantCacheEntry(cacheKey, cached);
+    return cached.promise;
+  }
+  if (cached) issuePrivacyGrantCache.delete(cacheKey);
   const promise = db
     .select({ id: issueAccessGrants.id })
     .from(issueAccessGrants)
@@ -519,7 +554,7 @@ async function actorHasIssuePrivacyGrant(db: Db, actor: AuthorizationActor, issu
     ))
     .limit(1)
     .then((rows) => rows.length > 0);
-  issuePrivacyGrantCache.set(cacheKey, { expiresAt: now + issuePrivacyCacheTtlMs(), promise });
+  setIssuePrivacyGrantCacheEntry(cacheKey, { expiresAt: now + issuePrivacyCacheTtlMs(), promise });
   const granted = await promise;
   // Positive authorization decisions must observe revocation on the next read.
   // Keep only negative decisions cached; grant creation paths already tolerate
