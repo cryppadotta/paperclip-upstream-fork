@@ -9731,13 +9731,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
     const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
     const missingSnapshotRunIds = findMissingHotRestartSnapshotRunIds(intent);
-    if (missingSnapshotRunIds.length > 0) {
-      logger.error(
-        { previousServerPid: intent.previousServerPid, missingSnapshotRunIds },
-        "hot-restart shutdown snapshot omitted preflight live runs; reporting them as lost",
-      );
-    }
-    const currentRows = candidates.length > 0
+    const reconciliationRunIds = [
+      ...new Set([...candidates.map((run) => run.runId), ...missingSnapshotRunIds]),
+    ];
+    const currentRows = reconciliationRunIds.length > 0
       ? await db
         .select({
           run: heartbeatRuns,
@@ -9745,14 +9742,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(inArray(heartbeatRuns.id, candidates.map((run) => run.runId)))
+        .where(inArray(heartbeatRuns.id, reconciliationRunIds))
       : [];
     const currentByRunId = new Map(currentRows.map((row) => [row.run.id, row]));
 
     const reportRuns: HotRestartReportRun[] = [];
     const adoptedRunIds: string[] = [];
     const finalizedWhileDownRunIds: string[] = [];
-    const lostRunIds: string[] = [...missingSnapshotRunIds];
+    const lostRunIds: string[] = [];
     const skippedRunIds: string[] = [];
 
     const classify = (
@@ -9768,6 +9765,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       else if (classification === "lost") lostRunIds.push(candidate.runId);
       else skippedRunIds.push(candidate.runId);
     };
+
+    for (const runId of missingSnapshotRunIds) {
+      const current = currentByRunId.get(runId);
+      if (!current) {
+        finalizedWhileDownRunIds.push(runId);
+        continue;
+      }
+
+      const candidate = toHotRestartIntentRun(current);
+      if (current.run.status !== "running") {
+        classify(candidate, "finalized_while_down", `run_status_${current.run.status}`);
+      } else {
+        classify(candidate, "lost", "missing_shutdown_snapshot");
+      }
+    }
+
+    if (lostRunIds.length > 0) {
+      logger.error(
+        { previousServerPid: intent.previousServerPid, lostRunIds },
+        "hot-restart shutdown snapshot omitted live preflight runs; reporting them as lost",
+      );
+    }
 
     for (const candidate of candidates) {
       const current = currentByRunId.get(candidate.runId);

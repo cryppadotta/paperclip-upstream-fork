@@ -1588,6 +1588,55 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("reports a preflight run that finished before snapshot capture as finalized", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "preflight-race-version",
+        requestedAt: new Date("2026-08-01T01:08:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          finishedAt: new Date("2026-08-01T01:08:01.000Z"),
+          updatedAt: new Date("2026-08-01T01:08:01.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T01:09:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as { runs?: Array<Record<string, unknown>> };
+      expect(report.runs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            runId,
+            classification: "finalized_while_down",
+            reason: "run_status_succeeded",
+          }),
+        ]),
+      );
+    });
+  });
+
   it("persists codex_local spawn identity before hot restart and never loses the live run for missing metadata", async () => {
     let releaseAdapter: (() => void) | null = null;
     let spawnedPid: number | null = null;

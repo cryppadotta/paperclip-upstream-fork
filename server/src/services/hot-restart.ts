@@ -87,6 +87,17 @@ async function writeJsonFileAtomic(filePath: string, value: unknown) {
   await fs.rename(tempPath, filePath);
 }
 
+async function writeJsonFileExclusiveAtomic(filePath: string, value: unknown) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  try {
+    await fs.link(tempPath, filePath);
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -227,13 +238,15 @@ export async function writeHotRestartIntent(input: {
     preflightActiveRunIds: asStringArray(input.preflightActiveRunIds),
   };
   const instancePath = resolveHotRestartIntentPath(input.homeDir);
-  await writeJsonFileAtomic(instancePath, intent);
+  const legacyPath = resolveLegacyHotRestartIntentPath(input.homeDir);
+  // The legacy location is shared by every instance under PAPERCLIP_HOME.
+  // Claim it without replacement so concurrent staged restarts fail closed
+  // instead of making the first old server consume another instance's PID.
+  await writeJsonFileExclusiveAtomic(legacyPath, intent);
   try {
-    // Compatibility handoff for the immediately preceding server version,
-    // which still watches PAPERCLIP_HOME rather than the instance root.
-    await writeJsonFileAtomic(resolveLegacyHotRestartIntentPath(input.homeDir), intent);
+    await writeJsonFileAtomic(instancePath, intent);
   } catch (error) {
-    await fs.unlink(instancePath).catch(() => undefined);
+    await removeMatchingHotRestartIntent(legacyPath, intent).catch(() => undefined);
     throw error;
   }
   return intent;

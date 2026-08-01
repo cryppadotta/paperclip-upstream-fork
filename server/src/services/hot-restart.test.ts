@@ -109,6 +109,37 @@ describe("hot-restart path compatibility", () => {
     });
   });
 
+  it("does not overwrite another instance's active legacy handoff", async () => {
+    await withTempHome(async (homeDir) => {
+      process.env.PAPERCLIP_INSTANCE_ID = "blue";
+      await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: 501,
+        requestedAt: new Date("2026-08-01T03:40:00.000Z"),
+        requestedByRunId: "blue-deploy",
+      });
+
+      process.env.PAPERCLIP_INSTANCE_ID = "green";
+      await expect(writeHotRestartIntent({
+        homeDir,
+        previousServerPid: 502,
+        requestedAt: new Date("2026-08-01T03:40:01.000Z"),
+        requestedByRunId: "green-deploy",
+      })).rejects.toMatchObject({ code: "EEXIST" });
+
+      const legacyIntent = JSON.parse(
+        await fs.readFile(resolveLegacyHotRestartIntentPath(homeDir), "utf8"),
+      ) as Record<string, unknown>;
+      expect(legacyIntent).toMatchObject({
+        previousServerPid: 501,
+        requestedByRunId: "blue-deploy",
+      });
+      await expect(fs.stat(resolveHotRestartIntentPath(homeDir))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
+  });
+
   it("treats every preflight run omitted from the shutdown snapshot as missing", () => {
     expect(findMissingHotRestartSnapshotRunIds({
       version: 1,
