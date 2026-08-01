@@ -1423,20 +1423,6 @@ export function Inbox() {
     orderCommitRequestedRef.current = true;
     setOrderCommitToken((token) => token + 1);
   }, []);
-  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
-    const nowMs = Date.now();
-    // An attention boundary fired: adopt the fresh order wholesale and re-pin it.
-    if (orderCommitRequestedRef.current) {
-      orderCommitRequestedRef.current = false;
-      orderPinRef.current = captureInboxOrderPin(freshGroupedSections);
-      return freshGroupedSections;
-    }
-    const { sections, pin } = reconcileInboxOrderPin(orderPinRef.current, freshGroupedSections, nowMs);
-    orderPinRef.current = pin;
-    return sections;
-    // orderCommitToken forces re-adoption of the fresh order at a commit boundary.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [freshGroupedSections, orderCommitToken]);
 
   // Distinct view = distinct pin. Switching tab/filter/search/grouping resets the
   // held order so we never carry one view's layout into another.
@@ -1463,6 +1449,32 @@ export function Inbox() {
       tab,
     ],
   );
+  // Adopt the fresh order in the SAME render the view identity changes, so a
+  // section key shared between the two views never briefly shows the previous
+  // view's order before the hook's passive commit effect runs.
+  const previousInboxSortViewIdentityRef = useRef(inboxSortViewIdentity);
+  if (previousInboxSortViewIdentityRef.current !== inboxSortViewIdentity) {
+    previousInboxSortViewIdentityRef.current = inboxSortViewIdentity;
+    orderCommitRequestedRef.current = true;
+  }
+
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
+    const nowMs = Date.now();
+    // An attention boundary (or a view change) fired: adopt the fresh order
+    // wholesale and re-pin it.
+    if (orderCommitRequestedRef.current) {
+      orderCommitRequestedRef.current = false;
+      orderPinRef.current = captureInboxOrderPin(freshGroupedSections);
+      return freshGroupedSections;
+    }
+    const { sections, pin } = reconcileInboxOrderPin(orderPinRef.current, freshGroupedSections, nowMs);
+    orderPinRef.current = pin;
+    return sections;
+    // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
+    // forces it on a view change even when the fresh sections keep their identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+
   const inboxSortAttention = useInboxSortAttention({
     viewIdentity: inboxSortViewIdentity,
     onCommit: commitInboxOrder,

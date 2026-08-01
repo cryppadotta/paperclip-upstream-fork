@@ -60,10 +60,18 @@ export function useInboxSortAttention({
     clearIdleTimer();
     if (!isDocumentVisible()) return;
 
-    idleTimerRef.current = setTimeout(() => {
-      idleTimerRef.current = null;
-      if (isDocumentVisible()) onCommitRef.current("idle");
-    }, idleCommitMs);
+    // Re-arm after each idle commit so an inbox left untouched keeps adopting the
+    // freshly computed order every interval, rather than freezing at the first
+    // idle snapshot until the next interaction or attention boundary.
+    const armIdleTimer = () => {
+      idleTimerRef.current = setTimeout(() => {
+        idleTimerRef.current = null;
+        if (!isDocumentVisible()) return;
+        onCommitRef.current("idle");
+        armIdleTimer();
+      }, idleCommitMs);
+    };
+    armIdleTimer();
   }, [clearIdleTimer, idleCommitMs]);
 
   const noteInteraction = useCallback(() => {
