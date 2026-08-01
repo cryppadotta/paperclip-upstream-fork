@@ -12,7 +12,6 @@ export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
-const HOT_RESTART_LEGACY_CLAIM_LEASE_MS = 15 * 60_000;
 
 type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
 type ProcessStatReader = (target: string) => Promise<{ ctimeMs: number }>;
@@ -31,7 +30,6 @@ export type HotRestartIntentRun = {
 export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
-  claimExpiresAt?: string | null;
   previousServerPid: number;
   previousServerIdentity?: string | null;
   previousServerStartedAt?: string | null;
@@ -176,44 +174,48 @@ export async function readProcessStartedAt(
   const stat = options.stat ?? fs.stat;
   const runCommand = options.runCommand ?? runProcessCommand;
 
-  try {
-    if (platform === "linux") {
-      const processStat = await stat(`/proc/${pid}`);
-      return new Date(processStat.ctimeMs).toISOString();
-    }
+  if (platform === "linux") {
+    const processStat = await stat(`/proc/${pid}`);
+    return new Date(processStat.ctimeMs).toISOString();
+  }
 
-    if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {
-      const stdout = await runCommand("ps", ["-o", "lstart=", "-p", String(pid)]);
-      return asDateString(stdout.trim());
+  if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {
+    const stdout = await runCommand("ps", ["-o", "lstart=", "-p", String(pid)]);
+    const startedAt = asDateString(stdout.trim());
+    if (!startedAt) {
+      throw new Error(`Could not parse ${platform} process start time for PID ${pid}`);
     }
+    return startedAt;
+  }
 
-    if (platform === "win32") {
-      const script = [
-        `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
-        "$process.StartTime.ToUniversalTime().ToString('o')",
-      ].join("; ");
-      let stdout: string;
-      try {
-        stdout = await runCommand("powershell.exe", [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          script,
-        ]);
-      } catch {
-        stdout = await runCommand("pwsh.exe", [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          script,
-        ]);
-      }
-      return asDateString(stdout.trim());
+  if (platform === "win32") {
+    const script = [
+      `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
+      "$process.StartTime.ToUniversalTime().ToString('o')",
+    ].join("; ");
+    let stdout: string;
+    try {
+      stdout = await runCommand("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+      ]);
+    } catch {
+      stdout = await runCommand("pwsh.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+      ]);
     }
-  } catch {
-    return null;
+    const startedAt = asDateString(stdout.trim());
+    if (!startedAt) {
+      throw new Error(`Could not parse Windows process start time for PID ${pid}`);
+    }
+    return startedAt;
   }
 
   return null;
@@ -228,7 +230,6 @@ export function isObservedHotRestartTargetAlive(
       HotRestartIntent,
       "previousServerPid" | "previousServerIdentity" | "previousServerStartedAt"
     >;
-    observedAt?: Date;
   },
 ) {
   if (!observation.alive) return false;
@@ -286,19 +287,9 @@ export function isObservedHotRestartTargetAlive(
     return observedStartedAt <= requestedAt;
   }
 
-  const explicitExpiry = intent.claimExpiresAt
-    ? Date.parse(intent.claimExpiresAt)
-    : Number.NaN;
-  const claimExpiresAt = Number.isFinite(explicitExpiry)
-    ? explicitExpiry
-    : requestedAt + HOT_RESTART_LEGACY_CLAIM_LEASE_MS;
-  const observedAt = observation.observedAt?.getTime() ?? Date.now();
-
-  // Current requests cannot be created without process identity. This bounded
-  // compatibility lease exists only for older markers when every identity
-  // source is unavailable, so a recycled PID cannot reserve the shared path
-  // forever. Recent legacy handoffs remain protected during their restart.
-  return Number.isFinite(claimExpiresAt) && observedAt < claimExpiresAt;
+  throw new Error(
+    `Cannot establish process identity for live hot-restart target PID ${intent.previousServerPid}`,
+  );
 }
 
 async function isOriginalServerProcessAlive(
@@ -416,7 +407,6 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt,
-    claimExpiresAt: asDateString(value.claimExpiresAt),
     previousServerPid,
     previousServerIdentity: asString(value.previousServerIdentity),
     previousServerStartedAt: asDateString(value.previousServerStartedAt),
@@ -504,13 +494,9 @@ export async function writeHotRestartIntent(input: {
       + "server boot identity and operating-system process start time are unavailable",
     );
   }
-  const requestedAt = input.requestedAt ?? new Date();
   const intent: HotRestartIntent = {
     version: 1,
-    requestedAt: requestedAt.toISOString(),
-    claimExpiresAt: new Date(
-      requestedAt.getTime() + HOT_RESTART_LEGACY_CLAIM_LEASE_MS,
-    ).toISOString(),
+    requestedAt: (input.requestedAt ?? new Date()).toISOString(),
     previousServerPid: input.previousServerPid,
     previousServerIdentity,
     previousServerStartedAt,

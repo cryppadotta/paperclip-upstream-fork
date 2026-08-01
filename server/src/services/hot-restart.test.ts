@@ -90,7 +90,16 @@ describe("hot-restart path compatibility", () => {
     expect(commands).toEqual(["powershell.exe", "pwsh.exe"]);
   });
 
-  it("distinguishes recycled PIDs and keeps unknown live claims conservative", () => {
+  it("surfaces supported-platform process identity probe failures", async () => {
+    await expect(readProcessStartedAt(791, {
+      platform: "darwin",
+      runCommand: async () => {
+        throw new Error("ps unavailable");
+      },
+    })).rejects.toThrow("ps unavailable");
+  });
+
+  it("distinguishes recycled PIDs and rejects unknown live claim classification", () => {
     const intent = {
       version: 1 as const,
       requestedAt: "2026-08-01T01:05:00.000Z",
@@ -129,16 +138,10 @@ describe("hot-restart path compatibility", () => {
       alive: true,
       startedAt: "2026-08-01T01:06:00.000Z",
     })).toBe(false);
-    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+    expect(() => isObservedHotRestartTargetAlive(legacyIntent, {
       alive: true,
       startedAt: null,
-      observedAt: new Date("2026-08-01T01:10:00.000Z"),
-    })).toBe(true);
-    expect(isObservedHotRestartTargetAlive(legacyIntent, {
-      alive: true,
-      startedAt: null,
-      observedAt: new Date("2026-08-01T01:21:00.000Z"),
-    })).toBe(false);
+    })).toThrow("Cannot establish process identity");
     expect(isObservedHotRestartTargetAlive(legacyIntent, {
       alive: true,
       startedAt: null,
@@ -180,6 +183,7 @@ describe("hot-restart path compatibility", () => {
       await expect(writeHotRestartIntent({
         homeDir,
         previousServerPid: 2_147_483_647,
+        previousServerStartedAt: null,
       })).rejects.toThrow("process start time are unavailable");
 
       await expect(fs.stat(resolveHotRestartIntentPath(homeDir))).rejects.toMatchObject({
