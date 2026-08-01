@@ -1,6 +1,10 @@
-import type { Issue } from "@paperclipai/shared";
+import type { Approval, HeartbeatRun, Issue, JoinRequest } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import type { InboxGroupedSection, InboxWorkItem } from "./inbox";
+import {
+  getInboxWorkItemKey,
+  type InboxGroupedSection,
+  type InboxWorkItem,
+} from "./inbox";
 import { INBOX_ARCHIVE_CONFIRMATION_GRACE_MS } from "./inboxArchiveCache";
 import {
   captureInboxOrderPin,
@@ -35,6 +39,16 @@ function section(
 
 function sectionKeys(sections: readonly InboxGroupedSection[]): string[] {
   return sections.map((value) => value.key);
+}
+
+function workItemSection(key: string, displayItems: InboxWorkItem[]): InboxGroupedSection {
+  return {
+    key,
+    label: key,
+    displayItems,
+    childrenByIssueId: new Map(),
+    searchSection: "none",
+  };
 }
 
 function rowIds(value: InboxGroupedSection): string[] {
@@ -166,6 +180,51 @@ describe("inboxOrderPin", () => {
     });
     expect(result.sections[0]!.displayItems[1]).toMatchObject({
       issue: { title: "Updated last", status: "in_progress" },
+    });
+  });
+
+  it("pins approval, failed-run, and join-request rows by their stable keys", () => {
+    const approval = {
+      kind: "approval",
+      timestamp: 3,
+      approval: { id: "approval", status: "pending" } as Approval,
+    } satisfies InboxWorkItem;
+    const failedRun = {
+      kind: "failed_run",
+      timestamp: 2,
+      run: { id: "run", status: "failed" } as HeartbeatRun,
+    } satisfies InboxWorkItem;
+    const joinRequest = {
+      kind: "join_request",
+      timestamp: 1,
+      joinRequest: { id: "join", status: "pending_approval" } as JoinRequest,
+    } satisfies InboxWorkItem;
+    const pin = captureInboxOrderPin([
+      workItemSection("mixed", [approval, failedRun, joinRequest]),
+    ]);
+
+    const result = reconcileInboxOrderPin(
+      pin,
+      [workItemSection("mixed", [
+        { ...joinRequest, timestamp: 4 },
+        { ...failedRun, timestamp: 5 },
+        {
+          ...approval,
+          timestamp: 6,
+          approval: { ...approval.approval, status: "approved" } as Approval,
+        },
+      ])],
+      500,
+    );
+
+    expect(result.sections[0]!.displayItems.map(getInboxWorkItemKey)).toEqual([
+      "approval:approval",
+      "run:run",
+      "join:join",
+    ]);
+    expect(result.sections[0]!.displayItems[0]).toMatchObject({
+      timestamp: 6,
+      approval: { status: "approved" },
     });
   });
 });
