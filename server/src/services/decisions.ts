@@ -508,7 +508,10 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function sweepExpired(now = new Date()) {
-    const batchSize = Math.max(1, Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100));
+    const configuredBatchSize = Number(process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE ?? 100);
+    const batchSize = Number.isFinite(configuredBatchSize)
+      ? Math.max(1, Math.trunc(configuredBatchSize))
+      : 100;
     const configuredRecoveryGraceMs = Number(process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS ?? 60_000);
     const recoveryGraceMs = Number.isFinite(configuredRecoveryGraceMs) && configuredRecoveryGraceMs >= 0
       ? configuredRecoveryGraceMs

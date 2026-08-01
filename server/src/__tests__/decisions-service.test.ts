@@ -343,6 +343,15 @@ describePg("decisionService", () => {
     expect((await service().sweepExpired()).expired).toBe(1);
   });
 
+  it("falls back to the default sweep batch size for invalid configuration", async () => {
+    process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "not-a-number";
+    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1", expiresAt: new Date(Date.now() + 5) });
+    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2", expiresAt: new Date(Date.now() + 5) });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    await expect(service().sweepExpired()).resolves.toMatchObject({ expired: 2 });
+  });
+
   it("expires TTL and target-gone decisions and wakes the origin agent", async () => {
     const ttl = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
     const gone = await createCommentDecision("strict", { idempotencyKey: "gone" });
