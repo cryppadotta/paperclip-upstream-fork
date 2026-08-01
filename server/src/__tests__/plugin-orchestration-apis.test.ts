@@ -14,11 +14,13 @@ import {
   companyMemberships,
   costEvents,
   createDb,
+  documents,
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
   issueAttachments,
   issueComments,
+  issueDocuments,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -1301,6 +1303,91 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
       await expect(
         services.issues.getOrchestrationSummary({ companyId, issueId: privateIssueId, includeSubtree: true }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    async function seedIssueDocument(companyId: string, issueId: string, key: string, body: string) {
+      const documentId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, latestBody: body, format: "markdown" });
+      await db.insert(issueDocuments).values({ id: randomUUID(), companyId, issueId, documentId, key });
+      return documentId;
+    }
+
+    it("throws not-found from issues.getRelations for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getRelations({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("redacts a private blocker edge from issues.getRelations on a public issue", async () => {
+      const { companyId, openIssueId, privateIssueId } = await seedOpenAndPrivate();
+      // privateIssue blocks the open issue -> open.blockedBy would name it pre-redaction.
+      await db.insert(issueRelations).values({
+        companyId, issueId: privateIssueId, relatedIssueId: openIssueId, type: "blocks",
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const relations = await services.issues.getRelations({ issueId: openIssueId, companyId });
+      const edgeIds = [...relations.blockedBy, ...relations.blocks].map((edge) => edge.id);
+      expect(edgeIds).not.toContain(privateIssueId);
+    });
+
+    it("reports a private root issue as not-found from issues.getSubtree", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issues.getSubtree({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("excludes a private child and its documents from issues.getSubtree on an open root", async () => {
+      const { companyId } = await seedCompanyAndAgent();
+      const rootId = randomUUID();
+      const publicChildId = randomUUID();
+      const privateChildId = randomUUID();
+      await db.insert(issues).values([
+        { id: rootId, companyId, title: "Root", status: "todo", priority: "medium", visibility: "open" },
+        { id: publicChildId, companyId, parentId: rootId, title: "Public child", status: "todo", priority: "medium", visibility: "open" },
+        { id: privateChildId, companyId, parentId: rootId, title: "Private child", status: "todo", priority: "medium", visibility: "private" },
+      ]);
+      // A document on the private child would surface in the subtree summary pre-fix.
+      await seedIssueDocument(companyId, privateChildId, "plan", "confidential subtree plan");
+
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      const subtree = await services.issues.getSubtree({
+        issueId: rootId, companyId, includeDocuments: true, includeRelations: true,
+      });
+      expect(new Set(subtree.issueIds)).toEqual(new Set([rootId, publicChildId]));
+      expect(subtree.issues.map((issue) => issue.id)).not.toContain(privateChildId);
+      expect(Object.keys(subtree.documents ?? {})).not.toContain(privateChildId);
+    });
+
+    it("returns no interactions from issues.listInteractions for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await db.insert(issueThreadInteractions).values({
+        id: randomUUID(), companyId, issueId: privateIssueId, kind: "request_confirmation",
+        payload: { version: 1, prompt: "Confirm confidential action?" } as any,
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(services.issues.listInteractions({ issueId: privateIssueId, companyId })).resolves.toEqual([]);
+    });
+
+    it("throws not-found from issueDocuments.list for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await seedIssueDocument(companyId, privateIssueId, "plan", "confidential plan body");
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issueDocuments.list({ issueId: privateIssueId, companyId }),
+      ).rejects.toThrow("Issue not found");
+    });
+
+    it("throws not-found from issueDocuments.get for a private issue", async () => {
+      const { companyId, privateIssueId } = await seedOpenAndPrivate();
+      await seedIssueDocument(companyId, privateIssueId, "plan", "confidential plan body");
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.slack-digest", createEventBusStub());
+      await expect(
+        services.issueDocuments.get({ issueId: privateIssueId, companyId, key: "plan" }),
       ).rejects.toThrow("Issue not found");
     });
 

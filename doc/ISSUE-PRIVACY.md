@@ -59,17 +59,36 @@ content.
 
 Plugins (including any Slack notifier or digest plugin) are **non-member
 principals**: they hold no company membership, task grant, or private-project
-access. The host services that back the `issues.read` capability —
-`issues.list`, `issues.get`, `issues.listComments`, `issues.listAttachments`,
-`issues.getAttachmentContent`, and `issues.getOrchestrationSummary` — apply the
-canonical visibility predicate against a synthetic non-member actor, so a
-plugin sees only company-open work. A private task is filtered from list
-results, returns `null`/empty on direct read, and reports "not found" as an
-orchestration root. Orchestration summaries additionally drop private subtree
-descendants and redact blocker/blocks edges that point at a private task, so
-its title, status, assignee, cost, and run metadata never enter an outbound
-payload. This is why a digest broadcast to a shared channel — whose audience is
-non-members by definition — cannot carry private issue content.
+access. Rather than an allowlist of individually patched methods, the plugin
+host centralizes the synthetic non-member check into shared helpers
+(`requirePluginReadableIssue`, `pluginReadableIssueIdsByIds`,
+`pluginRedactRelationSummary`) and routes **every** issue-derived read through
+them. The complete inventory of issue-derived reads and their disposition:
+
+- **Direct issue content** — `issues.list` (SQL predicate), `issues.get`,
+  `issues.listComments`, `issues.listAttachments`, `issues.getAttachmentContent`,
+  `issueDocuments.list`, `issueDocuments.get`: a private task is filtered from
+  list results, returns `null`/empty on soft reads, and reports "not found"
+  (indistinguishable from missing) on document reads.
+- **Subtree / orchestration** — `issues.getSubtree` and
+  `issues.getOrchestrationSummary`: a private *root* reports "not found"; an
+  open root drops private descendants **before** any relation, document, run,
+  or assignee is fetched, so no private row or its metadata enters the payload.
+- **Relationship metadata** — `issues.getRelations` (and the summaries echoed
+  by `issues.setBlockedBy` / `addBlockers` / `removeBlockers`, and the subtree
+  relation maps): blocker/blocks edges pointing at a private task are dropped,
+  recursing into nested terminal blockers, so its title, status, and assignee
+  never surface even on a public task.
+- **Interactions** — `issues.listInteractions`: a private task yields no
+  interaction payloads.
+
+A synthetic `{ type: "none" }` actor resolves to the same public-only scope as
+any other non-member. This is why a digest broadcast to a shared channel —
+whose audience is non-members by definition — cannot carry private issue
+content. Write/coordination paths (`create`, `update`, `requestWakeup`,
+`assertCheckoutOwner`, comment/interaction/approval mutations) are governed by
+their own write capabilities and are out of scope for this read predicate; any
+relation summary they *return* is still redacted.
 
 There is intentionally **no plugin oversight exception**: unlike the
 company-wide audit log, no plugin read path bypasses the predicate. A plugin
@@ -116,7 +135,7 @@ it protects:
 | Blocker and mention identifier-only stubs | `issue-access-grants-routes.test.ts` |
 | Attachment content | `issue-attachment-routes.test.ts` |
 | Private-project list and direct read | `projects-list-archived-routes.test.ts` |
-| Plugin issue reads (list, get, comments, attachments, orchestration) | `plugin-orchestration-apis.test.ts` |
+| Plugin issue reads (list, get, comments, attachments, orchestration, subtree, relations, interactions, documents) | `plugin-orchestration-apis.test.ts` |
 
 Adding a new task-derived read surface requires a non-member fixture in this
 gate before the surface can ship.
