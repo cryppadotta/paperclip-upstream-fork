@@ -98,10 +98,10 @@ oversight capability; none exists today.
 > **Residual metadata disclosure.** A plugin still learns aggregate,
 > content-free signals about private work that mirror the accepted
 > dashboard/count disclosure: `issues.getOrchestrationSummary` returns
-> company-wide `openBudgetIncidents` and a roll-up `costs`/token total for the
-> readable subtree, and readable public tasks reveal that they have *some*
-> redacted (locked) blocker without its identity. No private title, body,
-> comment, attachment, identifier, or relationship target is exposed.
+> company-wide `openBudgetIncidents`. Its `costs`/token roll-up is limited to
+> the readable subtree, and unreadable relationship edges are omitted entirely.
+> No private title, body, comment, attachment, identifier, relationship target,
+> or locked-edge signal is exposed.
 
 ## Rollout modes
 
