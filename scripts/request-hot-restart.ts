@@ -1,6 +1,5 @@
 #!/usr/bin/env -S node --import tsx
-import { eq } from "drizzle-orm";
-import { createDb, heartbeatRuns } from "../packages/db/src/index.js";
+import { createDb } from "../packages/db/src/index.js";
 import { loadConfig } from "../server/src/config.js";
 import {
   resolveHotRestartIntentPath,
@@ -76,10 +75,11 @@ async function readPreflightActiveRunIds() {
     || `postgres://paperclip:paperclip@127.0.0.1:${config.embeddedPostgresPort}/paperclip`;
   const db = createDb(dbUrl);
   try {
-    const rows = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.status, "running"));
+    const rows = await db.$client<{ id: string }[]>`
+      SELECT id
+      FROM heartbeat_runs
+      WHERE status = 'running'
+    `;
     return rows.map((row) => row.id);
   } finally {
     await db.$client.end({ timeout: 1 });
