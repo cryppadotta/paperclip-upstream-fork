@@ -3316,7 +3316,7 @@ describe("realizeExecutionWorkspace", () => {
     });
 
     const worktreesDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-instances-"));
-    const instanceId = deriveWorktreeInstanceId(workspace.branchName!);
+    const instanceId = deriveWorktreeInstanceId(workspace.cwd);
     const instanceRoot = path.join(worktreesDir, "instances", instanceId);
     await fs.mkdir(path.join(instanceRoot, "db"), { recursive: true });
     await fs.mkdir(path.join(workspace.cwd, ".paperclip"), { recursive: true });

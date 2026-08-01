@@ -3204,16 +3204,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
-    if (!input.workspace.branchName) {
-      warnings.push("Could not clean worktree instance because the execution workspace has no authoritative branch name.");
-    } else {
-      expectedWorktreeInstanceId = deriveWorktreeInstanceId(input.workspace.branchName);
-      try {
-        // Capture the pointer before custom cleanup commands can remove the repo-local env file.
-        worktreeInstancePointer = await readWorktreeInstancePointer(workspacePath);
-      } catch (err) {
-        warnings.push(`Could not read worktree instance pointer: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    expectedWorktreeInstanceId = deriveWorktreeInstanceId(workspacePath);
+    try {
+      // Capture the pointer before custom cleanup commands can remove the repo-local env file.
+      worktreeInstancePointer = await readWorktreeInstancePointer(workspacePath);
+    } catch (err) {
+      warnings.push(`Could not read worktree instance pointer: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;

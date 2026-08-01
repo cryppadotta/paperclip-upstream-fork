@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupWorktreeInstanceArtifacts,
+  deriveWorktreeInstanceId,
   readWorktreeInstancePointer,
   stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
@@ -79,6 +80,16 @@ afterEach(async () => {
 });
 
 describe("worktree instance cleanup", () => {
+  it("derives different instance IDs for distinct paths with the same normalized name", () => {
+    const parent = path.join(os.tmpdir(), "paperclip-instance-id-collision");
+    const plusPath = path.join(parent, "feature+cleanup");
+    const dashPath = path.join(parent, "feature-cleanup");
+
+    expect(deriveWorktreeInstanceId(plusPath)).not.toBe(deriveWorktreeInstanceId(dashPath));
+    expect(deriveWorktreeInstanceId(plusPath)).toMatch(/^feature-cleanup-[a-f0-9]{12}$/);
+    expect(deriveWorktreeInstanceId(dashPath)).toMatch(/^feature-cleanup-[a-f0-9]{12}$/);
+  });
+
   it("removes an instance directory inside the managed worktree instances root", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
