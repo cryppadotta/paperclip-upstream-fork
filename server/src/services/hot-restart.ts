@@ -224,7 +224,7 @@ export function isObservedHotRestartTargetAlive(
     startedAt: string | null;
     replacement?: Pick<
       HotRestartIntent,
-      "previousServerPid" | "previousServerIdentity"
+      "previousServerPid" | "previousServerIdentity" | "previousServerStartedAt"
     >;
   },
 ) {
@@ -251,6 +251,16 @@ export function isObservedHotRestartTargetAlive(
         // The health endpoint's processStartedAt value is also the current
         // server boot identity. If that process started after an older marker
         // was requested, the shared numeric PID was necessarily recycled.
+        return replacementStartedAt <= requestedAt;
+      }
+    }
+
+    if (!intent.previousServerIdentity) {
+      const replacementStartedAt = observation.replacement.previousServerStartedAt
+        ? Date.parse(observation.replacement.previousServerStartedAt)
+        : Number.NaN;
+      const requestedAt = Date.parse(intent.requestedAt);
+      if (Number.isFinite(replacementStartedAt) && Number.isFinite(requestedAt)) {
         return replacementStartedAt <= requestedAt;
       }
     }
@@ -474,11 +484,18 @@ export async function writeHotRestartIntent(input: {
   const previousServerStartedAt = input.previousServerStartedAt === undefined
     ? await readProcessStartedAt(input.previousServerPid)
     : asDateString(input.previousServerStartedAt);
+  const previousServerIdentity = asString(input.previousServerIdentity);
+  if (!previousServerIdentity && !previousServerStartedAt) {
+    throw new Error(
+      `Cannot create hot-restart intent for PID ${input.previousServerPid}: `
+      + "server boot identity and operating-system process start time are unavailable",
+    );
+  }
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt: (input.requestedAt ?? new Date()).toISOString(),
     previousServerPid: input.previousServerPid,
-    previousServerIdentity: asString(input.previousServerIdentity),
+    previousServerIdentity,
     previousServerStartedAt,
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,

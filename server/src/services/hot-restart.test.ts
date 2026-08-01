@@ -149,6 +149,40 @@ describe("hot-restart path compatibility", () => {
         previousServerIdentity: "2026-08-01T01:06:00.000Z",
       },
     })).toBe(false);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      replacement: {
+        previousServerPid: 123,
+        previousServerIdentity: null,
+        previousServerStartedAt: "2026-08-01T01:04:00.000Z",
+      },
+    })).toBe(true);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      replacement: {
+        previousServerPid: 123,
+        previousServerIdentity: null,
+        previousServerStartedAt: "2026-08-01T01:06:00.000Z",
+      },
+    })).toBe(false);
+  });
+
+  it("refuses to create an unidentifiable process claim", async () => {
+    await withTempHome(async (homeDir) => {
+      await expect(writeHotRestartIntent({
+        homeDir,
+        previousServerPid: 2_147_483_647,
+      })).rejects.toThrow("process start time are unavailable");
+
+      await expect(fs.stat(resolveHotRestartIntentPath(homeDir))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(fs.stat(resolveLegacyHotRestartIntentPath(homeDir))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    });
   });
 
   it("reclaims a live recycled PID when server boot identities differ", async () => {
@@ -181,6 +215,7 @@ describe("hot-restart path compatibility", () => {
       await writeHotRestartIntent({
         homeDir,
         previousServerPid: 101,
+        previousServerStartedAt: "2026-08-01T01:00:00.000Z",
         requestedAt: new Date("2026-08-01T02:00:00.000Z"),
         requestedByRunId: "blue-deploy",
         preflightActiveRunIds: ["blue-run"],
@@ -244,6 +279,7 @@ describe("hot-restart path compatibility", () => {
       await writeHotRestartIntent({
         homeDir,
         previousServerPid: 304,
+        previousServerStartedAt: "2026-08-01T03:00:00.000Z",
         requestedAt: new Date("2026-08-01T03:30:00.000Z"),
         preflightActiveRunIds: ["blue-run"],
       });
@@ -270,6 +306,7 @@ describe("hot-restart path compatibility", () => {
       await expect(writeHotRestartIntent({
         homeDir,
         previousServerPid: 502,
+        previousServerStartedAt: "2026-08-01T03:00:00.000Z",
         requestedAt: new Date("2026-08-01T03:40:01.000Z"),
         requestedByRunId: "green-deploy",
       })).rejects.toMatchObject({ code: "EEXIST" });
@@ -293,6 +330,7 @@ describe("hot-restart path compatibility", () => {
       await writeHotRestartIntent({
         homeDir,
         previousServerPid: 2_147_483_647,
+        previousServerStartedAt: "2026-08-01T03:00:00.000Z",
         requestedAt: new Date("2026-08-01T03:50:00.000Z"),
         requestedByRunId: "abandoned-deploy",
       });
@@ -375,6 +413,7 @@ describe("hot-restart path compatibility", () => {
       const abandonedIntent = await writeHotRestartIntent({
         homeDir,
         previousServerPid: 2_147_483_647,
+        previousServerStartedAt: "2026-08-01T03:00:00.000Z",
         requestedAt: new Date("2026-08-01T03:55:00.000Z"),
         requestedByRunId: "abandoned-deploy",
       });
