@@ -10,6 +10,7 @@ import {
   issueAccessGrants,
   issues,
   principalPermissionGrants,
+  projectAccessMembers,
   projects,
   userInboxAgentPolicies,
 } from "@paperclipai/db";
@@ -121,6 +122,7 @@ export type AuthorizationDecision = {
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
     | "deny_issue_private"
+    | "deny_project_private"
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
@@ -237,7 +239,7 @@ type ProjectAuthorizationRow = {
 type IssueAuthorizationRow = {
   id: string;
   companyId: string;
-  projectId: string | null;
+  projectId?: string | null;
   parentId: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -468,6 +470,13 @@ export type IssuePrivacyRow = {
   createdByUserId: string | null;
   assigneeUserId: string | null;
   assigneeAgentId: string | null;
+  projectId?: string | null;
+};
+
+export type ProjectPrivacyRow = {
+  id: string;
+  companyId: string;
+  visibility: string;
 };
 
 export const ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES = 256;
@@ -535,6 +544,36 @@ function issuePrivacyPrincipal(actor: AuthorizationActor) {
   return null;
 }
 
+async function actorHasProjectAccess(
+  db: Db,
+  actor: AuthorizationActor,
+  companyId: string,
+  projectId: string,
+) {
+  const principal = issuePrivacyPrincipal(actor);
+  if (!principal) return false;
+  return db
+    .select({ id: projectAccessMembers.id })
+    .from(projectAccessMembers)
+    .where(and(
+      eq(projectAccessMembers.companyId, companyId),
+      eq(projectAccessMembers.projectId, projectId),
+      eq(projectAccessMembers.subjectType, principal.type),
+      eq(projectAccessMembers.subjectId, principal.id),
+    ))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+}
+
+export async function canActorReadProjectPrivacy(
+  db: Db,
+  actor: AuthorizationActor,
+  project: ProjectPrivacyRow,
+) {
+  if (project.visibility !== "private") return true;
+  return actorHasProjectAccess(db, actor, project.companyId, project.id);
+}
+
 function actorIsImplicitIssuePrincipal(actor: AuthorizationActor, issue: IssuePrivacyRow) {
   const principal = issuePrivacyPrincipal(actor);
   if (!principal) return false;
@@ -578,9 +617,17 @@ async function actorHasIssuePrivacyGrant(db: Db, actor: AuthorizationActor, issu
 
 /** Canonical row-level issue privacy predicate, also consumed by run-derived checks. */
 export async function canActorReadIssuePrivacy(db: Db, actor: AuthorizationActor, issue: IssuePrivacyRow) {
-  if (issue.visibility !== "private") return true;
   if (actorIsImplicitIssuePrincipal(actor, issue)) return true;
-  return actorHasIssuePrivacyGrant(db, actor, issue);
+  if (await actorHasIssuePrivacyGrant(db, actor, issue)) return true;
+  if (issue.projectId) {
+    const project = await db
+      .select({ id: projects.id, companyId: projects.companyId, visibility: projects.visibility })
+      .from(projects)
+      .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (project?.visibility === "private") return actorHasProjectAccess(db, actor, project.companyId, project.id);
+  }
+  return issue.visibility !== "private";
 }
 
 /** SQL equivalent of canActorReadIssuePrivacy for list/count/search query pushdown. */
@@ -621,7 +668,59 @@ export async function issueReadSqlCondition(db: Db, actor: AuthorizationActor): 
           and ${issueAccessGrants.issueId} in (${issues.id}, coalesce(${issues.privacyRootIssueId}, ${issues.id}))
       )`
     : sql<boolean>`false`;
-  return sql<boolean>`(${issues.visibility} = 'open' or ${implicit} or ${grant})`;
+  const projectMember = principal
+    ? sql<boolean>`exists (
+        select 1 from ${projectAccessMembers}
+        where ${projectAccessMembers.companyId} = ${issues.companyId}
+          and ${projectAccessMembers.projectId} = ${issues.projectId}
+          and ${projectAccessMembers.subjectType} = ${principal.type}
+          and ${projectAccessMembers.subjectId} = ${principal.id}
+      )`
+    : sql<boolean>`false`;
+  const projectIsPrivate = sql<boolean>`exists (
+    select 1 from ${projects}
+    where ${projects.id} = ${issues.projectId}
+      and ${projects.companyId} = ${issues.companyId}
+      and ${projects.visibility} = 'private'
+  )`;
+  return sql<boolean>`(
+    ${implicit}
+    or ${grant}
+    or ${projectMember}
+    or (${issues.visibility} = 'open' and not ${projectIsPrivate})
+  )`;
+}
+
+/** SQL equivalent used for project list/search pushdown. */
+export async function projectReadSqlCondition(db: Db, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (
+    actor.type === "board"
+    && !actor.ignoreInstanceAdmin
+    && actor.source !== "cloud_tenant"
+    && Boolean(await db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(
+        eq(instanceUserRoles.userId, actor.userId ?? ""),
+        eq(instanceUserRoles.role, "instance_admin"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null))
+  ) return sql<boolean>`true`;
+  const principal = issuePrivacyPrincipal(actor);
+  if (!principal) return sql<boolean>`${projects.visibility} = 'open'`;
+  return sql<boolean>`(
+    ${projects.visibility} = 'open'
+    or exists (
+      select 1 from ${projectAccessMembers}
+      where ${projectAccessMembers.companyId} = ${projects.companyId}
+        and ${projectAccessMembers.projectId} = ${projects.id}
+        and ${projectAccessMembers.subjectType} = ${principal.type}
+        and ${projectAccessMembers.subjectId} = ${principal.id}
+    )
+  )`;
 }
 
 function responsibleUserSnapshotTtlMs() {
@@ -2346,6 +2445,39 @@ export function authorizationService(db: Db) {
     const agentDecision = await decideBase(input);
     const intersectedDecision = await applyResponsibleUserIntersection(input, agentDecision);
     if (
+      input.action === "project:read"
+      && input.resource.type === "project"
+      && input.resource.projectId
+      && intersectedDecision.allowed
+      && intersectedDecision.reason !== "allow_instance_admin"
+      && intersectedDecision.reason !== "allow_local_board"
+      && issuePrivacyMode() !== "off"
+    ) {
+      const project = await db
+        .select({ id: projects.id, companyId: projects.companyId, visibility: projects.visibility })
+        .from(projects)
+        .where(and(eq(projects.id, input.resource.projectId), eq(projects.companyId, input.resource.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (project && !(await canActorReadProjectPrivacy(db, input.actor, project))) {
+        const denied = deny({
+          action: input.action,
+          reason: "deny_project_private",
+          explanation: "Project is private and the actor is not an access member.",
+        });
+        logger.warn({
+          authzMode: issuePrivacyMode(),
+          action: input.action,
+          companyId: project.companyId,
+          projectId: project.id,
+          actorType: input.actor.type,
+          actorUserId: input.actor.type === "board" ? input.actor.userId ?? null : null,
+          actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
+          reason: denied.reason,
+        }, "project privacy would deny read");
+        return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
+      }
+    }
+    if (
       input.action !== "issue:read"
       || input.resource.type !== "issue"
       || !input.resource.issueId
@@ -2365,6 +2497,7 @@ export function authorizationService(db: Db) {
         createdByUserId: issues.createdByUserId,
         assigneeUserId: issues.assigneeUserId,
         assigneeAgentId: issues.assigneeAgentId,
+        projectId: issues.projectId,
       })
       .from(issues)
       .where(and(eq(issues.id, input.resource.issueId), eq(issues.companyId, input.resource.companyId)))

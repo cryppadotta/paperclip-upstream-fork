@@ -12,6 +12,7 @@ import {
   issueComments,
   issues,
   principalPermissionGrants,
+  projectAccessMembers,
   projects,
   userInboxAgentPolicies,
 } from "@paperclipai/db";
@@ -65,12 +66,18 @@ async function createAgent(
     .then((rows) => rows[0]!);
 }
 
-async function createProject(db: ReturnType<typeof createDb>, companyId: string, label: string) {
+async function createProject(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  label: string,
+  visibility: "open" | "private" = "open",
+) {
   return db
     .insert(projects)
     .values({
       companyId,
       name: `Project ${label} ${randomUUID()}`,
+      visibility,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -2304,6 +2311,100 @@ describeEmbeddedPostgres("authorization service", () => {
       else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
       if (previousTtl === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS;
       else process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS = previousTtl;
+    }
+  });
+
+  it("uses private-project membership as the same issue-read predicate while preserving issue grants", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const company = await createCompany(db, "ProjectPrivacy");
+      const memberId = await createUser(db);
+      const granteeId = await createUser(db);
+      const outsiderId = await createUser(db);
+      await db.insert(companyMemberships).values([memberId, granteeId, outsiderId].map((principalId) => ({
+        companyId: company.id,
+        principalType: "user" as const,
+        principalId,
+        status: "active",
+        membershipRole: "operator",
+      })));
+      const project = await createProject(db, company.id, "Private", "private");
+      const memberAgent = await createAgent(db, company.id);
+      const outsiderAgent = await createAgent(db, company.id);
+      await db.insert(companyMemberships).values([memberAgent.id, outsiderAgent.id].map((principalId) => ({
+        companyId: company.id,
+        principalType: "agent" as const,
+        principalId,
+        status: "active",
+        membershipRole: "member",
+      })));
+      await db.insert(projectAccessMembers).values({
+        companyId: company.id,
+        projectId: project.id,
+        subjectType: "user",
+        subjectId: memberId,
+      });
+      await db.insert(projectAccessMembers).values({
+        companyId: company.id,
+        projectId: project.id,
+        subjectType: "agent",
+        subjectId: memberAgent.id,
+      });
+      const issue = await createIssue(db, company.id, { projectId: project.id });
+      await db.insert(issueAccessGrants).values({
+        issueId: issue.id,
+        subjectType: "user",
+        subjectId: granteeId,
+        source: "explicit",
+        grantedByUserId: memberId,
+      });
+      const authz = authorizationService(db);
+      const decideProject = (userId: string) => authz.decide({
+        actor: { type: "board", userId, source: "session" },
+        action: "project:read",
+        resource: { type: "project", companyId: company.id, projectId: project.id },
+      });
+      const decideIssue = (userId: string) => authz.decide({
+        actor: { type: "board", userId, source: "session" },
+        action: "issue:read",
+        resource: { type: "issue", companyId: company.id, issueId: issue.id },
+      });
+      const decideProjectAsAgent = (agentId: string) => authz.decide({
+        actor: { type: "agent", agentId, companyId: company.id, source: "agent_key" },
+        action: "project:read",
+        resource: { type: "project", companyId: company.id, projectId: project.id },
+      });
+      const decideIssueAsAgent = (agentId: string) => authz.decide({
+        actor: { type: "agent", agentId, companyId: company.id, source: "agent_key" },
+        action: "issue:read",
+        resource: { type: "issue", companyId: company.id, issueId: issue.id },
+      });
+
+      await expect(decideProject(memberId)).resolves.toMatchObject({ allowed: true });
+      await expect(decideProject(outsiderId)).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_project_private",
+      });
+      await expect(decideIssue(memberId)).resolves.toMatchObject({ allowed: true });
+      await expect(decideIssue(granteeId)).resolves.toMatchObject({ allowed: true });
+      await expect(decideIssue(outsiderId)).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_issue_private",
+      });
+      await expect(decideProjectAsAgent(memberAgent.id)).resolves.toMatchObject({ allowed: true });
+      await expect(decideIssueAsAgent(memberAgent.id)).resolves.toMatchObject({ allowed: true });
+      await expect(decideProjectAsAgent(outsiderAgent.id)).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_project_private",
+      });
+      await expect(decideIssueAsAgent(outsiderAgent.id)).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_issue_private",
+      });
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
     }
   });
 

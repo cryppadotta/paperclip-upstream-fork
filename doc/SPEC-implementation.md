@@ -207,6 +207,8 @@ Invariant: at least one root `company` level goal per company.
 - `goal_id` uuid fk `goals.id` null
 - `name` text not null
 - `description` text null
+- `visibility` enum-like text: `open | private`, default `open`
+- `personal_owner_user_id` text null; unique with `company_id` when present
 - `status` enum: `backlog | planned | in_progress | completed | cancelled`
 - `lead_agent_id` uuid fk `agents.id` null
 - `target_date` date null
@@ -281,7 +283,21 @@ Invariants:
 - `created_at` timestamptz not null
 - `revoked_at` timestamptz null
 
-An issue is readable when it is open, the actor is an implicit principal (`responsible_user_id`, `created_by_user_id`, `assignee_user_id`, or current `assignee_agent_id`), or the actor has an unrevoked grant on the issue/private subtree root. Instance administrators retain platform-wide access; company owner/admin roles do not imply private-issue read access.
+An issue is readable when it is open outside a private project, the actor is an implicit principal (`responsible_user_id`, `created_by_user_id`, `assignee_user_id`, or current `assignee_agent_id`), the actor has an unrevoked grant on the issue/private subtree root, or the actor is an access member of its private project. This is one canonical predicate shared by detail, list, count, search, and run-derived reads. Instance administrators retain platform-wide access; company owner/admin roles do not imply private-issue read access.
+
+## 7.7.2 `project_access_members`
+
+Authorization membership for private projects, distinct from the personal-sidebar `project_memberships` table:
+
+- `id` uuid pk
+- `company_id` uuid fk `companies.id` not null
+- `project_id` uuid fk `projects.id` not null
+- `subject_type` enum-like text: `user | agent`
+- `subject_id` text not null
+- `created_at` timestamptz not null
+- unique `(project_id, subject_type, subject_id)`
+
+Private projects are absent from list and search results for non-members, and direct reads return `404`. An issue-level grant can still expose its issue without exposing the containing project. A user's `My private tasks` project is created lazily and concurrency-safely on their first unprojected private task; the owning user is its initial and non-removable project member. An agent-created private root also grants that creator issue-level access while retaining the responsible user as the human principal.
 
 ## 7.8 `heartbeat_runs`
 
@@ -580,8 +596,8 @@ The approved term set is:
 ## 9.5 Core V1 Rule: what “private” means
 
 - A **private marker** on an agent profile (where represented) does **not** make company-visible work private.
-- Company-visible work objects (issues, comments, work products, costs, activity, project/task state) remain visible to the board and in-company agents by default.
-- Project/issue-level privacy, scoped assignment-only object visibility, and organization-wide custom ACLs are deferred to Pro/Enterprise controls.
+- Work objects remain company-open by default. An issue or project can opt into the shared private-read predicate.
+- Organization-wide custom ACL policy remains deferred to Pro/Enterprise controls.
 
 ## 9.6 V1 vs Pro/Enterprise Controls (recommended target split)
 
@@ -592,7 +608,7 @@ The approved term set is:
 | Profile visibility | Full profile visibility for coordination and audit | Optional profile redaction / selective sharing for external surfaces |
 | Config visibility | Board full read with redacted secret fields; agent config read/write constrained by own agent identity | Scoped config visibility controls and central policy enforcement |
 | Assignment/invocation | Assignment creates execution authority; board can reassign or force release | Delegation policies and scoped invokers with deny-listed tool classes |
-| Work-object visibility | All issues and projects in-company are visible to board and agents | Project/issue ACLs and reviewer-only channels |
+| Work-object visibility | Company-open by default; opt-in private issues/projects with explicit user or agent access | Policy-driven ACLs and reviewer-only channels |
 | Tool/secret policy | Secret refs, log redaction, and adapter-level command/webhook restrictions | Tool allowlists with centralized policy evaluation |
 | Company skills | Open to authenticated company agents; core enforces invariants and any stored restriction policy | Paperclip EE policy editor, protected-skill controls, presets, simulation, and policy audit UX |
 | Inbox management | Responsible agent may archive/unarchive its responsible user's Mine items under a default-open user policy; cross-user access requires `inbox:manage`; all mutations are audited | Policy administration UX, organization presets, simulations, bulk controls, and richer audit/reporting surfaces |
@@ -925,6 +941,11 @@ Server behavior:
 - `POST /companies/:companyId/projects`
 - `GET /projects/:projectId`
 - `PATCH /projects/:projectId`
+- `GET /projects/:projectId/access-members`
+- `POST /projects/:projectId/access-members`
+- `DELETE /projects/:projectId/access-members/:memberId`
+
+Project list, search, direct reads, and nested project routes apply private-project access. Non-members receive the same not-found behavior as missing projects.
 
 ## 10.6 Current-user Resource Memberships
 

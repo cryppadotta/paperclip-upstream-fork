@@ -1387,6 +1387,13 @@
       "when": 1785628800000,
       "tag": "0199_heartbeat_run_issue_privacy",
       "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1785715200000,
+      "tag": "0200_private_projects",
+      "breakpoints": true
     }
   ]
 }

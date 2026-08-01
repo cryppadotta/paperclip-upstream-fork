@@ -119,6 +119,7 @@ import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalizatio
 import { logActivity } from "./activity-log.js";
 import { invalidateIssuePrivacyGrantCache } from "./authorization.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { ensurePersonalPrivateProject } from "./projects.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -6659,6 +6660,7 @@ export function issueService(db: Db) {
 
         let visibility = issueData.visibility ?? "open";
         let privacyRootIssueId: string | null = null;
+        let inheritedPrivateSubtree = false;
         if (issueData.parentId) {
           const parentPrivacy = await tx
             .select({
@@ -6671,11 +6673,36 @@ export function issueService(db: Db) {
           if (parentPrivacy?.visibility === "private") {
             visibility = "private";
             privacyRootIssueId = parentPrivacy.privacyRootIssueId ?? issueData.parentId;
+            inheritedPrivateSubtree = true;
           }
         }
         if (visibility === "private" && !privacyRootIssueId) {
           issueData.id ??= randomUUID();
           privacyRootIssueId = issueData.id;
+        }
+
+        if (issueData.projectId) {
+          const selectedProject = await tx
+            .select({ visibility: projects.visibility })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (!selectedProject) throw notFound("Project not found");
+          if (selectedProject.visibility === "private") {
+            visibility = "private";
+            if (!privacyRootIssueId) {
+              issueData.id ??= randomUUID();
+              privacyRootIssueId = issueData.id;
+            }
+          }
+        }
+
+        if (visibility === "private" && !issueData.projectId && !inheritedPrivateSubtree) {
+          if (!responsibleUserId) {
+            throw unprocessable("Private tasks require a responsible user");
+          }
+          const personalProject = await ensurePersonalPrivateProject(tx, companyId, responsibleUserId);
+          issueData.projectId = personalProject.id;
         }
 
         const values = {
@@ -6719,6 +6746,15 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
+          await tx.insert(issueAccessGrants).values({
+            issueId: issue.privacyRootIssueId ?? issue.id,
+            subjectType: "agent",
+            subjectId: issueData.createdByAgentId,
+            source: "explicit",
+            grantedByAgentId: issueData.createdByAgentId,
+          }).onConflictDoNothing();
+        }
         await ensureAssignmentIssueAccessGrant(tx, issue, null, {
           agentId: issueData.createdByAgentId ?? null,
           userId: issueData.createdByUserId ?? null,
@@ -7044,6 +7080,18 @@ export function issueService(db: Db) {
         patch.privacyRootIssueId = existing.privacyRootIssueId ?? existing.id;
       } else if (issueData.visibility === "open") {
         patch.privacyRootIssueId = null;
+      }
+      if (issueData.projectId) {
+        const selectedProject = await dbOrTx
+          .select({ visibility: projects.visibility })
+          .from(projects)
+          .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, existing.companyId)))
+          .then((rows: Array<{ visibility: string }>) => rows[0] ?? null);
+        if (!selectedProject) throw notFound("Project not found");
+        if (selectedProject.visibility === "private") {
+          patch.visibility = "private";
+          patch.privacyRootIssueId = existing.privacyRootIssueId ?? existing.id;
+        }
       }
       if (existing.status !== "blocked" && issueData.status === "blocked") {
         patch.blockedTransitionAt = patch.updatedAt;

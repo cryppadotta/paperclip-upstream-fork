@@ -1226,6 +1226,7 @@ export function NewIssueDialog() {
     if (nextProjectId) trackRecentProject(nextProjectId);
     setProjectId(nextProjectId);
     const nextProject = orderedProjects.find((project) => project.id === nextProjectId);
+    if (nextProject?.visibility === "private") setIsPrivate(true);
     executionWorkspaceDefaultProjectId.current = nextProjectId || null;
     setProjectWorkspaceId(defaultProjectWorkspaceIdForProject(nextProject));
     setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(nextProject));
@@ -1957,7 +1958,19 @@ export function NewIssueDialog() {
             </div>
             <ToggleSwitch
               checked={isPrivate}
-              onCheckedChange={setIsPrivate}
+              onCheckedChange={(checked) => {
+                setIsPrivate(checked);
+                if (!checked) {
+                  const selectedProject = orderedProjects.find((project) => project.id === projectId);
+                  if (selectedProject?.visibility === "private") handleProjectChange("");
+                  return;
+                }
+                if (projectId || !currentUserId) return;
+                const personalProject = orderedProjects.find(
+                  (project) => project.personalOwnerUserId === currentUserId,
+                );
+                if (personalProject) handleProjectChange(personalProject.id);
+              }}
               aria-label="Private task"
             />
           </div>

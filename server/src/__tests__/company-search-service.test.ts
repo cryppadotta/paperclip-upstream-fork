@@ -12,6 +12,7 @@ import {
   issueLabels,
   issues,
   labels,
+  projectAccessMembers,
   projects,
 } from "@paperclipai/db";
 import { companySearchQuerySchema, COMPANY_SEARCH_MAX_QUERY_LENGTH } from "@paperclipai/shared";
@@ -24,7 +25,7 @@ import {
   companySearchBranchFetchLimit,
   companySearchService,
 } from "../services/company-search.js";
-import { issueReadSqlCondition } from "../services/authorization.js";
+import { issueReadSqlCondition, projectReadSqlCondition } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -776,6 +777,47 @@ describeEmbeddedPostgres("companySearchService", () => {
         { issueReadCondition: otherCondition },
       );
       expect(result.results.map((row) => row.id)).toEqual([openId]);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
+  });
+
+  it("pushes private project filtering into project search and counts", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const memberId = `member-${randomUUID()}`;
+      const outsiderId = `outsider-${randomUUID()}`;
+      const openId = await createProject(companyId, { name: "privacy project open" });
+      const privateId = await createProject(companyId, {
+        name: "privacy project private",
+        visibility: "private",
+      });
+      await db.insert(projectAccessMembers).values({
+        companyId,
+        projectId: privateId,
+        subjectType: "user",
+        subjectId: memberId,
+      });
+      const conditionFor = (userId: string) => projectReadSqlCondition(db, {
+        type: "board",
+        userId,
+        source: "session",
+      });
+      const query = companySearchQuerySchema.parse({ q: "privacy project", scope: "projects" });
+      const outsiderResult = await svc.search(companyId, query, {
+        projectReadCondition: await conditionFor(outsiderId),
+      });
+      expect(outsiderResult.results.map((row) => row.id)).toEqual([openId]);
+      expect(outsiderResult.countsByType.project).toBe(1);
+
+      const memberResult = await svc.search(companyId, query, {
+        projectReadCondition: await conditionFor(memberId),
+      });
+      expect(memberResult.results.map((row) => row.id)).toEqual(expect.arrayContaining([openId, privateId]));
+      expect(memberResult.countsByType.project).toBe(2);
     } finally {
       if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
       else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;

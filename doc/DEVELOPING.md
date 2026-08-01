@@ -332,10 +332,10 @@ No Docker or external database is required for this mode.
 
 ## Issue Privacy Rollout
 
-`PAPERCLIP_ISSUE_PRIVACY_MODE` controls the opt-in private-issue read predicate:
+`PAPERCLIP_ISSUE_PRIVACY_MODE` controls the canonical opt-in issue/project privacy predicate:
 
 - `shadow` (default): log structured would-deny decisions but preserve existing reads
-- `enforce`: return private issues only to implicit principals and active grantees
+- `enforce`: return private issues only to implicit principals, issue grantees, or private-project access members; hide private projects from non-members
 - `off`: skip the predicate and shadow logging
 
 Grant lookups use a five-second cache by default; override it with `PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS` when testing revocation timing.

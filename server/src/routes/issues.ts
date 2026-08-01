@@ -176,9 +176,11 @@ import {
   authorizationDeniedDetails,
   invalidateIssuePrivacyGrantCache,
   issueReadSqlCondition,
+  projectReadSqlCondition,
 } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { ensurePersonalPrivateProject } from "../services/projects.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -297,7 +299,7 @@ type CompanySearchService = {
   search(
     companyId: string,
     query: CompanySearchQuery,
-    options?: { issueReadCondition?: SQL<boolean> },
+    options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
   ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
@@ -3490,6 +3492,14 @@ export function issueRoutes(
     return false;
   }
 
+  async function canActorReadProject(req: Request, project: { id: string; companyId: string }) {
+    return access.decide({
+      actor: req.actor,
+      action: "project:read",
+      resource: { type: "project", companyId: project.companyId, projectId: project.id },
+    }).then((decision) => decision.allowed);
+  }
+
   async function assertCanManageIssuePrivacy(
     req: Request,
     res: Response,
@@ -4901,6 +4911,8 @@ export function issueRoutes(
       goals: project.goals,
       name: project.name,
       description: project.description,
+      visibility: project.visibility,
+      personalOwnerUserId: project.personalOwnerUserId,
       status: project.status,
       leadAgentId: project.leadAgentId,
       targetDate: project.targetDate,
@@ -5099,6 +5111,7 @@ export function issueRoutes(
     }
     const result = await getSearchService().search(companyId, query, {
       issueReadCondition: await issueReadSqlCondition(db, req.actor),
+      projectReadCondition: await projectReadSqlCondition(db, req.actor),
     });
     res.json(result);
   });
@@ -5873,6 +5886,13 @@ export function issueRoutes(
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
+    const [visibleProject, mentionedProjectVisibility] = await Promise.all([
+      project
+        ? canActorReadProject(req, project).then((allowed) => allowed ? project : null)
+        : Promise.resolve(null),
+      Promise.all(mentionedProjects.map((mentionedProject) => canActorReadProject(req, mentionedProject))),
+    ]);
+    const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
     const currentExecutionWorkspace = issue.executionWorkspaceId
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
@@ -5892,9 +5912,9 @@ export function issueRoutes(
       relatedWork: visibleReferenceSummary,
       referencedIssueIdentifiers: visibleReferenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
-      project: compactIssueProject(project),
+      project: compactIssueProject(visibleProject),
       goal: goal ?? null,
-      mentionedProjects,
+      mentionedProjects: visibleMentionedProjects,
       currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
       workProducts,
       linkedCases,
@@ -7515,6 +7535,22 @@ export function issueRoutes(
         }
         : {}),
     };
+    if (createBody.projectId) {
+      const selectedProject = await projectsSvc.getById(createBody.projectId);
+      if (!selectedProject || selectedProject.companyId !== companyId) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const projectDecision = await access.decide({
+        actor: req.actor,
+        action: "project:read",
+        resource: { type: "project", companyId, projectId: selectedProject.id },
+      });
+      if (!projectDecision.allowed) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
@@ -8249,6 +8285,34 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (req.body.visibility === "private" && !existing.projectId && updateFields.projectId === undefined) {
+      const responsibleUserId = existing.responsibleUserId ?? (req.actor.type === "board"
+        ? req.actor.userId ?? null
+        : req.actor.onBehalfOfUserId ?? null);
+      if (!responsibleUserId) {
+        res.status(422).json({ error: "Private tasks require a responsible user" });
+        return;
+      }
+      const personalProject = await db.transaction((tx) =>
+        ensurePersonalPrivateProject(tx, existing.companyId, responsibleUserId));
+      updateFields.projectId = personalProject.id;
+    }
+    if (updateFields.projectId) {
+      const selectedProject = await projectsSvc.getById(updateFields.projectId as string);
+      if (!selectedProject || selectedProject.companyId !== existing.companyId) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const projectDecision = await access.decide({
+        actor: req.actor,
+        action: "project:read",
+        resource: { type: "project", companyId: existing.companyId, projectId: selectedProject.id },
+      });
+      if (!projectDecision.allowed) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
