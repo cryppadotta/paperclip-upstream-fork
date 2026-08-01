@@ -38,7 +38,7 @@ describe("hot-restart path compatibility", () => {
           expect(target).toBe("/proc/123");
           return {
             ctimeMs: Date.parse("2026-08-01T01:00:00.123Z"),
-          } as Awaited<ReturnType<typeof fs.stat>>;
+          };
         },
       }),
     ).resolves.toBe("2026-08-01T01:00:00.123Z");
