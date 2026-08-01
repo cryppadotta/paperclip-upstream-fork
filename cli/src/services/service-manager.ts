@@ -98,6 +98,10 @@ Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
 WorkingDirectory=%h
+# The server owns graceful teardown of embedded Postgres and deliberately leaves
+# eligible local-agent children alive for hot-restart adoption. Signalling the
+# whole cgroup here races both of those shutdown paths.
+KillMode=process
 Restart=always
 RestartSec=5
 TimeoutStopSec=300

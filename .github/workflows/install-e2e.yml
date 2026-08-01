@@ -1,0 +1,117 @@
+name: Install acceptance E2E
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/install-e2e.yml"
+      - "cli/**"
+      - "packages/db/**"
+      - "packages/shared/**"
+      - "scripts/build-npm.sh"
+      - "scripts/e2e-install-lifecycle.sh"
+      - "scripts/e2e-update-migrations.sh"
+      - "scripts/install-e2e-systemd.Dockerfile"
+      - "scripts/run-install-e2e-systemd-docker.sh"
+      - "server/**"
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-acceptance-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  git-ref-installs:
+    name: Git-ref install (${{ matrix.case }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case: master
+            repo: paperclipai/paperclip
+            ref: master
+          - case: tag
+            repo: paperclipai/paperclip
+            ref: canary/v2026.801.0-canary.4
+          - case: sha
+            repo: current
+            ref: current
+          - case: fork-repo
+            repo: cryppadotta/paperclip-prs
+            ref: 5346a8c2464fb674a5f205ae8724b35ae7f3f44e
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Run source-install lifecycle
+        env:
+          MATRIX_REPO: ${{ matrix.repo }}
+          MATRIX_REF: ${{ matrix.ref }}
+          CURRENT_REPO: ${{ github.repository }}
+          CURRENT_REF: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          repo="$MATRIX_REPO"
+          ref="$MATRIX_REF"
+          if [ "$repo" = current ]; then repo="$CURRENT_REPO"; fi
+          if [ "$ref" = current ]; then ref="$CURRENT_REF"; fi
+          mkdir -p "$RUNNER_TEMP/install-e2e-home"
+          HOME="$RUNNER_TEMP/install-e2e-home" \
+            E2E_REPO="$repo" \
+            E2E_REF="$ref" \
+            E2E_SKIP_NPM=1 \
+            E2E_SKIP_SERVICE=1 \
+            bash scripts/e2e-install-lifecycle.sh \
+            2>&1 | tee "git-ref-${{ matrix.case }}.log"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: install-git-ref-${{ matrix.case }}-${{ runner.arch }}
+          path: git-ref-${{ matrix.case }}.log
+          retention-days: 14
+          if-no-files-found: error
+
+  systemd-service-and-migrations:
+    name: Systemd service + migrations (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            os: ubuntu-24.04
+          - arch: arm64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run both harnesses in an isolated systemd user manager
+        env:
+          E2E_REPO: ${{ github.repository }}
+          E2E_REF: ${{ github.sha }}
+          E2E_SKIP_NPM: 1
+          E2E_UPDATE_BASE_REF: test/e2e-update-base
+          E2E_UPDATE_NEXT_REF: test/e2e-update-next
+          E2E_RESULTS_DIR: ${{ github.workspace }}/install-e2e-artifacts
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/run-install-e2e-systemd-docker.sh all
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: install-systemd-${{ matrix.arch }}
+          path: install-e2e-artifacts/
+          retention-days: 14
+          if-no-files-found: error

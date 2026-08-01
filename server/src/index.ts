@@ -342,6 +342,10 @@ export async function startServer(): Promise<StartedServer> {
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
+      // Paperclip owns the ordered shutdown below. The dependency's global
+      // signal hook would stop Postgres concurrently, before hot-restart can
+      // persist its live-run adoption snapshot.
+      process.env.EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK = "1";
       const mod = await import(moduleName);
       EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
     } catch {
