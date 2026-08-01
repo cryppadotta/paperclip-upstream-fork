@@ -520,7 +520,12 @@ async function actorHasIssuePrivacyGrant(db: Db, actor: AuthorizationActor, issu
     .limit(1)
     .then((rows) => rows.length > 0);
   issuePrivacyGrantCache.set(cacheKey, { expiresAt: now + issuePrivacyCacheTtlMs(), promise });
-  return promise;
+  const granted = await promise;
+  // Positive authorization decisions must observe revocation on the next read.
+  // Keep only negative decisions cached; grant creation paths already tolerate
+  // their short TTL, while revocation must fail closed immediately.
+  if (granted) issuePrivacyGrantCache.delete(cacheKey);
+  return granted;
 }
 
 /** Canonical row-level issue privacy predicate, also consumed by run-derived checks. */

@@ -2207,7 +2207,7 @@ describeEmbeddedPostgres("authorization service", () => {
     const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
     const previousTtl = process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS;
     process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
-    process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS = "0";
+    process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS = "5000";
     try {
       const company = await createCompany(db, "IssuePrivacy");
       const ownerId = await createUser(db);

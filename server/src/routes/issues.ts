@@ -3522,6 +3522,25 @@ export function issueRoutes(
     return false;
   }
 
+  async function resolveIssuePrivacyManagementRoot(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof decideIssueAccess>[1] & {
+      privacyRootIssueId: string | null;
+      responsibleUserId: string | null;
+      createdByUserId: string | null;
+    },
+  ) {
+    const privacyRootId = issue.privacyRootIssueId ?? issue.id;
+    const privacyRoot = privacyRootId === issue.id
+      ? issue
+      : await getAccessibleResource(req, res, svc.getById(privacyRootId), "Issue not found");
+    if (!privacyRoot) return null;
+    if (privacyRoot.id !== issue.id && !(await assertIssueReadAllowed(req, res, privacyRoot))) return null;
+    if (!(await assertCanManageIssuePrivacy(req, res, privacyRoot))) return null;
+    return privacyRoot;
+  }
+
   async function assertAgentIssueCommentAllowed(
     req: Request,
     res: Response,
@@ -7834,8 +7853,9 @@ export function issueRoutes(
   router.get("/issues/:id/access-grants", async (req, res) => {
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
-    if (!(await assertCanManageIssuePrivacy(req, res, issue))) return;
-    const grantIssueIds = [...new Set([issue.id, issue.privacyRootIssueId ?? issue.id])];
+    const privacyRoot = await resolveIssuePrivacyManagementRoot(req, res, issue);
+    if (!privacyRoot) return;
+    const grantIssueIds = [...new Set([issue.id, privacyRoot.id])];
     const grants = await db
       .select()
       .from(issueAccessGrants)
@@ -7850,8 +7870,9 @@ export function issueRoutes(
     async (req, res) => {
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
-      if (!(await assertCanManageIssuePrivacy(req, res, issue))) return;
-      const grantIssueIds = [...new Set([issue.id, issue.privacyRootIssueId ?? issue.id])];
+      const privacyRoot = await resolveIssuePrivacyManagementRoot(req, res, issue);
+      if (!privacyRoot) return;
+      const grantIssueIds = [...new Set([issue.id, privacyRoot.id])];
       const [grant] = await db
         .update(issueAccessGrants)
         .set({ revokedAt: new Date() })
@@ -7886,7 +7907,7 @@ export function issueRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
-    if (req.body.visibility !== undefined && !(await assertCanManageIssuePrivacy(req, res, existing))) return;
+    if (req.body.visibility !== undefined && !(await resolveIssuePrivacyManagementRoot(req, res, existing))) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
