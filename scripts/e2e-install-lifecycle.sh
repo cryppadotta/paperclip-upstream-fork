@@ -311,7 +311,24 @@ else
       fail_ "8h foreground run returned the single-writer diagnostic"
     fi
 
-    note "8i. hot restart: adopt a live process-agent run"
+    note "8i. hot restart: adopt a live local CLI-agent run"
+    FAKE_CLAUDE="$HOME/.paperclip-e2e-fake-claude"
+    cat > "$FAKE_CLAUDE" <<'EOF'
+#!/usr/bin/env node
+process.stdin.resume();
+setTimeout(() => {
+  console.log(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "hot restart adoption e2e complete",
+    session_id: "paperclip-install-e2e",
+    usage: { input_tokens: 1, cache_read_input_tokens: 0, output_tokens: 1 },
+  }));
+  process.exit(0);
+}, 45000);
+EOF
+    chmod 700 "$FAKE_CLAUDE"
     COMPANY_JSON="$(api_post /api/companies '{"name":"Install E2E hot restart"}' 2>/dev/null || true)"
     COMPANY_ID="$(printf '%s' "$COMPANY_JSON" | json_field id 2>/dev/null || true)"
     AGENT_JSON=""
@@ -319,7 +336,15 @@ else
     RUN_JSON=""
     RUN_ID=""
     if [ -n "$COMPANY_ID" ]; then
-      AGENT_JSON="$(api_post "/api/companies/$COMPANY_ID/agents" '{"name":"Hot restart sleeper","role":"engineer","adapterType":"process","adapterConfig":{"command":"node","args":["-e","setTimeout(()=>{},45000)"]}}' 2>/dev/null || true)"
+      AGENT_PAYLOAD="$(node -e '
+        process.stdout.write(JSON.stringify({
+          name: "Hot restart sleeper",
+          role: "engineer",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli", command: process.argv[1], timeoutSec: 120 },
+        }));
+      ' "$FAKE_CLAUDE")"
+      AGENT_JSON="$(api_post "/api/companies/$COMPANY_ID/agents" "$AGENT_PAYLOAD" 2>/dev/null || true)"
       AGENT_ID="$(printf '%s' "$AGENT_JSON" | json_field id 2>/dev/null || true)"
     fi
     if [ -n "$AGENT_ID" ]; then
@@ -335,12 +360,12 @@ else
         sleep 1
       done
       if [ "$RUN_STATUS" = "running" ]; then
-        pass "8i live process-agent run reached running state"
+        pass "8i live local CLI-agent run reached running state"
       else
-        fail_ "8i live process-agent run reached running state (got ${RUN_STATUS:-<none>})"
+        fail_ "8i live local CLI-agent run reached running state (got ${RUN_STATUS:-<none>})"
       fi
     else
-      fail_ "8i created a live process-agent run"
+      fail_ "8i created a live local CLI-agent run"
     fi
 
     RESTART_JSON="$(shim service restart --json 2>/dev/null || true)"

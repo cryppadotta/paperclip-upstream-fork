@@ -37,6 +37,7 @@ test("systemd lifecycle asserts every service acceptance invariant", () => {
     "crash-killed service respawned",
     "login-session restart with linger",
     "foreground run refused while service is active",
+    "live local CLI-agent run reached running state",
     "adoptedRunIds",
     "adopted live run completed successfully",
     "service logs readable",
