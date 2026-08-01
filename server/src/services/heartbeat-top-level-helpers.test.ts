@@ -29,6 +29,7 @@ import {
   normalizeSessionParams,
   preflightLowTrustWorkspaceIsolation,
   provisionExecutionWorkspaceForFreshnessDecision,
+  redactDetectedSuccessfulRunProgressSummaryForBoard,
   requiresPushCapabilityPreflight,
   resolveCacheAdjustedCostUsd,
   resolveExecutionWorkspaceReuseRequestForIssue,
@@ -841,5 +842,155 @@ describe("heartbeat top-level helper edge coverage", () => {
       previousDisplayId: null,
       previousLegacySessionId: null,
     })).toEqual({ params: { sessionId: canonical }, displayId: canonical, legacySessionId: canonical });
+  });
+
+  it("covers reachable null and fallback arms in public pre-factory helpers", async () => {
+    expect(redactDetectedSuccessfulRunProgressSummaryForBoard(" short   status ")).toBe("short status");
+    expect(redactDetectedSuccessfulRunProgressSummaryForBoard("x".repeat(281))).toBe(`${"x".repeat(277)}...`);
+
+    const agentDefaultConfig = { workspaceRuntime: { command: "host" }, desiredState: "running" };
+    expect(applyPersistedExecutionWorkspaceConfig({
+      config: agentDefaultConfig,
+      workspaceConfig: {
+        workspaceRuntime: null,
+        desiredState: null,
+        serviceStates: null,
+        provisionCommand: null,
+        teardownCommand: null,
+      } as never,
+      mode: "agent_default",
+    })).toEqual(agentDefaultConfig);
+
+    expect(mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: null,
+      source: "created",
+      createdByRuntime: true,
+      configSnapshot: null,
+      shouldReuseExisting: false,
+      baseRef: null,
+      baseRefSha: "sha",
+    })).toMatchObject({ baseRefSnapshot: { baseRef: null, resolvedSha: "sha" } });
+
+    await expect(preflightLowTrustWorkspaceIsolation({
+      trustPreset: {
+        kind: "denied",
+        preset: "deny_all",
+        boundary: null,
+        sourcePresets: {},
+      } as never,
+      isolatedWorkspacesEnabled: true,
+      effectiveExecutionWorkspaceMode: "isolated_workspace",
+      issue: { companyId: "company-1", id: "issue-1", projectId: "project-1" },
+      resolveSelectedEnvironmentDriver: vi.fn(async () => "sandbox"),
+    })).rejects.toMatchObject({ status: 422 });
+
+    expect(resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: false,
+      existingWorkspaceMetadata: null,
+      nextMetadata: null,
+    })).toMatchObject({ action: "create", nextFingerprint: null });
+
+    const inferred = {
+      version: 2,
+      fingerprint: "same",
+      categories: ["runtimeServices"],
+      categoryFingerprints: { runtimeServices: "one" },
+      evaluatedAt: "2026-08-01T00:00:00.000Z",
+    } as const;
+    expect(resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: null,
+      inferredMetadata: inferred as never,
+      nextMetadata: null,
+    })).toMatchObject({ action: "reuse", inferredFingerprint: "same" });
+    expect(resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: null,
+      inferredMetadata: inferred as never,
+      nextMetadata: inferred as never,
+    })).toMatchObject({ action: "reuse", inferredFingerprint: "same", shouldRefreshConfigSnapshot: true });
+    expect(resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: null,
+      inferredMetadata: inferred as never,
+      nextMetadata: {
+        ...inferred,
+        fingerprint: "changed",
+        categoryFingerprints: { runtimeServices: "two" },
+      } as never,
+    })).toMatchObject({ action: "refresh", inferredFingerprint: "same" });
+
+    expect(buildPaperclipTaskMarkdown({
+      issue: null,
+      wakeComment: { id: "comment-1", body: "Wake only" },
+      ancestors: [{ id: "ancestor-1", identifier: null, title: null, status: null, priority: null }],
+    })).toContain("Latest wake comment");
+    expect(buildPaperclipTaskMarkdown({
+      issue: null,
+      wakeComment: { id: "comment-2", body: "Wake without ancestors" },
+    })).toContain("Latest wake comment");
+    expect(buildPaperclipTaskMarkdown({ issue: null, wakeComment: null })).toBeNull();
+    expect(buildPaperclipTaskMarkdown({
+      issue: null,
+      wakeComment: { id: "comment-1", body: "Wake only" },
+      ancestors: Array.from({ length: 20 }, (_, index) => ({
+        id: `ancestor-${index}`,
+        identifier: `P-${index}`,
+        title: `Ancestor ${index}`,
+        status: "done",
+        priority: "medium",
+      })),
+    })).toContain("ancestor context truncated");
+
+    const longDisplayId = "d".repeat(140);
+    expect(resolveNextSessionState({
+      adapterType: "process",
+      codec: sessionCodec,
+      adapterResult: { sessionDisplayId: longDisplayId } as never,
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    }).displayId).toBe("d".repeat(128));
+
+    const canonical = "20260801_120000_abcd";
+    expect(resolveNextSessionState({
+      adapterType: "hermes_local",
+      codec: {
+        serialize: () => ({}),
+        deserialize: (value) => value as Record<string, unknown>,
+      },
+      adapterResult: { sessionId: canonical, sessionDisplayId: canonical, sessionParams: null } as never,
+      outcome: "succeeded",
+      previousParams: null,
+      previousDisplayId: null,
+      previousLegacySessionId: null,
+    })).toEqual({ params: null, displayId: canonical, legacySessionId: canonical });
+
+    const configResolution = { env: {}, secretKeys: new Set<string>(), manifest: undefined };
+    await expect(resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: null,
+      issueId: null,
+      projectId: null,
+      routineId: null,
+      environmentId: null,
+      environmentDriver: null,
+      executionRunConfig: {},
+      environmentEnv: null,
+      projectEnv: null,
+      routineEnv: null,
+      responsibleUserId: null,
+      secretsSvc: {
+        resolveAdapterConfigForRuntime: vi.fn(async () => ({
+          config: {},
+          secretKeys: new Set<string>(),
+          manifest: undefined,
+        })),
+        resolveEnvBindings: vi.fn(async () => configResolution),
+        collectMissingRuntimeBindings: vi.fn(async () => []),
+        collectMissingAdapterConfigRuntimeBindings: vi.fn(async () => []),
+      } as never,
+    } as never)).resolves.toMatchObject({ resolvedConfig: {}, secretManifest: [] });
   });
 });
