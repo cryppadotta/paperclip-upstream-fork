@@ -447,6 +447,7 @@ export function NewIssueDialog() {
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [workMode, setWorkMode] = useState<IssueWorkMode>("standard");
+  const [isPrivate, setIsPrivate] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [dialogCompanyId, setDialogCompanyId] = useState<string | null>(null);
   const [stagedFiles, setStagedFiles] = useState<StagedIssueFile[]>([]);
@@ -944,6 +945,7 @@ export function NewIssueDialog() {
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setWorkMode("standard");
+    setIsPrivate(false);
     setExpanded(false);
     setDialogCompanyId(null);
     setStagedFiles([]);
@@ -1025,6 +1027,7 @@ export function NewIssueDialog() {
       status,
       priority: priority || "medium",
       workMode,
+      ...(isPrivate ? { visibility: "private" } : {}),
       ...(selectedAssigneeAgentId ? { assigneeAgentId: selectedAssigneeAgentId } : {}),
       ...(selectedAssigneeUserId ? { assigneeUserId: selectedAssigneeUserId } : {}),
       ...(newIssueDefaults.parentId ? { parentId: newIssueDefaults.parentId } : {}),
@@ -1943,6 +1946,21 @@ export function NewIssueDialog() {
             )}
             </div>
           )}
+
+          {/* Private task toggle */}
+          <div className="flex items-start justify-between gap-3 border-t border-border/60 px-4 py-2.5">
+            <div className="min-w-0">
+              <div className="text-xs font-medium">Private task</div>
+              <div className="text-(length:--text-micro) text-muted-foreground">
+                Only you and people you share with can read it. Subtasks stay private too.
+              </div>
+            </div>
+            <ToggleSwitch
+              checked={isPrivate}
+              onCheckedChange={setIsPrivate}
+              aria-label="Private task"
+            />
+          </div>
 
           {/* Description */}
           <div

@@ -9,6 +9,8 @@ import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
 import { mentionChipInlineStyle, parseMentionChipHref } from "../lib/mention-chips";
 import { issuesApi } from "../api/issues";
+import { ApiError } from "../api/client";
+import { LockedIssueChip } from "./LockedIssueChip";
 import { queryKeys } from "../lib/queryKeys";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../lib/issue-reference";
 import { remarkLinkCaseReferences } from "../lib/case-reference";
@@ -96,11 +98,21 @@ function MarkdownIssueLink({
   issuePathId: string;
   children: ReactNode;
 }) {
-  const { data } = useQuery({
+  const { data, error } = useQuery({
     queryKey: queryKeys.issues.detail(issuePathId),
     queryFn: () => issuesApi.get(issuePathId),
     staleTime: 60_000,
+    // A private issue 404s on direct fetch (indistinguishable from deleted, by
+    // design). Don't burn retries on it — settle straight to the locked chip.
+    retry: (failureCount, err) =>
+      !(err instanceof ApiError && err.status === 404) && failureCount < 3,
   });
+
+  // Mention of an issue this viewer can't read → existence-only locked chip
+  // (never a title or a link), matching the locked-stub treatment on edges.
+  if (error instanceof ApiError && error.status === 404) {
+    return <LockedIssueChip identifier={issuePathId} />;
+  }
 
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
