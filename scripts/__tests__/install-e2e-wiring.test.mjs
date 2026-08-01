@@ -54,6 +54,7 @@ test("systemd hot restart preserves children and orders embedded database shutdo
     "utf8",
   );
   assert.match(serviceManager, /KillMode=process/);
+  assert.match(serviceManager, /Environment="EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK=1"/);
   assert.match(server, /EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK = "1"/);
   assert.match(embeddedPatch, /EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK/);
 });
