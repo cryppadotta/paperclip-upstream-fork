@@ -52,6 +52,8 @@ export interface Decision {
 /** `list()` annotates each open decision with which targets drifted since snapshot. */
 export interface DecisionListItem extends Decision {
   targetChanged: Record<string, boolean>;
+  /** Included by terminal-state lists so history cards avoid detail-query fan-out. */
+  executions?: DecisionEffectExecution[];
 }
 
 export interface DecisionEffectExecution {

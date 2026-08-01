@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { Agent, AttentionSubject } from "@paperclipai/shared";
-import { decisionsApi } from "../api/decisions";
+import { decisionsApi, type DecisionOutcome } from "../api/decisions";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -14,6 +14,8 @@ interface DecisionResolverProps {
   /** Origin issue subject from the attention row (already carries identifier/href). */
   originIssue?: AttentionSubject | null;
   agentMap?: Map<string, Agent>;
+  /** Complete terminal list item used to avoid one detail request per history row. */
+  initialDecision?: DecisionOutcome;
   /** Called after a decide/dismiss so the parent can refresh the feed row. */
   onResolved?: () => void;
 }
@@ -34,7 +36,7 @@ function combineIssueData(results: Array<{ data?: IssueDetail }>) {
  * dismiss mutations, and invalidates the attention feed + target-issue keys on
  * success — same conventions as {@link AttentionInteractionResolver}.
  */
-export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, onResolved }: DecisionResolverProps) {
+export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, onResolved }: DecisionResolverProps) {
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
@@ -47,6 +49,8 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     queryKey: queryKeys.decisions.detail(decisionId),
     queryFn: () => decisionsApi.get(decisionId),
     enabled: !!decisionId,
+    initialData: initialDecision,
+    staleTime: 30_000,
   });
   const decision = detail.data;
 

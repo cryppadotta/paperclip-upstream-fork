@@ -333,6 +333,18 @@ describePg("decisionService", () => {
     })]));
   });
 
+  it("batches effect executions into terminal decision lists", async () => {
+    const created = await createCommentDecision();
+    await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+
+    const listed = await service().list(companyId, { status: "decided" });
+
+    expect(listed).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: created.id,
+      executions: [expect.objectContaining({ effectIndex: 0, status: "executed" })],
+    })]));
+  });
+
   it("bounds the open-decision slice of the attention feed", async () => {
     const older = await createCommentDecision("lenient", { idempotencyKey: "attention-older" });
     const newer = await createCommentDecision("lenient", { idempotencyKey: "attention-newer" });

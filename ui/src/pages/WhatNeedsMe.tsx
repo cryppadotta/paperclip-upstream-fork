@@ -702,6 +702,7 @@ export function WhatNeedsMe() {
                 companyId={selectedCompanyId}
                 decisionId={decision.id}
                 agentMap={agentMap}
+                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
               />
             ))
           ) : (
@@ -724,6 +725,7 @@ export function WhatNeedsMe() {
                 companyId={selectedCompanyId}
                 decisionId={decision.id}
                 agentMap={agentMap}
+                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
               />
             ))
           ) : (

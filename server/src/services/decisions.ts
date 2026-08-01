@@ -231,13 +231,26 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         .where(and(eq(decisionTargetIssues.companyId, companyId), inArray(decisionTargetIssues.decisionId, openDecisionIds)))
       : [];
     const currentTargetsById = new Map(currentTargets.map((target) => [target.id, target.updatedAt]));
+    const terminalDecisionIds = rows.filter((decision) => decision.status !== "open").map((decision) => decision.id);
+    const terminalExecutions = terminalDecisionIds.length
+      ? await db.select().from(decisionEffectExecutions)
+        .where(inArray(decisionEffectExecutions.decisionId, terminalDecisionIds))
+        .orderBy(asc(decisionEffectExecutions.decisionId), asc(decisionEffectExecutions.effectIndex))
+      : [];
+    const executionsByDecision = new Map<string, typeof terminalExecutions>();
+    for (const execution of terminalExecutions) {
+      const grouped = executionsByDecision.get(execution.decisionId) ?? [];
+      grouped.push(execution);
+      executionsByDecision.set(execution.decisionId, grouped);
+    }
     return rows.map((decision) => {
       const changed: Record<string, boolean> = {};
       if (decision.status === "open") for (const [id, snapshot] of Object.entries(decision.targetSnapshots as Record<string, Snapshot>)) {
         const currentUpdatedAt = currentTargetsById.get(id);
         changed[id] = !currentUpdatedAt || currentUpdatedAt.toISOString() !== snapshot.updatedAt;
       }
-      return { ...decision, targetChanged: changed };
+      return { ...decision, targetChanged: changed,
+        ...(decision.status === "open" ? {} : { executions: executionsByDecision.get(decision.id) ?? [] }) };
     });
   }
 
