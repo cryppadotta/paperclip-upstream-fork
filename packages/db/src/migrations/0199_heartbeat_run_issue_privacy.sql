@@ -91,7 +91,7 @@ ALTER TABLE "heartbeat_runs" DROP CONSTRAINT IF EXISTS "heartbeat_runs_issue_id_
 ALTER TABLE "heartbeat_runs"
   ADD CONSTRAINT "heartbeat_runs_issue_id_issues_id_fk"
   FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id")
-  ON DELETE RESTRICT ON UPDATE NO ACTION NOT VALID;
+  ON DELETE SET NULL ON UPDATE NO ACTION NOT VALID;
 --> statement-breakpoint
 ALTER TABLE "heartbeat_runs" VALIDATE CONSTRAINT "heartbeat_runs_issue_id_issues_id_fk";
 --> statement-breakpoint
@@ -100,7 +100,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-  NEW."scope_kind" := CASE WHEN NEW."issue_id" IS NULL THEN 'company' ELSE 'issue' END;
+  NEW."scope_kind" := CASE
+    WHEN NEW."issue_id" IS NOT NULL THEN 'issue'
+    WHEN TG_OP = 'UPDATE' AND OLD."scope_kind" = 'issue' THEN 'issue'
+    ELSE 'company'
+  END;
   RETURN NEW;
 END $$;
 --> statement-breakpoint
@@ -116,7 +120,7 @@ ALTER TABLE "heartbeat_runs"
   ADD CONSTRAINT "heartbeat_runs_scope_binding_check"
   CHECK (
     ("scope_kind" = 'company' AND "issue_id" IS NULL)
-    OR ("scope_kind" = 'issue' AND "issue_id" IS NOT NULL)
+    OR "scope_kind" = 'issue'
   ) NOT VALID;
 --> statement-breakpoint
 ALTER TABLE "heartbeat_runs" VALIDATE CONSTRAINT "heartbeat_runs_scope_binding_check";
@@ -126,7 +130,7 @@ ALTER TABLE "workspace_operations" DROP CONSTRAINT IF EXISTS "workspace_operatio
 ALTER TABLE "workspace_operations"
   ADD CONSTRAINT "workspace_operations_heartbeat_run_id_heartbeat_runs_id_fk"
   FOREIGN KEY ("heartbeat_run_id") REFERENCES "public"."heartbeat_runs"("id")
-  ON DELETE RESTRICT ON UPDATE NO ACTION NOT VALID;
+  ON DELETE CASCADE ON UPDATE NO ACTION NOT VALID;
 --> statement-breakpoint
 ALTER TABLE "workspace_operations" VALIDATE CONSTRAINT "workspace_operations_heartbeat_run_id_heartbeat_runs_id_fk";
 --> statement-breakpoint
@@ -135,7 +139,7 @@ ALTER TABLE "workspace_operations" DROP CONSTRAINT IF EXISTS "workspace_operatio
 ALTER TABLE "workspace_operations"
   ADD CONSTRAINT "workspace_operations_issue_id_issues_id_fk"
   FOREIGN KEY ("issue_id") REFERENCES "public"."issues"("id")
-  ON DELETE RESTRICT ON UPDATE NO ACTION NOT VALID;
+  ON DELETE CASCADE ON UPDATE NO ACTION NOT VALID;
 --> statement-breakpoint
 ALTER TABLE "workspace_operations" VALIDATE CONSTRAINT "workspace_operations_issue_id_issues_id_fk";
 --> statement-breakpoint

@@ -27,7 +27,7 @@ export const heartbeatRuns = pgTable(
       .$type<"company" | "issue">()
       .notNull()
       .default("company"),
-    issueId: uuid("issue_id").references((): AnyPgColumn => issues.id, { onDelete: "restrict" }),
+    issueId: uuid("issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
@@ -81,7 +81,7 @@ export const heartbeatRuns = pgTable(
     scopeBindingCheck: check(
       "heartbeat_runs_scope_binding_check",
       sql`(${table.scopeKind} = 'company' AND ${table.issueId} IS NULL)
-        OR (${table.scopeKind} = 'issue' AND ${table.issueId} IS NOT NULL)`,
+        OR ${table.scopeKind} = 'issue'`,
     ),
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
       table.companyId,

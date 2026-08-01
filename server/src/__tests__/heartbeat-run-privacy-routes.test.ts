@@ -350,15 +350,34 @@ describeEmbeddedPostgres.sequential("heartbeat run privacy routes", () => {
     expect(allowedCancel.body.id).toBe(fixture.privateRunId);
   });
 
-  it("preserves issue and run bindings while confidential operation history exists", async () => {
+  it("keeps deleted-issue runs and operation history bound to a fail-closed tombstone", async () => {
     const fixture = await seedFixture();
 
-    await expect(db.delete(issues).where(eq(issues.id, fixture.issueId))).rejects.toThrow();
-    await expect(db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId))).rejects.toThrow();
+    await db.delete(issues).where(eq(issues.id, fixture.issueId));
 
-    const deniedDetail = await request(createApp(fixture.companyId, fixture.otherAgentId))
+    const missingDetail = await request(createApp(fixture.companyId, fixture.ownerAgentId))
       .get(`/api/heartbeat-runs/${fixture.privateRunId}`);
-    expect(deniedDetail.status).toBe(404);
+    expect(missingDetail.status).toBe(404);
+
+    const [tombstonedRun] = await db.select({
+      scopeKind: heartbeatRuns.scopeKind,
+      issueId: heartbeatRuns.issueId,
+    })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.privateRunId));
+    expect(tombstonedRun).toEqual({ scopeKind: "issue", issueId: null });
+
+    const [operation] = await db.select({
+      heartbeatRunId: workspaceOperations.heartbeatRunId,
+      issueId: workspaceOperations.issueId,
+    })
+      .from(workspaceOperations)
+      .where(eq(workspaceOperations.id, fixture.operationId));
+    expect(operation).toEqual({ heartbeatRunId: fixture.privateRunId, issueId: null });
+
+    const missingOperationLog = await request(createApp(fixture.companyId, fixture.ownerAgentId))
+      .get(`/api/workspace-operations/${fixture.operationId}/log`);
+    expect(missingOperationLog.status).toBe(404);
   });
 
   it("logs would-deny decisions without enforcing them in shadow mode", async () => {
