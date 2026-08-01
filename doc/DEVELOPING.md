@@ -429,6 +429,29 @@ After `worktree init`, both the server and the CLI auto-load the repo-local `.pa
 
 `pnpm dev` now fails fast in a linked git worktree when `.paperclip/.env` is missing, instead of silently booting against the default instance/port. If that happens, run `paperclipai worktree init` in the worktree first.
 
+### Lean worktrees and deferred seeding
+
+Seeding a worktree database is the heaviest part of `worktree init`. That work can be deferred so a worktree is cheap to create and only pays the seed cost the first time it is actually used — the CLI/dev-time analog of the server's lazy runtime provisioning (see the board-operator guide's "Lazy runtime provisioning" section).
+
+Seeding state is tracked with two marker files under the worktree's `.paperclip/` directory:
+
+- `seed-pending` — the isolated database has not been seeded yet (a **lean** worktree). Written by `worktree init` before any seed runs.
+- `seed-complete` — the database was seeded; the pending marker is removed.
+
+The default `worktree init` still seeds eagerly and writes `seed-complete` immediately. A lean worktree (created without an eager seed) keeps its `seed-pending` marker until something seeds it on demand:
+
+- `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: a present `seed-complete` marker or a missing `seed-pending` marker short-circuits it, so it is safe to call repeatedly and from concurrent processes. It reads the source instance from the `seed-pending` marker unless you pass `--from-config`.
+- `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot, so `run` transparently seeds a lean worktree on first launch.
+- Worktrees created before lazy seeding shipped have neither marker; they are treated as already-seeded for backward compatibility (never re-cloned).
+
+**Seed-pending guard.** `pnpm dev` (the dev-runner) refuses to boot a worktree whose database is still `seed-pending` and points you at the fix:
+
+```
+[paperclip] this worktree database is seed-pending. Run `pnpm paperclipai worktree ensure-seeded` before `pnpm dev`.
+```
+
+This guard (`isWorktreeSeedPending` in `server/src/dev-runner-worktree.ts`) prevents `pnpm dev` from starting the app against an empty, unseeded database — run `worktree ensure-seeded` once and re-run `pnpm dev`.
+
 Provisioned git worktrees also pause seeded routines that still have enabled schedule triggers in the isolated worktree database by default. This prevents copied daily/cron routines from firing unexpectedly inside the new workspace instance during development without disabling webhook/API-only routines.
 
 That repo-local env also sets:
