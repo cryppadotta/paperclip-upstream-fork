@@ -34,7 +34,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Company model | Company is first-order; all business entities are company-scoped |
 | Board | Single human board operator per deployment |
 | Org graph | Strict tree (`reports_to` nullable root); no multi-manager reporting |
-| Visibility | Company-scoped visibility: board + all in-company agents can see all work objects by default; public/private deployment flags affect external exposure only and do **not** imply project/issue privacy |
+| Visibility | Issues remain company-open by default. Opt-in `private` issues use task ACLs; deployment exposure flags remain independent of work-object privacy. |
 | Communication | Tasks + comments only (no separate chat system) |
 | Task ownership | Single assignee; atomic checkout required for `in_progress` transition |
 | Task watchdogs | A task watchdog is an explicitly configured, issue-subtree-scoped verification and recovery capacity. It may restore live task paths inside the watched subtree and resolve only eligible task-level plan confirmations; it is not board authority, active-run output monitoring, or general liveness recovery. |
@@ -226,6 +226,8 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - `project_workspace_id` uuid fk `project_workspaces.id` null
 - `goal_id` uuid fk `goals.id` null
 - `parent_id` uuid fk `issues.id` null
+- `visibility` enum-like text: `open | private`, default `open`
+- `privacy_root_issue_id` uuid fk `issues.id` null; private descendants point at their private subtree root
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
@@ -267,6 +269,19 @@ Invariants:
 - `author_agent_id` uuid fk `agents.id` null
 - `author_user_id` uuid fk `users.id` null
 - `body` text not null
+
+## 7.7.1 `issue_access_grants`
+
+- `issue_id` uuid fk `issues.id` not null
+- `subject_type` enum-like text: `user | agent`
+- `subject_id` text not null
+- `source` enum-like text: `explicit | assignment | project`
+- `granted_by_user_id` text null
+- `granted_by_agent_id` uuid fk `agents.id` null
+- `created_at` timestamptz not null
+- `revoked_at` timestamptz null
+
+An issue is readable when it is open, the actor is an implicit principal (`responsible_user_id`, `created_by_user_id`, `assignee_user_id`, or current `assignee_agent_id`), or the actor has an unrevoked grant on the issue/private subtree root. Instance administrators retain platform-wide access; company owner/admin roles do not imply private-issue read access.
 
 ## 7.8 `heartbeat_runs`
 
@@ -549,7 +564,7 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 
 ## 9.4 Permission Terminology and Default Visibility Rule
 
-Paperclip V1 keeps a company-scoped visibility model as the default because centralized authorization and scoped work-object controls are not yet a core V1 control surface.
+Paperclip keeps company-scoped visibility as the default. The task-ACL foundation adds opt-in private issues while preserving `open` for all existing and unspecified issues.
 
 The approved term set is:
 
@@ -863,6 +878,8 @@ All endpoints are under `/api` and return JSON.
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
+- `GET /issues/:issueId/access-grants`
+- `POST /issues/:issueId/access-grants/:grantId/revoke`
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`
 - `PUT /issues/:issueId/documents/:key`

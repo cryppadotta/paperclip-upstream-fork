@@ -330,6 +330,16 @@ PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 
 No Docker or external database is required for this mode.
 
+## Issue Privacy Rollout
+
+`PAPERCLIP_ISSUE_PRIVACY_MODE` controls the opt-in private-issue read predicate:
+
+- `shadow` (default): log structured would-deny decisions but preserve existing reads
+- `enforce`: return private issues only to implicit principals and active grantees
+- `off`: skip the predicate and shadow logging
+
+Grant lookups use a five-second cache by default; override it with `PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS` when testing revocation timing.
+
 ## Storage in Dev (Auto-Handled)
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:

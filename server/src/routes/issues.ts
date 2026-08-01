@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -13,6 +13,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueApprovals,
+  issueAccessGrants,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
@@ -20,6 +21,7 @@ import {
   issueThreadInteractions,
   issues as issueRows,
   issueWorkProducts,
+  instanceUserRoles,
   pipelineCaseIssueLinks,
   pipelineCases,
   pipelineStages,
@@ -168,7 +170,7 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import { authorizationDeniedDetails, issueReadSqlCondition } from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -220,6 +222,7 @@ const inboxArchiveBodySchema = z.object({
 const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
 }).strict();
+const revokeIssueAccessGrantSchema = z.object({}).strict().default({});
 
 const promoteLowTrustOutputSchema = z.object({
   sourceArtifactKind: z.enum(["comment", "document", "work_product", "issue"]),
@@ -276,8 +279,16 @@ type RecoveryRevalidationTrigger =
   | "work_product"
   | "read_projection";
 type CompanySearchService = {
-  extract(companyId: string, query: CompanySearchExtractQuery): Promise<CompanySearchExtractResponse>;
-  search(companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse>;
+  extract(
+    companyId: string,
+    query: CompanySearchExtractQuery,
+    options?: { issueReadCondition?: SQL<boolean> },
+  ): Promise<CompanySearchExtractResponse>;
+  search(
+    companyId: string,
+    query: CompanySearchQuery,
+    options?: { issueReadCondition?: SQL<boolean> },
+  ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
   id: string;
@@ -2159,6 +2170,8 @@ function toCompactIssue(issue: any): CompactIssue {
     projectWorkspaceId: issue.projectWorkspaceId,
     goalId: issue.goalId,
     parentId: issue.parentId,
+    visibility: issue.visibility,
+    privacyRootIssueId: issue.privacyRootIssueId,
     title: issue.title,
     description: issue.description,
     status: issue.status,
@@ -3463,7 +3476,49 @@ export function issueRoutes(
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    res.status(404).json({ error: "Issue not found" });
+    return false;
+  }
+
+  async function assertCanManageIssuePrivacy(
+    req: Request,
+    res: Response,
+    issue: { companyId: string; responsibleUserId: string | null; createdByUserId: string | null; assigneeUserId: string | null },
+  ) {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.status(403).json({ error: "Only a responsible user, issue owner, or administrator can manage issue privacy" });
+      return false;
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    const instanceAdmin = req.actor.source !== "cloud_tenant"
+      ? await db
+          .select({ id: instanceUserRoles.id })
+          .from(instanceUserRoles)
+          .where(and(
+            eq(instanceUserRoles.userId, req.actor.userId),
+            eq(instanceUserRoles.role, "instance_admin"),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (instanceAdmin) return true;
+    if (
+      issue.responsibleUserId === req.actor.userId
+      || issue.createdByUserId === req.actor.userId
+      || issue.assigneeUserId === req.actor.userId
+    ) return true;
+    const membership = await db
+      .select({ role: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, issue.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, req.actor.userId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (membership && (membership.role === "owner" || membership.role === "admin")) return true;
+    res.status(403).json({ error: "Only a responsible user, issue owner, or administrator can manage issue privacy" });
     return false;
   }
 
@@ -4732,7 +4787,9 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().extract(companyId, parsedQuery.data);
+    const result = await getSearchService().extract(companyId, parsedQuery.data, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    });
     res.json(result);
   });
 
@@ -4774,7 +4831,9 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const result = await getSearchService().search(companyId, query, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    });
     res.json(result);
   });
 
@@ -4893,6 +4952,7 @@ export function issueRoutes(
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
@@ -5088,6 +5148,7 @@ export function issueRoutes(
     }
 
     const blockedCountFilters = {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -7770,10 +7831,62 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/issues/:id/access-grants", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertCanManageIssuePrivacy(req, res, issue))) return;
+    const grantIssueIds = [...new Set([issue.id, issue.privacyRootIssueId ?? issue.id])];
+    const grants = await db
+      .select()
+      .from(issueAccessGrants)
+      .where(inArray(issueAccessGrants.issueId, grantIssueIds))
+      .orderBy(desc(issueAccessGrants.createdAt), desc(issueAccessGrants.id));
+    res.json(grants);
+  });
+
+  router.post(
+    "/issues/:id/access-grants/:grantId/revoke",
+    validate(revokeIssueAccessGrantSchema),
+    async (req, res) => {
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+      if (!(await assertCanManageIssuePrivacy(req, res, issue))) return;
+      const grantIssueIds = [...new Set([issue.id, issue.privacyRootIssueId ?? issue.id])];
+      const [grant] = await db
+        .update(issueAccessGrants)
+        .set({ revokedAt: new Date() })
+        .where(and(
+          eq(issueAccessGrants.id, req.params.grantId as string),
+          inArray(issueAccessGrants.issueId, grantIssueIds),
+          isNull(issueAccessGrants.revokedAt),
+        ))
+        .returning();
+      if (!grant) {
+        res.status(404).json({ error: "Issue access grant not found" });
+        return;
+      }
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue_access_grant.revoked",
+        entityType: "issue_access_grant",
+        entityId: grant.id,
+        details: { issueId: grant.issueId, subjectType: grant.subjectType, subjectId: grant.subjectId },
+      });
+      res.json(grant);
+    },
+  );
+
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
+    if (req.body.visibility !== undefined && !(await assertCanManageIssuePrivacy(req, res, existing))) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;

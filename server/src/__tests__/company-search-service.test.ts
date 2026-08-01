@@ -8,6 +8,7 @@ import {
   documents,
   issueComments,
   issueDocuments,
+  issueAccessGrants,
   issueLabels,
   issues,
   labels,
@@ -23,6 +24,8 @@ import {
   companySearchBranchFetchLimit,
   companySearchService,
 } from "../services/company-search.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
+import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -87,6 +90,7 @@ describeEmbeddedPostgres("companySearchService", () => {
     await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(issueLabels);
+    await db.delete(issueAccessGrants);
     await db.delete(issues);
     await db.delete(labels);
     await db.delete(projects);
@@ -721,6 +725,60 @@ describeEmbeddedPostgres("companySearchService", () => {
       const ids = result.results.map((row) => row.id);
       expect(ids, `query=${query}`).toContain(expectedId);
       expect(ids, `query=${query} should not match unrelated issue`).not.toContain(rejected);
+    }
+  });
+
+  it("pushes private issue filtering into list, count, and company search queries", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const ownerId = `owner-${randomUUID()}`;
+      const otherId = `other-${randomUUID()}`;
+      const granteeId = `grantee-${randomUUID()}`;
+      const openId = await createIssue(companyId, { title: "privacy needle open" });
+      const privateId = randomUUID();
+      await createIssue(companyId, {
+        id: privateId,
+        title: "privacy needle private",
+        visibility: "private",
+        privacyRootIssueId: privateId,
+        responsibleUserId: ownerId,
+      });
+      await db.insert(issueAccessGrants).values({
+        issueId: privateId,
+        subjectType: "user",
+        subjectId: granteeId,
+        source: "explicit",
+        grantedByUserId: ownerId,
+      });
+
+      const issuesSvc = issueService(db);
+      const conditionFor = (userId: string) => issueReadSqlCondition(db, {
+        type: "board",
+        userId,
+        source: "session",
+      });
+      const otherCondition = await conditionFor(otherId);
+      const ownerCondition = await conditionFor(ownerId);
+      const granteeCondition = await conditionFor(granteeId);
+
+      await expect(issuesSvc.list(companyId, { readCondition: otherCondition })).resolves.toMatchObject([
+        { id: openId },
+      ]);
+      await expect(issuesSvc.count(companyId, { readCondition: otherCondition })).resolves.toBe(1);
+      await expect(issuesSvc.count(companyId, { readCondition: ownerCondition })).resolves.toBe(2);
+      await expect(issuesSvc.count(companyId, { readCondition: granteeCondition })).resolves.toBe(2);
+
+      const result = await svc.search(
+        companyId,
+        companySearchQuerySchema.parse({ q: "privacy needle", scope: "issues" }),
+        { issueReadCondition: otherCondition },
+      );
+      expect(result.results.map((row) => row.id)).toEqual([openId]);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
     }
   });
 });

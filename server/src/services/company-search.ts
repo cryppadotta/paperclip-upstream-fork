@@ -558,7 +558,11 @@ export function companySearchService(db: Db) {
   const extractService = companySearchExtractService(db);
   return {
     extract: extractService.extract,
-    search: async (companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse> => {
+    search: async (
+      companyId: string,
+      query: CompanySearchQuery,
+      options?: { issueReadCondition?: SQL<boolean> },
+    ): Promise<CompanySearchResponse> => {
       const normalizedQuery = normalizeQuery(query.q);
       const hasSearchText = normalizedQuery.length > 0;
       const tokens = tokenizeQuery(normalizedQuery);
@@ -929,6 +933,7 @@ export function companySearchService(db: Db) {
             FROM issues
             WHERE issues.company_id = ${companyId}
               AND ${visibleIssueCondition()}
+              AND ${options?.issueReadCondition ?? sql<boolean>`true`}
               ${matchedWhere}
           )
           ${sql.join(branches, sql` UNION ALL `)}
