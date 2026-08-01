@@ -377,7 +377,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     const now = new Date();
     await db
       .update(agents)
-      .set({ lastHeartbeatAt: new Date(now.getTime() - 120_000) })
+      .set({
+        createdAt: new Date(now.getTime() - 120_000),
+        lastHeartbeatAt: null,
+      })
       .where(eq(agents.id, agentId));
 
     const results = await Promise.all([
@@ -388,7 +391,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(results.reduce((total, result) => total + result.enqueued, 0)).toBe(1);
 
     const runs = await db
-      .select({ id: heartbeatRuns.id })
+      .select({
+        id: heartbeatRuns.id,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
     const [agent] = await db
@@ -397,6 +403,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(agents.id, agentId));
 
     expect(runs).toHaveLength(1);
+    expect(runs[0]?.contextSnapshot).toMatchObject({
+      timerClaimWasFirstHeartbeat: true,
+    });
     expect(agent?.lastHeartbeatAt?.getTime()).toBeGreaterThanOrEqual(now.getTime());
   });
 

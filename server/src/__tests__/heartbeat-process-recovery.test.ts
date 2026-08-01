@@ -3567,6 +3567,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
+  it("preserves first-heartbeat telemetry after a timer interval claim", async () => {
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      includeIssue: false,
+      contextSnapshot: { timerClaimWasFirstHeartbeat: true },
+    });
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date("2026-03-19T00:00:00.000Z") })
+      .where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelRun(runId);
+
+    expect(mockTrackAgentFirstHeartbeat).toHaveBeenCalledWith(
+      mockTelemetryClient,
+      expect.objectContaining({
+        agentRole: "engineer",
+        agentId,
+      }),
+    );
+  });
+
   it("terminates the in-memory process before persisting cancellation status", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",
