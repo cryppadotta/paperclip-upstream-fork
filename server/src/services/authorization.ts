@@ -503,6 +503,19 @@ function setIssuePrivacyGrantCacheEntry(
   }
 }
 
+export function invalidateIssuePrivacyGrantCache(input: {
+  subjectType: "user" | "agent";
+  subjectId: string;
+  issueId: string;
+}) {
+  const prefix = `${input.subjectType}:${input.subjectId}:`;
+  for (const key of issuePrivacyGrantCache.keys()) {
+    if (key.startsWith(prefix) && key.split(":").includes(input.issueId)) {
+      issuePrivacyGrantCache.delete(key);
+    }
+  }
+}
+
 export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
   const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
   if (mode === "off" || mode === "enforce") return mode;

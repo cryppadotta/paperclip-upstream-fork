@@ -881,6 +881,7 @@ All endpoints are under `/api` and return JSON.
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
 - `GET /issues/:issueId/access-grants`
+- `POST /issues/:issueId/access-grants`
 - `POST /issues/:issueId/access-grants/:grantId/revoke`
 - `GET /issues/:issueId/documents`
 - `GET /issues/:issueId/documents/:key`

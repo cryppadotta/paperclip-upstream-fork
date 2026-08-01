@@ -1160,6 +1160,28 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/access-grants",
+  tags: ["issues"],
+  summary: "Grant a user or agent access to a private issue subtree",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(z.object({
+      subjectType: z.enum(["user", "agent"]),
+      subjectId: z.string().min(1),
+    }).strict()),
+  },
+  responses: {
+    200: r.ok(),
+    201: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/openapi.json",
   tags: ["health"],
