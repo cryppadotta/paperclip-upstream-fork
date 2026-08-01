@@ -1523,6 +1523,15 @@ function readWorktreeSeedProcessIdentity(pid: number): string | null {
   }
 }
 
+function worktreeSeedProcessExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
 async function writeWorktreeSeedLockEntry(
   entryPath: string,
   entry: WorktreeSeedLockEntry,
@@ -1554,7 +1563,12 @@ async function listLiveWorktreeSeedLocks(lockDir: string): Promise<WorktreeSeedL
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    if (!entry || readWorktreeSeedProcessIdentity(entry.pid) !== entry.processIdentity) {
+    if (!entry || !worktreeSeedProcessExists(entry.pid)) {
+      await fsPromises.rm(entryPath, { force: true });
+      continue;
+    }
+    const processIdentity = readWorktreeSeedProcessIdentity(entry.pid);
+    if (processIdentity !== null && processIdentity !== entry.processIdentity) {
       await fsPromises.rm(entryPath, { force: true });
       continue;
     }
