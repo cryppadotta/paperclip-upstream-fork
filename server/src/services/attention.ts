@@ -85,6 +85,8 @@ const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const FAILED_RUN_STATUSES = ["failed", "timed_out"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
+const OPEN_DECISION_DEFAULT_LIMIT = 500;
+const OPEN_DECISION_MAX_LIMIT = 1_000;
 
 type IssueSummaryRow = {
   id: string;
@@ -123,6 +125,10 @@ type BlockingIssueSummary = {
 type AttentionListOptions = {
   userId?: string | null;
   includeDismissed?: boolean;
+};
+
+type AttentionServiceOptions = {
+  openDecisionLimit?: number;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -585,7 +591,11 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
-export function attentionService(db: Db) {
+export function attentionService(db: Db, options: AttentionServiceOptions = {}) {
+  const openDecisionLimit = Math.min(
+    Math.max(Math.trunc(options.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
+    OPEN_DECISION_MAX_LIMIT,
+  );
   return {
     list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
       const prefix = await companyPrefix(db, companyId);
@@ -750,9 +760,10 @@ export function attentionService(db: Db) {
         createdAt: decisions.createdAt,
         updatedAt: decisions.updatedAt,
       }).from(decisions).where(and(eq(decisions.companyId, companyId), eq(decisions.status, "open")))
-        .orderBy(desc(decisions.updatedAt), desc(decisions.id));
+        .orderBy(desc(decisions.updatedAt), desc(decisions.id))
+        .limit(openDecisionLimit);
       const decisionIssueMap = await issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId));
-      // Bundle titles let the feed render a single "Gardener proposed N cleanups"
+      // Bundle titles let the feed render a single "Agent proposed N decisions"
       // group header over sibling decisions (v1 still decides each independently).
       const bundleIds = [...new Set(openDecisions.map((decision) => decision.bundleId).filter((value): value is string => Boolean(value)))];
       const bundleTitleMap = new Map<string, string>();

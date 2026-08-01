@@ -304,6 +304,17 @@ describePg("decisionService", () => {
     })]));
   });
 
+  it("bounds the open-decision slice of the attention feed", async () => {
+    const older = await createCommentDecision("lenient", { idempotencyKey: "attention-older" });
+    const newer = await createCommentDecision("lenient", { idempotencyKey: "attention-newer" });
+    await db.update(decisions).set({ updatedAt: new Date(Date.now() - 1_000) }).where(eq(decisions.id, older.id));
+
+    const feed = await attentionService(db, { openDecisionLimit: 1 }).list(companyId, { userId: decidedByUserId });
+
+    expect(feed.countsBySourceKind.decision).toBe(1);
+    expect(feed.items.filter((item) => item.sourceKind === "decision").map((item) => item.subject.id)).toEqual([newer.id]);
+  });
+
   it("loads target staleness in a bounded query for the open-decision list", async () => {
     const first = await createCommentDecision("lenient", { idempotencyKey: "list-query-1" });
     const second = await createCommentDecision("lenient", { idempotencyKey: "list-query-2" });

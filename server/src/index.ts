@@ -73,6 +73,7 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { validateDecisionSigningSecret } from "./services/decision-signing.js";
+import { createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -701,14 +702,11 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
-  const heartbeat = heartbeatService(db as any, { pluginWorkerManager });
+  const heartbeat = config.heartbeatSchedulerEnabled
+    ? heartbeatService(db as any, { pluginWorkerManager })
+    : null;
   const decisionServiceOptions = {
-    wakeOriginAgent: async (input: { agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" }) => heartbeat.wakeup(input.agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: `decision_${input.outcome}`,
-      payload: { issueId: input.issueId, decisionId: input.decisionId, outcome: input.outcome },
-    }),
+    wakeOriginAgent: createDecisionWakeOriginAgent(heartbeat?.wakeup ?? null),
   };
   // Managed instances drive bundled plugin auto-install from the managed-config
   // document parsed fail-closed above (`plugins.autoInstall`). Absent env means
@@ -893,7 +891,7 @@ export async function startServer(): Promise<StartedServer> {
     }
   };
 
-  if (config.heartbeatSchedulerEnabled) {
+  if (heartbeat) {
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
