@@ -32,6 +32,7 @@ describe("service definition generation", () => {
     expect(unit).toContain("Type=notify");
     expect(unit).toContain("NotifyAccess=all");
     expect(unit).toContain('ExecStart="/home/alice/.local/bin/paperclipai" run --instance "team-a"');
+    expect(unit).toContain("KillMode=process");
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("TimeoutStopSec=300");
     expect(unit).not.toContain("API_KEY");
