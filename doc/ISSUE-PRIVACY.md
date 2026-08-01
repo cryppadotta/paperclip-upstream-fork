@@ -55,6 +55,35 @@ content.
 > workspaces and appropriately trusted agents for sensitive work; task ACLs are
 > not a sandbox or data-loss-prevention system.
 
+## Plugins and notification/digest surfaces
+
+Plugins (including any Slack notifier or digest plugin) are **non-member
+principals**: they hold no company membership, task grant, or private-project
+access. The host services that back the `issues.read` capability —
+`issues.list`, `issues.get`, `issues.listComments`, `issues.listAttachments`,
+`issues.getAttachmentContent`, and `issues.getOrchestrationSummary` — apply the
+canonical visibility predicate against a synthetic non-member actor, so a
+plugin sees only company-open work. A private task is filtered from list
+results, returns `null`/empty on direct read, and reports "not found" as an
+orchestration root. Orchestration summaries additionally drop private subtree
+descendants and redact blocker/blocks edges that point at a private task, so
+its title, status, assignee, cost, and run metadata never enter an outbound
+payload. This is why a digest broadcast to a shared channel — whose audience is
+non-members by definition — cannot carry private issue content.
+
+There is intentionally **no plugin oversight exception**: unlike the
+company-wide audit log, no plugin read path bypasses the predicate. A plugin
+that must surface private work would need an explicit, separately designed
+oversight capability; none exists today.
+
+> **Residual metadata disclosure.** A plugin still learns aggregate,
+> content-free signals about private work that mirror the accepted
+> dashboard/count disclosure: `issues.getOrchestrationSummary` returns
+> company-wide `openBudgetIncidents` and a roll-up `costs`/token total for the
+> readable subtree, and readable public tasks reveal that they have *some*
+> redacted (locked) blocker without its identity. No private title, body,
+> comment, attachment, identifier, or relationship target is exposed.
+
 ## Rollout modes
 
 `PAPERCLIP_ISSUE_PRIVACY_MODE=enforce` is the default. `shadow` records
@@ -87,6 +116,7 @@ it protects:
 | Blocker and mention identifier-only stubs | `issue-access-grants-routes.test.ts` |
 | Attachment content | `issue-attachment-routes.test.ts` |
 | Private-project list and direct read | `projects-list-archived-routes.test.ts` |
+| Plugin issue reads (list, get, comments, attachments, orchestration) | `plugin-orchestration-apis.test.ts` |
 
 Adding a new task-derived read surface requires a non-member fixture in this
 gate before the surface can ship.
