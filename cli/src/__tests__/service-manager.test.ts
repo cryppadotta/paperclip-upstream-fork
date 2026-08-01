@@ -32,6 +32,7 @@ describe("service definition generation", () => {
     expect(unit).toContain("Type=notify");
     expect(unit).toContain("NotifyAccess=all");
     expect(unit).toContain('ExecStart="/home/alice/.local/bin/paperclipai" run --instance "team-a"');
+    expect(unit).toContain('Environment="EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK=1"');
     expect(unit).toContain("KillMode=process");
     expect(unit).toContain("Restart=always");
     expect(unit).toContain("TimeoutStopSec=300");
@@ -62,6 +63,7 @@ describe("service definition generation", () => {
     expect(plist).toContain("ing.paperclip.paperclipai.team-a");
     expect(plist).toContain("<key>RunAtLoad</key><true/>");
     expect(plist).toContain("<key>KeepAlive</key><true/>");
+    expect(plist).toContain("<key>EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK</key><string>1</string>");
     expect(plist).toContain("service.err.log");
   });
 });
