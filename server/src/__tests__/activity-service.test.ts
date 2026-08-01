@@ -18,6 +18,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { activityService } from "../services/activity.ts";
+import { issueReadSqlCondition } from "../services/authorization.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -115,6 +116,54 @@ describeEmbeddedPostgres("activity service", () => {
     const result = await activityService(db).list({ companyId, limit: 2 });
 
     expect(result.map((event) => event.action)).toEqual(["test.newest", "test.middle"]);
+  });
+
+  it("filters company activity rows whose entity is a private issue", async () => {
+    const companyId = randomUUID();
+    const privateIssueId = randomUUID();
+    const openIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Private activity",
+      issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(issues).values([
+      {
+        id: privateIssueId,
+        companyId,
+        title: "Confidential activity",
+        status: "todo",
+        priority: "medium",
+        visibility: "private",
+        privacyRootIssueId: privateIssueId,
+        responsibleUserId: "private-owner",
+      },
+      {
+        id: openIssueId,
+        companyId,
+        title: "Open activity",
+        status: "todo",
+        priority: "medium",
+      },
+    ]);
+    await db.insert(activityLog).values([
+      { companyId, actorType: "system", actorId: "system", action: "private.changed", entityType: "issue", entityId: privateIssueId },
+      { companyId, actorType: "system", actorId: "system", action: "open.changed", entityType: "issue", entityId: openIssueId },
+    ]);
+    const actor = {
+      type: "board" as const,
+      userId: "non-member",
+      companyIds: [companyId],
+      source: "session" as const,
+      isInstanceAdmin: false,
+    };
+
+    const rows = await activityService(db).list({
+      companyId,
+      readCondition: await issueReadSqlCondition(db, actor),
+    });
+    expect(rows.map((row) => row.action)).toContain("open.changed");
+    expect(rows.map((row) => row.action)).not.toContain("private.changed");
   });
 
   it("returns compact usage and result summaries for issue runs", async () => {

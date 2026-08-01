@@ -27,6 +27,7 @@ import {
   authorizationService,
   canActorReadIssuePrivacy,
   ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES,
+  issuePrivacyMode,
   type AuthorizationActor,
 } from "../services/authorization.js";
 import { logger } from "../middleware/logger.js";
@@ -192,6 +193,21 @@ async function grantUserPermission(
 describeEmbeddedPostgres("authorization service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  it("defaults issue privacy to enforce while retaining explicit rollout overrides", () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    try {
+      delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      expect(issuePrivacyMode()).toBe("enforce");
+      process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "shadow";
+      expect(issuePrivacyMode()).toBe("shadow");
+      process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "off";
+      expect(issuePrivacyMode()).toBe("off");
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
+  });
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-authorization-service-");

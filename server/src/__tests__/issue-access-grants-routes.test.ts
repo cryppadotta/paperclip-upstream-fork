@@ -11,6 +11,7 @@ import {
   createDb,
   heartbeatRuns,
   issueAccessGrants,
+  issueComments,
   issueReferenceMentions,
   issueRelations,
   issues,
@@ -74,6 +75,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
 
   afterEach(async () => {
     await db.delete(issueReferenceMentions);
+    await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issueAccessGrants);
@@ -96,6 +98,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
   async function seedFixture() {
     const companyId = randomUUID();
     const ownerId = `owner-${randomUUID()}`;
+    const adminId = `admin-${randomUUID()}`;
     const memberId = `member-${randomUUID()}`;
     const sharedUserId = `shared-${randomUUID()}`;
     const now = new Date();
@@ -107,6 +110,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
     });
     await db.insert(authUsers).values([
       { id: ownerId, name: "Olivia Owner", email: `${ownerId}@example.test`, createdAt: now, updatedAt: now },
+      { id: adminId, name: "Ada Admin", email: `${adminId}@example.test`, createdAt: now, updatedAt: now },
       { id: memberId, name: "Nora Nonreader", email: `${memberId}@example.test`, createdAt: now, updatedAt: now },
       {
         id: sharedUserId,
@@ -117,12 +121,12 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
         updatedAt: now,
       },
     ]);
-    await db.insert(companyMemberships).values([ownerId, memberId, sharedUserId].map((principalId) => ({
+    await db.insert(companyMemberships).values([ownerId, adminId, memberId, sharedUserId].map((principalId) => ({
       companyId,
       principalType: "user",
       principalId,
       status: "active",
-      membershipRole: "operator",
+      membershipRole: principalId === ownerId ? "owner" : principalId === adminId ? "admin" : "operator",
     })));
     const [assignedAgent, sharedAgent] = await db.insert(agents).values([
       {
@@ -194,6 +198,7 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
     return {
       companyId,
       ownerId,
+      adminId,
       memberId,
       sharedUserId,
       assignedAgent: assignedAgent!,
@@ -204,6 +209,43 @@ describeEmbeddedPostgres.sequential("issue access grant and locked edge routes",
       openIssue,
     };
   }
+
+  it("requires explicit owner/admin break-glass and records both audit evidence and an owner-visible notice", async () => {
+    const fixture = await seedFixture();
+    const adminApp = await createApp(db, boardActor(fixture.companyId, fixture.adminId));
+    const memberApp = await createApp(db, boardActor(fixture.companyId, fixture.memberId));
+
+    await request(adminApp).get(`/api/issues/${fixture.privateIssueId}`).expect(404);
+    await request(memberApp).get(`/api/issues/${fixture.privateIssueId}?breakGlass=true`).expect(404);
+
+    const accessed = await request(adminApp)
+      .get(`/api/issues/${fixture.privateIssueId}?breakGlass=true`);
+    expect(accessed.status, JSON.stringify(accessed.body)).toBe(200);
+    expect(accessed.body.id).toBe(fixture.privateIssueId);
+
+    const auditRows = await db.select().from(activityLog);
+    expect(auditRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: "issue.break_glass_read",
+        actorType: "user",
+        actorId: fixture.adminId,
+        entityType: "issue",
+        entityId: fixture.privateIssueId,
+      }),
+    ]));
+    const notices = await db.select().from(issueComments);
+    expect(notices).toEqual([
+      expect.objectContaining({
+        issueId: fixture.privateIssueId,
+        authorType: "system",
+        presentation: expect.objectContaining({
+          kind: "system_notice",
+          title: "Break-glass access used",
+          tone: "warning",
+        }),
+      }),
+    ]);
+  }, 20_000);
 
   it("auto-grants private-root access on assignment and keeps it sticky until revoke", async () => {
     const fixture = await seedFixture();

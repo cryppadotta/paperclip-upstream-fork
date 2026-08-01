@@ -527,8 +527,8 @@ export function invalidateIssuePrivacyGrantCache(input: {
 
 export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
   const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
-  if (mode === "off" || mode === "enforce") return mode;
-  return "shadow";
+  if (mode === "off" || mode === "shadow") return mode;
+  return "enforce";
 }
 
 function issuePrivacyCacheTtlMs() {

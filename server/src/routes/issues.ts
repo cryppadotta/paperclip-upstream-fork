@@ -3485,9 +3485,79 @@ export function issueRoutes(
     });
   }
 
-  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+  async function canUseIssueBreakGlass(req: Request, issue: { companyId: string }) {
+    if (req.actor.type !== "board" || !req.actor.userId) return false;
+    return db
+      .select({ role: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, issue.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, req.actor.userId),
+        eq(companyMemberships.status, "active"),
+        inArray(companyMemberships.membershipRole, ["owner", "admin"]),
+      ))
+      .limit(1)
+      .then((rows) => rows.length > 0);
+  }
+
+  async function recordIssueBreakGlassRead(
+    req: Request,
+    issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
+  ) {
+    const actor = getActorInfo(req);
+    const occurredAt = new Date().toISOString();
+    await svc.addComment(
+      issue.id,
+      `A company administrator used audited break-glass access to read this private task at ${occurredAt}.`,
+      {},
+      {
+        authorType: "system",
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          title: "Break-glass access used",
+          detailsDefaultOpen: false,
+          density: "compact",
+        },
+      },
+    );
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "user",
+      actorId: actor.actorId,
+      agentId: null,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action: "issue.break_glass_read",
+      entityType: "issue",
+      entityId: issue.id,
+      issueId: issue.id,
+      details: {
+        issueId: issue.id,
+        occurredAt,
+        acknowledgement: "breakGlass=true",
+      },
+    });
+  }
+
+  async function assertIssueReadAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
+    options: { allowBreakGlass?: boolean } = {},
+  ) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
+    if (
+      options.allowBreakGlass === true
+      && req.query.breakGlass === "true"
+      && decision.reason === "deny_issue_private"
+      && await canUseIssueBreakGlass(req, issue)
+    ) {
+      await recordIssueBreakGlassRead(req, issue);
+      return true;
+    }
     res.status(404).json({ error: "Issue not found" });
     return false;
   }
@@ -5840,7 +5910,7 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true }))) return;
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
       ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
       : Promise.resolve({});

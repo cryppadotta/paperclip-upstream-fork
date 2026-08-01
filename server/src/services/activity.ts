@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -25,6 +25,7 @@ export interface ActivityFilters {
   entityType?: string;
   entityId?: string;
   limit?: number;
+  readCondition?: SQL<boolean>;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -355,7 +356,7 @@ export function activityService(db: Db) {
             ...conditions,
             or(
               sql`${activityLog.entityType} != 'issue'`,
-              visibleIssueCondition(),
+              and(visibleIssueCondition(), filters.readCondition ?? sql<boolean>`true`),
             ),
           ),
         )
