@@ -424,6 +424,15 @@ describe("worktree helpers", () => {
       }));
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-pending"))).toBe(false);
       expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed-complete"))).toBe(true);
+
+      const incompleteLockPath = path.join(targetRoot, ".paperclip", "seed.lock");
+      fs.writeFileSync(incompleteLockPath, "");
+      const staleTime = new Date(Date.now() - 60_000);
+      fs.utimesSync(incompleteLockPath, staleTime, staleTime);
+      await expect(
+        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
+      ).resolves.toEqual({ seeded: false, reason: "complete_marker" });
+      expect(fs.existsSync(incompleteLockPath)).toBe(false);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }

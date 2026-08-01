@@ -1456,6 +1456,7 @@ function readWorktreeSeedPendingMarker(filePath: string): WorktreeSeedPendingMar
 
 const WORKTREE_SEED_LOCK_FILE = "seed.lock";
 const WORKTREE_SEED_LOCK_TIMEOUT_MS = 30 * 60 * 1_000;
+const WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS = 5_000;
 
 async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
   const lockPath = path.resolve(path.dirname(configPath), WORKTREE_SEED_LOCK_FILE);
@@ -1472,18 +1473,21 @@ async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promi
       try {
         const existingToken = (await fsPromises.readFile(lockPath, "utf8")).trim();
         const ownerPid = Number.parseInt(existingToken.split(":", 1)[0] ?? "", 10);
-        // Treat a missing or partially written token as owned. Another process
-        // can observe the lock after its exclusive create but before its token
-        // write completes, and removing it here would defeat the mutex.
-        let ownerIsAlive = true;
+        let ownerIsAlive: boolean | null = null;
         if (Number.isInteger(ownerPid) && ownerPid > 0) {
           try {
             process.kill(ownerPid, 0);
+            ownerIsAlive = true;
           } catch (processError) {
             ownerIsAlive = (processError as NodeJS.ErrnoException).code !== "ESRCH";
           }
         }
-        if (!ownerIsAlive && (await fsPromises.readFile(lockPath, "utf8")).trim() === existingToken) {
+        const incompleteLockIsStale = ownerIsAlive === null
+          && Date.now() - (await fsPromises.stat(lockPath)).mtimeMs >= WORKTREE_SEED_INCOMPLETE_LOCK_GRACE_MS;
+        if (
+          (ownerIsAlive === false || incompleteLockIsStale)
+          && (await fsPromises.readFile(lockPath, "utf8")).trim() === existingToken
+        ) {
           await fsPromises.rm(lockPath, { force: true });
           continue;
         }
