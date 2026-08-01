@@ -1587,7 +1587,7 @@ export function resolveWorktreeSeedBackupEngine(seedPlan: WorktreeSeedPlan): "au
     : "javascript";
 }
 
-async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
+async function runWorktreeInitUnlocked(opts: WorktreeInitOptions): Promise<void> {
   const cwd = process.cwd();
   const worktreeName = resolveSuggestedWorktreeName(
     cwd,
@@ -1733,6 +1733,21 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
       `Worktree ready. Run Paperclip inside this repo and the CLI/server will use ${paths.instanceId} automatically.`,
     ),
   );
+}
+
+async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
+  const cwd = process.cwd();
+  const worktreeName = resolveSuggestedWorktreeName(
+    cwd,
+    opts.name ?? detectGitBranchName(cwd) ?? undefined,
+  );
+  const instanceId = sanitizeWorktreeInstanceId(opts.instance ?? worktreeName);
+  const configPath = resolveWorktreeLocalPaths({
+    cwd,
+    homeDir: resolveWorktreeHome(opts.home),
+    instanceId,
+  }).configPath;
+  await withWorktreeSeedLock(configPath, () => runWorktreeInitUnlocked(opts));
 }
 
 export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<void> {
@@ -3363,15 +3378,15 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
   }
 }
 
-async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
+async function runWorktreeReseedUnlocked(
+  opts: WorktreeReseedOptions,
+  targetEndpoint: ResolvedWorktreeEndpoint,
+): Promise<void> {
   const seedMode = opts.seedMode ?? "full";
   if (!isWorktreeSeedMode(seedMode)) {
     throw new Error(`Unsupported seed mode "${seedMode}". Expected one of: minimal, full.`);
   }
 
-  const targetEndpoint = opts.to
-    ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
-    : resolveCurrentEndpoint();
   const source = resolveWorktreeReseedSource(opts);
 
   if (path.resolve(source.configPath) === path.resolve(targetEndpoint.configPath)) {
@@ -3451,6 +3466,16 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
     spinner.stop(pc.red("Failed to reseed worktree database."));
     throw error;
   }
+}
+
+async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
+  const targetEndpoint = opts.to
+    ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
+    : resolveCurrentEndpoint();
+  await withWorktreeSeedLock(
+    targetEndpoint.configPath,
+    () => runWorktreeReseedUnlocked(opts, targetEndpoint),
+  );
 }
 
 export async function worktreeReseedCommand(opts: WorktreeReseedOptions): Promise<void> {
