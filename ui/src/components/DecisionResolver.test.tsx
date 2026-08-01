@@ -27,9 +27,18 @@ vi.mock("@tanstack/react-query", () => ({
         error: null,
       }
     : { data: [], isLoading: false, error: null },
-  useQueries: ({ queries }: { queries: Array<{ queryKey: readonly string[] }> }) => queries.map(() => ({
-    data: { id: "target-1", identifier: "PAP-1", title: "Target", status: state.issueStatus },
-  })),
+  useQueries: ({
+    queries,
+    combine,
+  }: {
+    queries: Array<{ queryKey: readonly string[] }>;
+    combine?: (results: Array<{ data: { id: string; identifier: string; title: string; status: string } }>) => unknown;
+  }) => {
+    const results = queries.map(() => ({
+      data: { id: "target-1", identifier: "PAP-1", title: "Target", status: state.issueStatus },
+    }));
+    return combine ? combine(results) : results;
+  },
 }));
 
 vi.mock("../context/CompanyContext", () => ({

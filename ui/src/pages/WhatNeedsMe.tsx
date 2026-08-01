@@ -66,9 +66,16 @@ const noopToggleExpand = () => {};
 const INITIAL_ATTENTION_ROW_RENDER_LIMIT = 50;
 const ATTENTION_ROW_RENDER_BATCH_SIZE = 100;
 const ATTENTION_SCROLL_LOAD_THRESHOLD_PX = 480;
+const DECISION_HISTORY_VISIBLE_LIMIT = 50;
+const DECISION_HISTORY_QUERY_LIMIT = DECISION_HISTORY_VISIBLE_LIMIT + 1;
 
 export function decisionHistoryQueryEnabled(companyId: string | null | undefined, open: boolean) {
   return Boolean(companyId && open);
+}
+
+export function decisionHistoryCount(count: number | undefined) {
+  if (count == null) return undefined;
+  return count > DECISION_HISTORY_VISIBLE_LIMIT ? `${DECISION_HISTORY_VISIBLE_LIMIT}+` : count;
 }
 
 function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
@@ -145,12 +152,12 @@ export function WhatNeedsMe() {
   // feed (entryRule = open only), so we fetch them directly for the curtains.
   const { data: decidedDecisions, isLoading: decidedDecisionsLoading } = useQuery({
     queryKey: queryKeys.decisions.list(selectedCompanyId!, "decided"),
-    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: 50 }),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: DECISION_HISTORY_QUERY_LIMIT }),
     enabled: decisionHistoryQueryEnabled(selectedCompanyId, decidedOpen),
   });
   const { data: expiredDecisions, isLoading: expiredDecisionsLoading } = useQuery({
     queryKey: queryKeys.decisions.list(selectedCompanyId!, "expired"),
-    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: 50 }),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: DECISION_HISTORY_QUERY_LIMIT }),
     enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
   });
 
@@ -682,14 +689,14 @@ export function WhatNeedsMe() {
       <div className="space-y-4">
         <Curtain
           label="Decided"
-          count={decidedDecisions?.length}
+          count={decisionHistoryCount(decidedDecisions?.length)}
           open={decidedOpen}
           onToggle={() => setDecidedOpen((prev) => !prev)}
         >
           {decidedDecisionsLoading ? (
             <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
           ) : (decidedDecisions?.length ?? 0) > 0 ? (
-            decidedDecisions!.map((decision) => (
+            decidedDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
               <DecisionResolver
                 key={decision.id}
                 companyId={selectedCompanyId}
@@ -704,14 +711,14 @@ export function WhatNeedsMe() {
 
         <Curtain
           label="Expired"
-          count={expiredDecisions?.length}
+          count={decisionHistoryCount(expiredDecisions?.length)}
           open={expiredOpen}
           onToggle={() => setExpiredOpen((prev) => !prev)}
         >
           {expiredDecisionsLoading ? (
             <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
           ) : (expiredDecisions?.length ?? 0) > 0 ? (
-            expiredDecisions!.map((decision) => (
+            expiredDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
               <DecisionResolver
                 key={decision.id}
                 companyId={selectedCompanyId}
@@ -918,7 +925,7 @@ function Curtain({
   children,
 }: {
   label: string;
-  count?: number;
+  count?: number | string;
   open: boolean;
   onToggle: () => void;
   children: ReactNode;

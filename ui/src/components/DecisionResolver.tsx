@@ -18,6 +18,15 @@ interface DecisionResolverProps {
   onResolved?: () => void;
 }
 
+type IssueDetail = Awaited<ReturnType<typeof issuesApi.get>>;
+
+// A module-level combine function lets TanStack Query structurally share this
+// projection until issue data actually changes. Depending on useQueries' raw
+// result array would invalidate resolveIssue on every render.
+function combineIssueData(results: Array<{ data?: IssueDetail }>) {
+  return results.map((result) => result.data);
+}
+
 /**
  * Container for a Decisions-v1 decision surfaced in the attention feed. Fetches
  * the full decision (`get`) plus the shared open-list (for `targetChanged`),
@@ -71,12 +80,13 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
     return [...ids];
   }, [decision, originIssue?.id]);
 
-  const issueQueries = useQueries({
+  const issueData = useQueries({
     queries: referencedIds.map((id) => ({
       queryKey: queryKeys.issues.detail(id),
       queryFn: () => issuesApi.get(id),
       staleTime: 30_000,
     })),
+    combine: combineIssueData,
   });
 
   const cancelTreeTargetIds = useMemo(() => {
@@ -109,8 +119,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
         status: originIssue.status,
       });
     }
-    issueQueries.forEach((query, index) => {
-      const issue = query.data;
+    issueData.forEach((issue, index) => {
       const id = referencedIds[index];
       if (issue && id) {
         map.set(id, {
@@ -123,7 +132,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       }
     });
     return (id: string) => map.get(id) ?? null;
-  }, [originIssue, referencedIds, issueQueries, issueHref]);
+  }, [originIssue, referencedIds, issueData, issueHref]);
 
   const cancelTreePreview = (targetIssueId: string): DecisionIssueRef[] | null => {
     const index = cancelTreeTargetIds.indexOf(targetIssueId);

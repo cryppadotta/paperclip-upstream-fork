@@ -251,7 +251,6 @@ export function DecisionCard({
   className,
 }: DecisionCardProps) {
   const [inputValues, setInputValues] = useState<Record<string, string>>({});
-  const [dismissReason, setDismissReason] = useState("");
   const [confirmOptionId, setConfirmOptionId] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState("");
 
@@ -541,7 +540,7 @@ export function DecisionCard({
           {!decision.options.some((option) => option.effects.length === 0) && (
             <div className="flex items-center justify-between gap-2 pt-1">
               <span className="text-xs text-muted-foreground">Not now?</span>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.(dismissReason.trim() || undefined)}>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => onDismiss?.()}>
                 Dismiss — no effects
               </Button>
             </div>
