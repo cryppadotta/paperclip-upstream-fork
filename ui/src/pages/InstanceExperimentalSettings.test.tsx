@@ -57,6 +57,8 @@ const SERVER_INFO_TOGGLE_SELECTOR =
   'button[aria-label="Toggle server info debug view experimental setting"]';
 const BUILT_IN_AGENTS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle built-in agents experimental setting"]';
+const BETA_SKILLS_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle beta skills experimental setting"]';
 const APPS_TOGGLE_SELECTOR = 'button[aria-label="Toggle apps experimental setting"]';
 const SUMMARIES_TOGGLE_SELECTOR =
   'button[aria-label="Toggle summaries experimental setting"]';
@@ -78,12 +80,12 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
     enableBuiltInAgents: false,
+    enableBetaSkills: false,
     enableSummaries: false,
     enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableTaskWatchdogs: false,
-    enableCloudSync: false,
     enableServerInfoDebugView: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
@@ -91,6 +93,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     issueGraphLivenessAutoRecoveryLookbackHours: 24,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
+    enableOwnerInstanceAdmin: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
@@ -442,6 +445,26 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableBuiltInAgents: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("renders and patches the Beta skills experimental toggle", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).toContain("pin beta releases of the Paperclip core skill");
+
+    const toggle = container.querySelector<HTMLButtonElement>(BETA_SKILLS_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableBetaSkills: true,
     });
     expect(toggle?.getAttribute("aria-checked")).toBe("true");
   });

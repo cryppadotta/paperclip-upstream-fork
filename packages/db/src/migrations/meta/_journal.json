@@ -1342,8 +1342,36 @@
     {
       "idx": 193,
       "version": "7",
+      "when": 1785170000000,
+      "tag": "0193_document_memberships",
+      "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1784920485226,
+      "tag": "0194_company_skill_releases",
+      "breakpoints": true
+    },
+    {
+      "idx": 195,
+      "version": "7",
+      "when": 1785170000001,
+      "tag": "0195_built_in_agent_unique_marker",
+      "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1785170001001,
+      "tag": "0196_drop_cloud_upstream_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 197,
+      "version": "7",
       "when": 1785175200000,
-      "tag": "0193_decisions_v1",
+      "tag": "0197_decisions_v1",
       "breakpoints": true
     }
   ]
