@@ -15,6 +15,8 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueRelations,
+  issueTreeHoldMembers,
+  issueTreeHolds,
   issues,
   projects,
 } from "@paperclipai/db";
@@ -531,6 +533,156 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       scheduledRetryAttempt: 1,
     });
   });
+
+  it("promotes an issue's scheduled retry immediately and reports repeated requests", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture();
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 60_000,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    const retryNow = new Date(now.getTime() + 5_000);
+    const promoted = await heartbeat.retryScheduledRetryNow({
+      issueId,
+      actor: { actorType: "user", actorId: "operator-1" },
+      now: retryNow,
+    });
+    expect(promoted).toMatchObject({
+      outcome: "promoted",
+      scheduledRetry: {
+        runId: scheduled.run.id,
+        status: "queued",
+        scheduledRetryAttempt: 1,
+        scheduledRetryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      },
+    });
+
+    const wakeup = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, scheduled.run.wakeupRequestId ?? ""))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.payload).toMatchObject({
+      scheduledRetryAt: retryNow.toISOString(),
+      retryNowRequestedAt: retryNow.toISOString(),
+    });
+
+    await expect(heartbeat.retryScheduledRetryNow({ issueId, now: retryNow })).resolves.toMatchObject({
+      outcome: "already_promoted",
+      scheduledRetry: { runId: scheduled.run.id, status: "queued" },
+    });
+  });
+
+  it("suppresses retry-now promotion when the issue becomes terminal", async () => {
+    const { issueId, runId, now } = await seedMaxTurnFixture();
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 60_000,
+    });
+    expect(scheduled.outcome).toBe("scheduled");
+    if (scheduled.outcome !== "scheduled") return;
+
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    await expect(
+      heartbeat.retryScheduledRetryNow({ issueId, now: new Date(now.getTime() + 5_000) }),
+    ).resolves.toMatchObject({
+      outcome: "gate_suppressed",
+      scheduledRetry: { runId: scheduled.run.id, status: "cancelled" },
+    });
+  });
+
+  it("reports missing issues and issues without a live scheduled retry", async () => {
+    const { issueId } = await seedMaxTurnFixture();
+    await expect(heartbeat.retryScheduledRetryNow({ issueId })).resolves.toEqual({
+      outcome: "no_scheduled_retry",
+      message: "No live scheduled retry exists for this issue",
+      scheduledRetry: null,
+    });
+    await expect(heartbeat.retryScheduledRetryNow({ issueId: randomUUID() })).rejects.toMatchObject({
+      status: 404,
+    });
+  });
+
+  it("schedules an interaction infrastructure retry without issue context", async () => {
+    const { runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, runId));
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+
+    expect(scheduled).toMatchObject({ outcome: "scheduled", attempt: 1 });
+    if (scheduled.outcome !== "scheduled") return;
+    expect(scheduled.run.contextSnapshot).not.toHaveProperty("issueId");
+  });
+
+  it("suppresses due retries when review ownership changes or a subtree pause hold appears", async () => {
+    const review = await seedMaxTurnFixture({ issueStatus: "in_review" });
+    const reviewScheduled = await heartbeat.scheduleBoundedRetry(review.runId, {
+      now: review.now,
+      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
+      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(reviewScheduled.outcome).toBe("scheduled");
+    if (reviewScheduled.outcome !== "scheduled") return;
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", userId: "reviewer", agentId: null },
+        returnAssignee: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+      },
+    }).where(eq(issues.id, review.issueId));
+    expect(await heartbeat.promoteDueScheduledRetries(reviewScheduled.dueAt)).toEqual({ promoted: 0, runIds: [] });
+    expect((await heartbeat.getRun(reviewScheduled.run.id))?.errorCode).toBe("issue_review_participant_changed");
+
+    await cleanupRetryFixture();
+    const held = await seedMaxTurnFixture();
+    const heldScheduled = await heartbeat.scheduleBoundedRetry(held.runId, {
+      now: held.now,
+      retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+      wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+      maxAttempts: 2,
+      delayMs: 1_000,
+    });
+    expect(heldScheduled.outcome).toBe("scheduled");
+    if (heldScheduled.outcome !== "scheduled") return;
+    const [hold] = await db.insert(issueTreeHolds).values({
+      companyId: held.companyId,
+      rootIssueId: held.issueId,
+      mode: "pause",
+      status: "active",
+    }).returning();
+    await db.insert(issueTreeHoldMembers).values({
+      companyId: held.companyId,
+      holdId: hold!.id,
+      issueId: held.issueId,
+      issueTitle: "Continue after max turns",
+      issueStatus: "in_progress",
+      assigneeAgentId: held.agentId,
+    });
+    expect(await heartbeat.promoteDueScheduledRetries(heldScheduled.dueAt)).toEqual({ promoted: 0, runIds: [] });
+    expect((await heartbeat.getRun(heldScheduled.run.id))?.errorCode).toBe("issue_paused");
+  }, 10_000);
 
   it("schedules accepted interaction continuation infra retries while the issue is in_review", async () => {
     const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });

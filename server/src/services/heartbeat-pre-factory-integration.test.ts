@@ -7,16 +7,22 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
-import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   agents,
+  agentRuntimeState,
   companies,
   companySkills,
+  companySkillTestRuns,
+  companySkillVersions,
   createDb,
   heartbeatRuns,
   issues,
   projects,
   projectWorkspaces,
+  routineRevisions,
+  routineRuns,
+  routines,
   toolMcpGateways,
   toolProfiles,
 } from "@paperclipai/db";
@@ -25,10 +31,10 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "../__tests__/helpers/drain-heartbeat-runs.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
-import { heartbeatService } from "./heartbeat.ts";
-import { instanceSettingsService } from "./instance-settings.ts";
+import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { heartbeatService } from "./heartbeat.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -59,6 +65,7 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
   let executionDelayMs = 0;
   let removeWorktreeGitMetadata = false;
   const capturedConfigs: Record<string, unknown>[] = [];
+  const capturedContexts: Record<string, unknown>[] = [];
 
   beforeAll(async () => {
     database = await startEmbeddedPostgresTestDatabase("heartbeat-pre-factory-");
@@ -66,9 +73,10 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
     paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-pre-factory-home-"));
     previousHome = process.env.PAPERCLIP_HOME;
     process.env.PAPERCLIP_HOME = paperclipHome;
-    const execute = async (context: AdapterExecutionContext) => {
-        executionCount += 1;
-        capturedConfigs.push(context.config);
+    const execute = async (context: AdapterExecutionContext): Promise<AdapterExecutionResult> => {
+      executionCount += 1;
+      capturedConfigs.push(context.config);
+      capturedContexts.push(context.context);
         if (removeWorktreeGitMetadata) {
           const workspace = context.context.paperclipWorkspace as { cwd?: string } | undefined;
           if (workspace?.cwd) await fs.rm(path.join(workspace.cwd, ".git"), { force: true });
@@ -115,6 +123,16 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
         }
         if (context.agent.name === "Summary Only Agent") {
           return { exitCode: 1, signal: null, timedOut: false, errorCode: null, errorMessage: "summary only" };
+        }
+        if (context.agent.name === "Max Turn Agent") {
+          return {
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            errorCode: "adapter_failed",
+            errorMessage: "Maximum turns reached",
+            resultJson: { stopReason: "max_turns_exhausted" },
+          };
         }
         return {
           exitCode: 0,
@@ -387,6 +405,52 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       JSON.stringify(config).includes(`company/${companyId}/mentioned-skill`))).toBe(true);
     await secondHeartbeat.waitForRunExecutionDrain(second!.id);
 
+    await db
+      .update(heartbeatRuns)
+      .set({
+        sessionIdAfter: "coverage-session",
+        createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000),
+      })
+      .where(eq(heartbeatRuns.id, first!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({ sessionIdAfter: "coverage-session", createdAt: new Date() })
+      .where(eq(heartbeatRuns.id, second!.id));
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: {
+          heartbeat: {
+            sessionCompaction: {
+              enabled: true,
+              maxSessionRuns: 0,
+              maxRawInputTokens: 0,
+              maxSessionAgeHours: 1,
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    await db
+      .update(agentRuntimeState)
+      .set({ sessionId: "coverage-session" })
+      .where(eq(agentRuntimeState.agentId, agentId));
+    const ageContextIndex = capturedContexts.length;
+    const agedSessionRun = await secondHeartbeat.invoke(agentId, "on_demand", {
+      wakeReason: "manual_age_coverage",
+    }, "manual");
+    expect(agedSessionRun).not.toBeNull();
+    expect((await waitForRun(secondHeartbeat, agedSessionRun!.id))?.status).toBe("succeeded");
+    await secondHeartbeat.waitForRunExecutionDrain(agedSessionRun!.id);
+    expect(capturedContexts.slice(ageContextIndex)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          paperclipSessionRotationReason: expect.stringContaining("session age reached"),
+          paperclipSessionHandoffMarkdown: expect.stringContaining("Paperclip session handoff"),
+        }),
+      ]),
+    );
+
     const payloadWake = await secondHeartbeat.wakeup(agentId, {
       source: "on_demand",
       triggerDetail: "manual",
@@ -619,6 +683,380 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
     executionDelayMs = 0;
   }, 30_000);
 
+  it("applies the bounded max-turn continuation policy after adapter exhaustion", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Max Turn Coverage Company",
+      issuePrefix: "MTC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Max Turn Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          maxTurnContinuation: {
+            enabled: true,
+            maxAttempts: 999,
+            delayMs: 999_999_999,
+          },
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Continue after max turns",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "MTC-1",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(agentId, "assignment", {
+      issueId,
+      wakeReason: "issue_assigned",
+    }, "system");
+    expect(run).not.toBeNull();
+    expect((await waitForRun(heartbeat, run!.id))?.status).toBe("failed");
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    const retry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "max_turns_continuation",
+    });
+    expect(retry?.scheduledRetryAt?.getTime()).toBeLessThanOrEqual(Date.now() + 5 * 60 * 1000 + 1_000);
+  }, 20_000);
+
+  it("resolves routine revision and legacy routine ownership during dispatch", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const routineId = randomUUID();
+    const revisionId = randomUUID();
+    const routineRunId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Routine Coverage Company",
+      issuePrefix: "RTC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "company-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Routine Coverage Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Pinned routine",
+      assigneeAgentId: agentId,
+      responsibleUserId: "current-routine-user",
+      env: null,
+    });
+    await db.insert(routineRevisions).values({
+      id: revisionId,
+      companyId,
+      routineId,
+      revisionNumber: 1,
+      title: "Pinned routine",
+      responsibleUserId: "revision-user",
+      snapshot: {
+        version: 1,
+        routine: {
+          id: routineId,
+          companyId,
+          projectId: null,
+          goalId: null,
+          parentIssueId: null,
+          title: "Pinned routine",
+          description: null,
+          assigneeAgentId: agentId,
+          priority: "medium",
+          status: "active",
+          concurrencyPolicy: "coalesce_if_active",
+          catchUpPolicy: "skip_missed",
+          activityGatePolicy: "always",
+          activityGateScope: "company",
+          variables: [],
+          env: null,
+          responsibleUserId: "snapshot-user",
+        },
+        triggers: [],
+      },
+    });
+    await db.insert(routineRuns).values({
+      id: routineRunId,
+      companyId,
+      routineId,
+      source: "manual",
+      status: "issue_created",
+      routineRevisionId: revisionId,
+      responsibleUserId: "routine-run-user",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Execute pinned routine",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: routineRunId,
+      issueNumber: 1,
+      identifier: "RTC-1",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const pinned = await heartbeat.invoke(agentId, "assignment", {
+      issueId,
+      wakeReason: "issue_assigned",
+    }, "system");
+    expect(pinned).not.toBeNull();
+    expect((await waitForRun(heartbeat, pinned!.id))?.responsibleUserId).toBe("revision-user");
+    await heartbeat.waitForRunExecutionDrain(pinned!.id);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    const legacyRoutineRunId = randomUUID();
+    await db.insert(routineRuns).values({
+      id: legacyRoutineRunId,
+      companyId,
+      routineId,
+      source: "manual",
+      status: "issue_created",
+      routineRevisionId: null,
+      responsibleUserId: "routine-run-user",
+    });
+    const legacyIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: legacyIssueId,
+      companyId,
+      title: "Execute legacy routine",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+      originId: routineId,
+      originRunId: legacyRoutineRunId,
+      issueNumber: 2,
+      identifier: "RTC-2",
+    });
+    const legacy = await heartbeat.invoke(agentId, "on_demand", {
+      issueId: legacyIssueId,
+      wakeReason: "issue_commented",
+      commentId: randomUUID(),
+    }, "manual");
+    expect(legacy).not.toBeNull();
+    expect((await waitForRun(heartbeat, legacy!.id))?.responsibleUserId).toBe("routine-run-user");
+    await heartbeat.waitForRunExecutionDrain(legacy!.id);
+  }, 20_000);
+
+  it("prioritizes queued issue runs before consuming the agent's only slot", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const priorities = ["unknown", "low", "medium", "high", "critical"];
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Queue Priority Coverage Company",
+      issuePrefix: "QPC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Queue Priority Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    const fixtures = priorities.map((priority, index) => ({
+      priority,
+      issueId: randomUUID(),
+      runId: randomUUID(),
+      issueNumber: index + 1,
+    }));
+    await db.insert(issues).values(fixtures.map((fixture) => ({
+      id: fixture.issueId,
+      companyId,
+      title: `${fixture.priority} priority work`,
+      status: "todo",
+      priority: fixture.priority,
+      assigneeAgentId: agentId,
+      issueNumber: fixture.issueNumber,
+      identifier: `QPC-${fixture.issueNumber}`,
+    })));
+    await db.insert(heartbeatRuns).values(fixtures.map((fixture) => ({
+      id: fixture.runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      contextSnapshot: { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+    })));
+
+    executionDelayMs = 200;
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const critical = fixtures.find((fixture) => fixture.priority === "critical")!;
+    expect((await waitForRun(heartbeat, critical.runId, 5_000))?.status).toBe("succeeded");
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    executionDelayMs = 0;
+  }, 20_000);
+
+  it("pins the exact skill revision into skill-test runs and completes the test run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const skillId = randomUUID();
+    const skillVersionId = randomUUID();
+    const skillTestRunId = randomUUID();
+    const skillDir = path.join(paperclipHome, `pinned-skill-${skillId}`);
+
+    await fs.mkdir(path.join(skillDir, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillDir, "SKILL.md"), "# Current skill\n", "utf8");
+    await fs.writeFile(path.join(skillDir, "references", "guide.md"), "Current guide", "utf8");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Pinned Skill Test Company",
+      issuePrefix: "PST",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Custom Failure Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Exercise a pinned skill revision",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PST-1",
+      workMode: "skill_test",
+      harnessKind: "skill_test",
+    });
+    await db.insert(companySkills).values({
+      id: skillId,
+      companyId,
+      key: `company/${companyId}/pinned-skill`,
+      slug: "pinned-skill",
+      name: "Pinned skill",
+      markdown: "# Current skill\n",
+      sourceType: "local_path",
+      sourceLocator: skillDir,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [],
+      metadata: { sourceKind: "local_path" },
+    });
+    await db.insert(companySkillVersions).values({
+      id: skillVersionId,
+      companyId,
+      companySkillId: skillId,
+      revisionNumber: 7,
+      label: "Pinned revision",
+      fileInventory: [
+        null,
+        [],
+        { path: "" },
+        { path: "SKILL.md", content: "# Pinned skill\n" },
+        { path: "references/guide.md", kind: "reference", content: "Pinned guide" },
+      ] as never,
+    });
+    await db.insert(companySkillTestRuns).values({
+      id: skillTestRunId,
+      companyId,
+      skillId,
+      inputSnapshot: "Use the pinned revision",
+      skillVersionId,
+      agentId,
+      agentConfigSnapshot: {},
+      issueId,
+      harnessIssueDescription: "Use the pinned revision",
+      status: "queued",
+      outputDocumentKey: "output",
+    });
+
+    const contextIndex = capturedContexts.length;
+    const heartbeat = heartbeatService(db);
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "skill_test_run_created" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    expect((await waitForRun(heartbeat, run!.id))?.status).toBe("failed");
+    await heartbeat.waitForRunExecutionDrain(run!.id);
+
+    const pinnedContext = capturedContexts.slice(contextIndex)
+      .map((context) => context.paperclipSkillTest)
+      .find(Boolean) as Record<string, unknown> | undefined;
+    expect(pinnedContext).toMatchObject({
+      testRunId: skillTestRunId,
+      skillId,
+      inputId: null,
+      skillVersionId,
+      revisionNumber: 7,
+      label: "Pinned revision",
+      outputDocumentKey: "output",
+      fileInventory: [
+        { path: "SKILL.md", kind: "other", content: "# Pinned skill\n" },
+        { path: "references/guide.md", kind: "reference", content: "Pinned guide" },
+      ],
+    });
+    expect(pinnedContext?.directive).toContain("exact skill revision under test");
+
+    const completedTestRuns = await db
+      .select()
+      .from(companySkillTestRuns)
+      .where(eq(companySkillTestRuns.id, skillTestRunId));
+    expect(completedTestRuns).toMatchObject([{ id: skillTestRunId, status: "failed" }]);
+  }, 20_000);
+
   it("fingerprints an unrecoverable final workspace branch inspection", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -679,15 +1117,17 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
     const seeded = await db.insert(heartbeatRuns).values([
       {
         companyId, agentId, invocationSource: "on_demand", triggerDetail: "manual", status: "running",
-        processPid: 4242, processLossRetryCount: 1, startedAt: now,
+        processPid: 4242, processLossRetryCount: 1, startedAt: now, updatedAt: new Date(),
       },
       {
         companyId, agentId, invocationSource: "on_demand", triggerDetail: "manual", status: "running",
         processPid: 4243, processLossRetryCount: 1, startedAt: now,
+        updatedAt: new Date(Date.now() - 2 * 60 * 1000),
       },
       {
         companyId, agentId, invocationSource: "on_demand", triggerDetail: "manual", status: "running",
         processGroupId: 4244, processLossRetryCount: 1, startedAt: now,
+        updatedAt: new Date(Date.now() - 2 * 60 * 1000),
       },
     ]).returning();
     const kill = vi.spyOn(process, "kill").mockImplementation((pid) => {
@@ -696,7 +1136,7 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       throw error;
     });
     const heartbeat = heartbeatService(db);
-    const reaped = await heartbeat.reapOrphanedRuns(new Date("2026-08-01T00:01:00.000Z"), 0);
+    const reaped = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 60_000 });
     expect(reaped.runIds).toEqual(expect.arrayContaining([seeded[1]!.id, seeded[2]!.id]));
     expect(reaped.runIds).not.toContain(seeded[0]!.id);
     kill.mockRestore();
