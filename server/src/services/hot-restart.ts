@@ -8,10 +8,9 @@ import {
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
-const LEGACY_HOT_RESTART_LOCK_SUFFIX = ".lock";
-const LEGACY_HOT_RESTART_LOCK_STALE_MS = 30_000;
-const LEGACY_HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
-const LEGACY_HOT_RESTART_INTENT_MAX_AGE_MS = 5 * 60_000;
+const HOT_RESTART_LOCK_SUFFIX = ".lock";
+const HOT_RESTART_LOCK_STALE_MS = 30_000;
+const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
 
 export type HotRestartIntentRun = {
   runId: string;
@@ -132,13 +131,21 @@ function isProcessAlive(pid: number) {
   }
 }
 
-function isExpiredHotRestartIntent(intent: HotRestartIntent) {
+async function isOriginalServerProcessAlive(intent: HotRestartIntent) {
+  if (!isProcessAlive(intent.previousServerPid)) return false;
+  if (process.platform !== "linux") return true;
+
   const requestedAt = Date.parse(intent.requestedAt);
-  return !Number.isFinite(requestedAt)
-    || Date.now() - requestedAt > LEGACY_HOT_RESTART_INTENT_MAX_AGE_MS;
+  if (!Number.isFinite(requestedAt)) return true;
+  try {
+    const processStat = await fs.stat(`/proc/${intent.previousServerPid}`);
+    return processStat.ctimeMs <= requestedAt;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
 }
 
-async function removeStaleLegacyHotRestartLock(lockDir: string) {
+async function removeStaleHotRestartLock(lockDir: string) {
   let shouldRemove = false;
   try {
     const owner = JSON.parse(
@@ -150,21 +157,21 @@ async function removeStaleLegacyHotRestartLock(lockDir: string) {
       : Number.NaN;
     const ageMs = Number.isFinite(createdAt)
       ? Date.now() - createdAt
-      : LEGACY_HOT_RESTART_LOCK_STALE_MS + 1;
-    shouldRemove = !isProcessAlive(pid) || ageMs > LEGACY_HOT_RESTART_LOCK_STALE_MS;
+      : HOT_RESTART_LOCK_STALE_MS + 1;
+    shouldRemove = !isProcessAlive(pid) || ageMs > HOT_RESTART_LOCK_STALE_MS;
   } catch {
     const stat = await fs.stat(lockDir).catch(() => null);
     shouldRemove = !stat
-      || Date.now() - stat.mtimeMs > LEGACY_HOT_RESTART_LOCK_STALE_MS;
+      || Date.now() - stat.mtimeMs > HOT_RESTART_LOCK_STALE_MS;
   }
   if (!shouldRemove) return false;
   await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
   return true;
 }
 
-async function acquireLegacyHotRestartLock(filePath: string) {
-  const lockDir = `${filePath}${LEGACY_HOT_RESTART_LOCK_SUFFIX}`;
-  const deadline = Date.now() + LEGACY_HOT_RESTART_LOCK_TIMEOUT_MS;
+async function acquireHotRestartPathLock(filePath: string) {
+  const lockDir = `${filePath}${HOT_RESTART_LOCK_SUFFIX}`;
+  const deadline = Date.now() + HOT_RESTART_LOCK_TIMEOUT_MS;
   while (true) {
     try {
       await fs.mkdir(lockDir);
@@ -183,7 +190,7 @@ async function acquireLegacyHotRestartLock(filePath: string) {
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (await removeStaleLegacyHotRestartLock(lockDir)) continue;
+      if (await removeStaleHotRestartLock(lockDir)) continue;
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for hot-restart compatibility lock at ${lockDir}`);
       }
@@ -192,9 +199,9 @@ async function acquireLegacyHotRestartLock(filePath: string) {
   }
 }
 
-async function withLegacyHotRestartLock<T>(filePath: string, operation: () => Promise<T>) {
+async function withHotRestartPathLock<T>(filePath: string, operation: () => Promise<T>) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const release = await acquireLegacyHotRestartLock(filePath);
+  const release = await acquireHotRestartPathLock(filePath);
   try {
     return await operation();
   } finally {
@@ -325,11 +332,11 @@ export async function writeHotRestartIntent(input: {
   // The legacy location is shared by every instance under PAPERCLIP_HOME.
   // Claim it without replacement so concurrent staged restarts fail closed
   // instead of making the first old server consume another instance's PID.
-  await withLegacyHotRestartLock(legacyPath, () => claimLegacyHotRestartIntent(legacyPath, intent));
+  await withHotRestartPathLock(legacyPath, () => claimLegacyHotRestartIntent(legacyPath, intent));
   try {
-    await writeJsonFileAtomic(instancePath, intent);
+    await withHotRestartPathLock(instancePath, () => writeJsonFileAtomic(instancePath, intent));
   } catch (error) {
-    await withLegacyHotRestartLock(
+    await withHotRestartPathLock(
       legacyPath,
       () => removeMatchingHotRestartIntent(legacyPath, intent),
     ).catch(() => undefined);
@@ -353,9 +360,10 @@ export async function writeHotRestartShutdownSnapshot(input: {
       activeRuns: input.activeRuns,
     },
   };
-  await writeJsonFileAtomic(resolveHotRestartIntentPath(input.homeDir), updated);
+  const instancePath = resolveHotRestartIntentPath(input.homeDir);
+  await withHotRestartPathLock(instancePath, () => writeJsonFileAtomic(instancePath, updated));
   const legacyPath = resolveLegacyHotRestartIntentPath(input.homeDir);
-  await withLegacyHotRestartLock(legacyPath, async () => {
+  await withHotRestartPathLock(legacyPath, async () => {
     const legacyIntent = await readHotRestartIntentAtPath(legacyPath).catch(() => null);
     if (legacyIntent && isSameHotRestartRequest(legacyIntent, input.intent)) {
       await writeJsonFileAtomic(legacyPath, updated);
@@ -391,7 +399,7 @@ async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartI
     const existing = await readHotRestartIntentAtPath(filePath).catch(() => null);
     if (
       !existing
-      || (isProcessAlive(existing.previousServerPid) && !isExpiredHotRestartIntent(existing))
+      || await isOriginalServerProcessAlive(existing)
     ) {
       throw error;
     }
@@ -405,9 +413,13 @@ async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartI
 }
 
 export async function removeHotRestartIntent(homeDir?: string, expected?: HotRestartIntent) {
-  await removeMatchingHotRestartIntent(resolveHotRestartIntentPath(homeDir), expected);
+  const instancePath = resolveHotRestartIntentPath(homeDir);
+  await withHotRestartPathLock(
+    instancePath,
+    () => removeMatchingHotRestartIntent(instancePath, expected),
+  );
   const legacyPath = resolveLegacyHotRestartIntentPath(homeDir);
-  await withLegacyHotRestartLock(
+  await withHotRestartPathLock(
     legacyPath,
     () => removeMatchingHotRestartIntent(legacyPath, expected),
   );

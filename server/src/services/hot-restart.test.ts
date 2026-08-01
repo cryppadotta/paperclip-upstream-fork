@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
@@ -166,7 +166,7 @@ describe("hot-restart path compatibility", () => {
     });
   });
 
-  it("expires an abandoned handoff even when its PID has been recycled", async () => {
+  it("reclaims an abandoned handoff when its PID belongs to a newer process", async () => {
     await withTempHome(async (homeDir) => {
       process.env.PAPERCLIP_INSTANCE_ID = "blue";
       await writeHotRestartIntent({
@@ -189,7 +189,31 @@ describe("hot-restart path compatibility", () => {
     });
   });
 
-  it("does not let matching cleanup delete a replacement handoff", async () => {
+  it("keeps an old handoff while its original target process is alive", async () => {
+    await withTempHome(async (homeDir) => {
+      process.env.PAPERCLIP_INSTANCE_ID = "blue";
+      await writeHotRestartIntent({
+        homeDir,
+        previousServerPid: process.pid,
+        requestedAt: new Date(),
+        requestedByRunId: "blue-deploy",
+      });
+
+      vi.useFakeTimers({ now: Date.now() + 10 * 60_000 });
+      try {
+        process.env.PAPERCLIP_INSTANCE_ID = "green";
+        await expect(writeHotRestartIntent({
+          homeDir,
+          previousServerPid: process.pid,
+          requestedByRunId: "green-deploy",
+        })).rejects.toMatchObject({ code: "EEXIST" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("does not let matching cleanup delete replacement intent markers", async () => {
     await withTempHome(async (homeDir) => {
       process.env.PAPERCLIP_INSTANCE_ID = "blue";
       const abandonedIntent = await writeHotRestartIntent({
@@ -199,7 +223,6 @@ describe("hot-restart path compatibility", () => {
         requestedByRunId: "abandoned-deploy",
       });
 
-      process.env.PAPERCLIP_INSTANCE_ID = "green";
       await Promise.all([
         removeHotRestartIntent(homeDir, abandonedIntent),
         writeHotRestartIntent({
@@ -214,6 +237,9 @@ describe("hot-restart path compatibility", () => {
         await fs.readFile(resolveLegacyHotRestartIntentPath(homeDir), "utf8"),
       ) as Record<string, unknown>;
       expect(legacyIntent).toMatchObject({ requestedByRunId: "replacement-deploy" });
+      await expect(readHotRestartIntent(homeDir)).resolves.toMatchObject({
+        requestedByRunId: "replacement-deploy",
+      });
     });
   });
 
