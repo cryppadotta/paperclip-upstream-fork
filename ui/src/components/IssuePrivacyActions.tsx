@@ -12,7 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { issuesApi } from "@/api/issues";
 import { useToastActions } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
@@ -88,7 +88,7 @@ export function IssuePrivacyActions({
   }
 
   return (
-    <>
+    <TooltipProvider>
       {isPrivate ? (
         <>
           {withTooltip(
@@ -168,6 +168,6 @@ export function IssuePrivacyActions({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </>
+    </TooltipProvider>
   );
 }
