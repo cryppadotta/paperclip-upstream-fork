@@ -120,6 +120,8 @@ import {
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
+  buildWorkspaceReadyMetadata,
+  buildWorkspaceReadyPresentation,
   cleanupExecutionWorkspaceArtifacts,
   ensureGitWorktreeBranchCoherent,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -131,6 +133,7 @@ import {
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
+  type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
@@ -6191,6 +6194,41 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+}
+
+type WorkspaceReadyCommentWriter = {
+  addComment: (
+    issueId: string,
+    body: string,
+    actor: { agentId?: string; userId?: string; runId?: string | null },
+    options?: {
+      presentation?: ReturnType<typeof buildWorkspaceReadyPresentation>;
+      metadata?: ReturnType<typeof buildWorkspaceReadyMetadata>;
+    },
+  ) => Promise<unknown>;
+};
+
+export function postWorkspaceReadyComment(input: {
+  issuesSvc: WorkspaceReadyCommentWriter;
+  issueId: string;
+  agentId: string;
+  runId: string;
+  workspace: RealizedExecutionWorkspace;
+  runtimeServices: RuntimeServiceRef[];
+}) {
+  const workspaceReadyInput = {
+    workspace: input.workspace,
+    runtimeServices: input.runtimeServices,
+  };
+  return input.issuesSvc.addComment(
+    input.issueId,
+    buildWorkspaceReadyComment(workspaceReadyInput),
+    { agentId: input.agentId, runId: input.runId },
+    {
+      presentation: buildWorkspaceReadyPresentation(workspaceReadyInput),
+      metadata: buildWorkspaceReadyMetadata(workspaceReadyInput),
+    },
+  );
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -14333,14 +14371,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       if (issueId && (executionWorkspace.created || runtimeServices.some((service) => !service.reused))) {
         try {
-          await issuesSvc.addComment(
+          await postWorkspaceReadyComment({
+            issuesSvc,
             issueId,
-            buildWorkspaceReadyComment({
-              workspace: executionWorkspace,
-              runtimeServices,
-            }),
-            { agentId: agent.id, runId: run.id },
-          );
+            agentId: agent.id,
+            runId: run.id,
+            workspace: executionWorkspace,
+            runtimeServices,
+          });
         } catch (err) {
           await onLog(
             "stderr",
@@ -14740,14 +14778,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(heartbeatRuns.id, run.id));
         if (issueId) {
           try {
-            await issuesSvc.addComment(
+            await postWorkspaceReadyComment({
+              issuesSvc,
               issueId,
-              buildWorkspaceReadyComment({
-                workspace: executionWorkspace,
-                runtimeServices: adapterManagedRuntimeServices,
-              }),
-              { agentId: agent.id, runId: run.id },
-            );
+              agentId: agent.id,
+              runId: run.id,
+              workspace: executionWorkspace,
+              runtimeServices: adapterManagedRuntimeServices,
+            });
           } catch (err) {
             await onLog(
               "stderr",
