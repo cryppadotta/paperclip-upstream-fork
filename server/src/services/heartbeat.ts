@@ -1938,9 +1938,19 @@ const heartbeatRunListColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
   agentId: heartbeatRuns.agentId,
+  issueId: heartbeatRuns.issueId,
   invocationSource: heartbeatRuns.invocationSource,
   triggerDetail: heartbeatRuns.triggerDetail,
   status: heartbeatRuns.status,
+  inputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'inputTokens')::numeric`.as("inputTokens"),
+  cachedInputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric`.as("cachedInputTokens"),
+  outputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'outputTokens')::numeric`.as("outputTokens"),
+  totalTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'totalTokens')::numeric`.as("totalTokens"),
+  costUsd: sql<number | null>`coalesce(
+    (${heartbeatRuns.resultJson} ->> 'costUsd')::numeric,
+    (${heartbeatRuns.resultJson} ->> 'cost_usd')::numeric,
+    (${heartbeatRuns.resultJson} ->> 'total_cost_usd')::numeric
+  )`.as("costUsd"),
   startedAt: heartbeatRuns.startedAt,
   finishedAt: heartbeatRuns.finishedAt,
   error: heartbeatRuns.error,
@@ -1995,7 +2005,10 @@ const heartbeatRunSummaryListColumns = {
 } as const;
 
 const heartbeatRunListContextColumns = {
-  contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("contextIssueId"),
+  contextIssueId: sql<string | null>`coalesce(
+    ${heartbeatRuns.issueId}::text,
+    ${heartbeatRuns.contextSnapshot} ->> 'issueId'
+  )`.as("contextIssueId"),
   contextTaskId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskId'`.as("contextTaskId"),
   contextTaskKey: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskKey'`.as("contextTaskKey"),
   contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`.as("contextCommentId"),
@@ -2079,6 +2092,7 @@ const heartbeatRunSqlAsciiSafeColumns = {
 const heartbeatRunLogAccessColumns = {
   id: heartbeatRuns.id,
   companyId: heartbeatRuns.companyId,
+  issueId: heartbeatRuns.issueId,
   logStore: heartbeatRuns.logStore,
   logRef: heartbeatRuns.logRef,
 } as const;
@@ -2105,7 +2119,7 @@ const heartbeatRunIssueSummaryColumns = {
   lastOutputSeq: heartbeatRuns.lastOutputSeq,
   lastOutputStream: heartbeatRuns.lastOutputStream,
   lastOutputBytes: heartbeatRuns.lastOutputBytes,
-  issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+  issueId: heartbeatRuns.issueId,
 } as const;
 
 function appendExcerpt(prev: string, chunk: string) {
@@ -9351,6 +9365,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          issueId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "queued",
@@ -9601,6 +9616,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          issueId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "queued",
@@ -10881,6 +10897,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: run.companyId,
           agentId: run.agentId,
+          issueId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "scheduled_retry",
@@ -15820,6 +15837,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: deferredAgent.companyId,
             agentId: deferredAgent.id,
+            issueId: issue.id,
             invocationSource: promotedSource,
             triggerDetail: promotedTriggerDetail,
             status: "queued",
@@ -15974,6 +15992,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: issue.companyId,
             agentId: recoveryAgent.id,
+            issueId: issue.id,
             invocationSource: "automation",
             triggerDetail: "system",
             status: "queued",
@@ -16140,6 +16159,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: issue.companyId,
           agentId: recoveryAgent.id,
+          issueId: issue.id,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "queued",
@@ -17257,6 +17277,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .values({
             companyId: agent.companyId,
             agentId,
+            issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
             invocationSource: source,
             triggerDetail,
             status: "queued",
@@ -17431,6 +17452,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .values({
           companyId: agent.companyId,
           agentId,
+          issueId: readNonEmptyString(enrichedContextSnapshot.issueId),
           invocationSource: source,
           triggerDetail,
           status: "queued",

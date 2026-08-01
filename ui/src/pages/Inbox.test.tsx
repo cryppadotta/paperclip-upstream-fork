@@ -815,6 +815,7 @@ describe("FailedRunInboxRow", () => {
       id: "run-1",
       companyId: "company-1",
       agentId: "agent-1",
+      issueId: null,
       responsibleUserId: null,
       invocationSource: "assignment",
       triggerDetail: null,

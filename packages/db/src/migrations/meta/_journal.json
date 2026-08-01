@@ -1380,6 +1380,13 @@
       "when": 1785542400000,
       "tag": "0198_issue_privacy_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1785628800000,
+      "tag": "0199_heartbeat_run_issue_privacy",
+      "breakpoints": true
     }
   ]
 }

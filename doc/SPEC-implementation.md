@@ -288,6 +288,7 @@ An issue is readable when it is open, the actor is an implicit principal (`respo
 - `id` uuid pk
 - `company_id` uuid fk not null
 - `agent_id` uuid fk not null
+- `issue_id` uuid fk `issues.id` null; first-class binding for issue-scoped run confidentiality
 - `invocation_source` enum: `scheduler | manual | callback`
 - `status` enum: `queued | running | succeeded | failed | cancelled | timed_out`
 - `started_at` timestamptz null
@@ -390,6 +391,7 @@ Operational policy:
 - `cost_events(company_id, occurred_at)`
 - `cost_events(company_id, agent_id, occurred_at)`
 - `heartbeat_runs(company_id, agent_id, started_at desc)`
+- `heartbeat_runs(company_id, issue_id, created_at)`
 - `approvals(company_id, status, type)`
 - `activity_log(company_id, created_at desc)`
 - `assets(company_id, created_at desc)`
