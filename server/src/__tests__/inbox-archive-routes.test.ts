@@ -192,6 +192,72 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       .expect(({ body }) => expect(body).toEqual({ ok: true, userId: seeded.responsibleUserId }));
   });
 
+  it("silently archives an issue for the board user who moves it to done", async () => {
+    const seeded = await seed();
+    const app = appFor({
+      type: "board",
+      source: "session",
+      userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    await request(app)
+      .patch(`/api/issues/${seeded.issueId}`)
+      .send({ status: "done" })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({ id: seeded.issueId, status: "done" }));
+
+    const [archive] = await db
+      .select()
+      .from(issueInboxArchives)
+      .where(eq(issueInboxArchives.issueId, seeded.issueId));
+    expect(archive).toMatchObject({
+      issueId: seeded.issueId,
+      userId: seeded.responsibleUserId,
+      archivedByActorType: "user",
+      archivedByAgentId: null,
+      archivedByRunId: null,
+    });
+
+    const [archiveAudit] = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.inbox_archived"));
+    expect(archiveAudit).toMatchObject({
+      actorType: "user",
+      actorId: seeded.responsibleUserId,
+      entityId: seeded.issueId,
+      details: {
+        userId: seeded.responsibleUserId,
+        targetResolvedFrom: "responsible_user",
+        source: "issue_status_done",
+      },
+    });
+
+    await request(app)
+      .get(`/api/companies/${seeded.companyId}/issues`)
+      .query({
+        touchedByUserId: seeded.responsibleUserId,
+        inboxArchivedByUserId: seeded.responsibleUserId,
+        status: "backlog,todo,in_progress,in_review,blocked,done",
+      })
+      .expect(200)
+      .expect(({ body }) => expect(body.map((issue: { id: string }) => issue.id)).not.toContain(seeded.issueId));
+  });
+
+  it("does not archive a responsible user's inbox when an agent moves an issue to done", async () => {
+    const seeded = await seed();
+
+    await request(appFor(agentActor(seeded)))
+      .patch(`/api/issues/${seeded.issueId}`)
+      .send({ status: "done" })
+      .expect(200);
+
+    expect(await db.select().from(issueInboxArchives)).toHaveLength(0);
+  });
+
   it("archives for the responsible user with agent/run attribution and resurfaces after new activity", async () => {
     const seeded = await seed();
     const app = appFor(agentActor(seeded));
