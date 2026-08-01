@@ -4,7 +4,9 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findMissingHotRestartSnapshotRunIds,
+  isObservedHotRestartTargetAlive,
   readHotRestartIntent,
+  readProcessStartedAt,
   removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
@@ -28,6 +30,104 @@ async function withTempHome<T>(fn: (homeDir: string) => Promise<T>) {
 }
 
 describe("hot-restart path compatibility", () => {
+  it("reads Linux process start time from proc metadata", async () => {
+    await expect(
+      readProcessStartedAt(123, {
+        platform: "linux",
+        stat: async (target) => {
+          expect(target).toBe("/proc/123");
+          return {
+            ctimeMs: Date.parse("2026-08-01T01:00:00.123Z"),
+          } as Awaited<ReturnType<typeof fs.stat>>;
+        },
+      }),
+    ).resolves.toBe("2026-08-01T01:00:00.123Z");
+  });
+
+  it("reads macOS process start time through ps", async () => {
+    await expect(
+      readProcessStartedAt(456, {
+        platform: "darwin",
+        runCommand: async (command, args) => {
+          expect([command, ...args]).toEqual([
+            "ps",
+            "-o",
+            "lstart=",
+            "-p",
+            "456",
+          ]);
+          return "Fri Aug  1 01:02:03 2026\n";
+        },
+      }),
+    ).resolves.toBe(new Date("Fri Aug  1 01:02:03 2026").toISOString());
+  });
+
+  it("reads Windows process start time through PowerShell", async () => {
+    await expect(
+      readProcessStartedAt(789, {
+        platform: "win32",
+        runCommand: async (command, args) => {
+          expect(command).toBe("powershell.exe");
+          expect(args.at(-1)).toContain("Get-Process -Id 789");
+          return "2026-08-01T01:02:03.456Z\r\n";
+        },
+      }),
+    ).resolves.toBe("2026-08-01T01:02:03.456Z");
+  });
+
+  it("falls back from Windows PowerShell to pwsh", async () => {
+    const commands: string[] = [];
+    await expect(
+      readProcessStartedAt(790, {
+        platform: "win32",
+        runCommand: async (command) => {
+          commands.push(command);
+          if (command === "powershell.exe") throw new Error("not installed");
+          return "2026-08-01T01:02:04.000Z\n";
+        },
+      }),
+    ).resolves.toBe("2026-08-01T01:02:04.000Z");
+    expect(commands).toEqual(["powershell.exe", "pwsh.exe"]);
+  });
+
+  it("distinguishes recycled PIDs and bounds markers with unavailable identity", () => {
+    const intent = {
+      version: 1 as const,
+      requestedAt: "2026-08-01T01:05:00.000Z",
+      previousServerPid: 123,
+      previousServerStartedAt: "2026-08-01T01:00:00.000Z",
+      previousServerVersion: "old-version",
+      drainRequired: false,
+      requestedByRunId: null,
+      preflightActiveRunIds: [],
+    };
+
+    expect(isObservedHotRestartTargetAlive(intent, {
+      alive: true,
+      startedAt: "2026-08-01T01:00:00.000Z",
+    })).toBe(true);
+    expect(isObservedHotRestartTargetAlive(intent, {
+      alive: true,
+      startedAt: "2026-08-01T01:06:00.000Z",
+    })).toBe(false);
+
+    const legacyIntent = { ...intent, previousServerStartedAt: null };
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: "2026-08-01T01:06:00.000Z",
+    })).toBe(false);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      observedAt: new Date("2026-08-01T01:09:59.000Z"),
+    })).toBe(true);
+    expect(isObservedHotRestartTargetAlive(legacyIntent, {
+      alive: true,
+      startedAt: null,
+      observedAt: new Date("2026-08-01T01:10:01.000Z"),
+    })).toBe(false);
+  });
+
   it("writes both paths but does not merge a legacy snapshot from another request", async () => {
     process.env.PAPERCLIP_INSTANCE_ID = "blue";
 
@@ -175,6 +275,16 @@ describe("hot-restart path compatibility", () => {
         requestedAt: new Date("2020-01-01T00:00:00.000Z"),
         requestedByRunId: "expired-deploy",
       });
+      const legacyPath = resolveLegacyHotRestartIntentPath(homeDir);
+      const legacyIntent = JSON.parse(
+        await fs.readFile(legacyPath, "utf8"),
+      ) as Record<string, unknown>;
+      delete legacyIntent.previousServerStartedAt;
+      await fs.writeFile(
+        legacyPath,
+        `${JSON.stringify(legacyIntent, null, 2)}\n`,
+        "utf8",
+      );
 
       process.env.PAPERCLIP_INSTANCE_ID = "green";
       await expect(writeHotRestartIntent({

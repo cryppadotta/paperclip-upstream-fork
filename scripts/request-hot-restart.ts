@@ -100,6 +100,7 @@ console.log(JSON.stringify({
   status: "hot_restart_intent_written",
   intentPath: resolveHotRestartIntentPath(),
   previousServerPid: intent.previousServerPid,
+  previousServerStartedAt: intent.previousServerStartedAt,
   previousServerVersion: intent.previousServerVersion,
   drainRequired: intent.drainRequired,
   preflightActiveRunIds: intent.preflightActiveRunIds,

@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -11,6 +12,9 @@ export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
 const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
+const HOT_RESTART_UNKNOWN_PROCESS_IDENTITY_TTL_MS = 5 * 60_000;
+
+type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
 
 export type HotRestartIntentRun = {
   runId: string;
@@ -27,6 +31,7 @@ export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
   previousServerPid: number;
+  previousServerStartedAt?: string | null;
   previousServerVersion: string | null;
   drainRequired: boolean;
   requestedByRunId: string | null;
@@ -117,6 +122,13 @@ function asBoolean(value: unknown): boolean {
   return value === true;
 }
 
+function asDateString(value: unknown): string | null {
+  const candidate = asString(value);
+  if (!candidate) return null;
+  const timestamp = Date.parse(candidate);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map(asString).filter((entry): entry is string => entry !== null))];
@@ -131,18 +143,117 @@ function isProcessAlive(pid: number) {
   }
 }
 
-async function isOriginalServerProcessAlive(intent: HotRestartIntent) {
-  if (!isProcessAlive(intent.previousServerPid)) return false;
-  if (process.platform !== "linux") return true;
+function runProcessCommand(command: string, args: string[]) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
+export async function readProcessStartedAt(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    stat?: typeof fs.stat;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const stat = options.stat ?? fs.stat;
+  const runCommand = options.runCommand ?? runProcessCommand;
+
+  try {
+    if (platform === "linux") {
+      const processStat = await stat(`/proc/${pid}`);
+      return new Date(processStat.ctimeMs).toISOString();
+    }
+
+    if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {
+      const stdout = await runCommand("ps", ["-o", "lstart=", "-p", String(pid)]);
+      return asDateString(stdout.trim());
+    }
+
+    if (platform === "win32") {
+      const script = [
+        `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
+        "$process.StartTime.ToUniversalTime().ToString('o')",
+      ].join("; ");
+      let stdout: string;
+      try {
+        stdout = await runCommand("powershell.exe", [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          script,
+        ]);
+      } catch {
+        stdout = await runCommand("pwsh.exe", [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          script,
+        ]);
+      }
+      return asDateString(stdout.trim());
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+export function isObservedHotRestartTargetAlive(
+  intent: HotRestartIntent,
+  observation: {
+    alive: boolean;
+    startedAt: string | null;
+    observedAt?: Date;
+  },
+) {
+  if (!observation.alive) return false;
+
+  const observedStartedAt = observation.startedAt
+    ? Date.parse(observation.startedAt)
+    : Number.NaN;
+  const recordedStartedAt = intent.previousServerStartedAt
+    ? Date.parse(intent.previousServerStartedAt)
+    : Number.NaN;
+  if (Number.isFinite(observedStartedAt) && Number.isFinite(recordedStartedAt)) {
+    return observedStartedAt === recordedStartedAt;
+  }
 
   const requestedAt = Date.parse(intent.requestedAt);
-  if (!Number.isFinite(requestedAt)) return true;
-  try {
-    const processStat = await fs.stat(`/proc/${intent.previousServerPid}`);
-    return processStat.ctimeMs <= requestedAt;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  if (Number.isFinite(observedStartedAt) && Number.isFinite(requestedAt)) {
+    // Older markers have no recorded process start. A process that started
+    // after the request necessarily reused the marker's numeric PID.
+    return observedStartedAt <= requestedAt;
   }
+
+  if (!Number.isFinite(requestedAt)) return false;
+  const observedAt = (observation.observedAt ?? new Date()).getTime();
+  return observedAt - requestedAt <= HOT_RESTART_UNKNOWN_PROCESS_IDENTITY_TTL_MS;
+}
+
+async function isOriginalServerProcessAlive(intent: HotRestartIntent) {
+  const alive = isProcessAlive(intent.previousServerPid);
+  const startedAt = alive
+    ? await readProcessStartedAt(intent.previousServerPid)
+    : null;
+  return isObservedHotRestartTargetAlive(intent, { alive, startedAt });
 }
 
 async function removeStaleHotRestartLock(lockDir: string) {
@@ -246,6 +357,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     version: 1,
     requestedAt,
     previousServerPid,
+    previousServerStartedAt: asDateString(value.previousServerStartedAt),
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
     requestedByRunId: asString(value.requestedByRunId),
@@ -311,6 +423,7 @@ export function findMissingHotRestartSnapshotRunIds(intent: HotRestartIntent) {
 
 export async function writeHotRestartIntent(input: {
   previousServerPid: number;
+  previousServerStartedAt?: string | null;
   previousServerVersion?: string | null;
   drainRequired?: boolean;
   requestedByRunId?: string | null;
@@ -318,10 +431,14 @@ export async function writeHotRestartIntent(input: {
   requestedAt?: Date;
   homeDir?: string;
 }) {
+  const previousServerStartedAt = input.previousServerStartedAt === undefined
+    ? await readProcessStartedAt(input.previousServerPid)
+    : asDateString(input.previousServerStartedAt);
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt: (input.requestedAt ?? new Date()).toISOString(),
     previousServerPid: input.previousServerPid,
+    previousServerStartedAt,
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,
     requestedByRunId: input.requestedByRunId ?? null,
