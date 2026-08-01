@@ -1454,11 +1454,71 @@ function readWorktreeSeedPendingMarker(filePath: string): WorktreeSeedPendingMar
   return parsed as WorktreeSeedPendingMarker;
 }
 
-export async function ensureWorktreeSeeded(
+const WORKTREE_SEED_LOCK_FILE = "seed.lock";
+const WORKTREE_SEED_LOCK_TIMEOUT_MS = 30 * 60 * 1_000;
+
+async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
+  const lockPath = path.resolve(path.dirname(configPath), WORKTREE_SEED_LOCK_FILE);
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const deadline = Date.now() + WORKTREE_SEED_LOCK_TIMEOUT_MS;
+  await fsPromises.mkdir(path.dirname(lockPath), { recursive: true });
+
+  while (true) {
+    try {
+      await fsPromises.writeFile(lockPath, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const existingToken = (await fsPromises.readFile(lockPath, "utf8")).trim();
+        const ownerPid = Number.parseInt(existingToken.split(":", 1)[0] ?? "", 10);
+        // Treat a missing or partially written token as owned. Another process
+        // can observe the lock after its exclusive create but before its token
+        // write completes, and removing it here would defeat the mutex.
+        let ownerIsAlive = true;
+        if (Number.isInteger(ownerPid) && ownerPid > 0) {
+          try {
+            process.kill(ownerPid, 0);
+          } catch (processError) {
+            ownerIsAlive = (processError as NodeJS.ErrnoException).code !== "ESRCH";
+          }
+        }
+        if (!ownerIsAlive && (await fsPromises.readFile(lockPath, "utf8")).trim() === existingToken) {
+          await fsPromises.rm(lockPath, { force: true });
+          continue;
+        }
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw readError;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Another worktree database seed is still running. ` +
+          `If no seed process is active, remove the stale lock at ${lockPath} and retry.`,
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  try {
+    return await callback();
+  } finally {
+    try {
+      if ((await fsPromises.readFile(lockPath, "utf8")).trim() === token) {
+        await fsPromises.rm(lockPath, { force: true });
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+async function ensureWorktreeSeededUnlocked(
+  configPath: string,
   opts: WorktreeEnsureSeededOptions = {},
   dependencies: { seedDatabase?: SeedWorktreeDatabase } = {},
 ): Promise<EnsureWorktreeSeededResult> {
-  const configPath = resolveConfigPath(opts.config);
   const markers = resolveWorktreeSeedMarkerPaths(configPath);
 
   if (existsSync(markers.complete)) {
@@ -1508,6 +1568,17 @@ export async function ensureWorktreeSeeded(
   });
   markWorktreeSeedComplete({ configPath });
   return { seeded: true, reason: "seeded", details };
+}
+
+export async function ensureWorktreeSeeded(
+  opts: WorktreeEnsureSeededOptions = {},
+  dependencies: { seedDatabase?: SeedWorktreeDatabase } = {},
+): Promise<EnsureWorktreeSeededResult> {
+  const configPath = resolveConfigPath(opts.config);
+  return withWorktreeSeedLock(
+    configPath,
+    () => ensureWorktreeSeededUnlocked(configPath, opts, dependencies),
+  );
 }
 
 export function resolveWorktreeSeedBackupEngine(seedPlan: WorktreeSeedPlan): "auto" | "javascript" {

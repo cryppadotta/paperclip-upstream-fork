@@ -353,7 +353,7 @@ describe("worktree helpers", () => {
     expect(full.nullifyColumns).toEqual({});
   });
 
-  it("ensure-seeded seeds once and fast-exits on the seed-complete marker", async () => {
+  it("ensure-seeded serializes concurrent seeds and fast-exits on the seed-complete marker", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-ensure-seeded-"));
     try {
       const sourceConfigPath = path.join(tempRoot, "source", "config.json");
@@ -381,25 +381,40 @@ describe("worktree helpers", () => {
       );
       markWorktreeSeedPending({ configPath: targetConfigPath, sourceConfigPath });
 
-      const seedDatabase = vi.fn().mockResolvedValue({
-        backupSummary: "snapshot.sql",
-        pausedScheduledRoutines: 2,
-        executionQuarantine: {
-          disabledTimerHeartbeats: 1,
-          resetRunningAgents: 1,
-          quarantinedInProgressIssues: 1,
-          unassignedTodoIssues: 1,
-          unassignedReviewIssues: 1,
-        },
-        reboundWorkspaces: [],
+      let releaseSeed: (() => void) | undefined;
+      let reportSeedStarted: (() => void) | undefined;
+      const seedStarted = new Promise<void>((resolve) => {
+        reportSeedStarted = resolve;
+      });
+      const seedGate = new Promise<void>((resolve) => {
+        releaseSeed = resolve;
+      });
+      const seedDatabase = vi.fn().mockImplementation(async () => {
+        reportSeedStarted?.();
+        await seedGate;
+        return {
+          backupSummary: "snapshot.sql",
+          pausedScheduledRoutines: 2,
+          executionQuarantine: {
+            disabledTimerHeartbeats: 1,
+            resetRunningAgents: 1,
+            quarantinedInProgressIssues: 1,
+            unassignedTodoIssues: 1,
+            unassignedReviewIssues: 1,
+          },
+          reboundWorkspaces: [],
+        };
       });
 
-      await expect(
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
-      ).resolves.toMatchObject({ seeded: true, reason: "seeded" });
-      await expect(
-        ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase }),
-      ).resolves.toEqual({ seeded: false, reason: "complete_marker" });
+      const firstSeed = ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase });
+      await seedStarted;
+      const concurrentSeed = ensureWorktreeSeeded({ config: targetConfigPath }, { seedDatabase });
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      expect(seedDatabase).toHaveBeenCalledTimes(1);
+      releaseSeed?.();
+
+      await expect(firstSeed).resolves.toMatchObject({ seeded: true, reason: "seeded" });
+      await expect(concurrentSeed).resolves.toEqual({ seeded: false, reason: "complete_marker" });
 
       expect(seedDatabase).toHaveBeenCalledTimes(1);
       expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
