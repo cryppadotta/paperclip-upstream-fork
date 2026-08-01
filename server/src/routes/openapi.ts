@@ -39,6 +39,7 @@ import {
   // Project
   createProjectSchema,
   updateProjectSchema,
+  addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   // Company
@@ -776,6 +777,8 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
+  "POST /api/projects/{id}/access-members",
+  "DELETE /api/projects/{id}/access-members/{memberId}",
   "GET /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/secret-provider-configs",
   "GET /api/companies/{companyId}/secret-providers/health",
@@ -924,6 +927,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/issues/{id}/comments",
   "POST /api/companies/{companyId}/issues/{issueId}/attachments",
   "POST /api/companies/{companyId}/projects",
+  "POST /api/projects/{id}/access-members",
   "POST /api/projects/{id}/workspaces",
   "POST /api/companies/{companyId}/routines",
   "POST /api/companies/{companyId}/folders",
@@ -2569,6 +2573,49 @@ registry.registerPath({
   summary: "Delete a project",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/projects/{id}/access-members",
+  tags: ["projects"],
+  summary: "List project access members",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/projects/{id}/access-members",
+  tags: ["projects"],
+  summary: "Add a project access member",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(addProjectAccessMemberSchema),
+  },
+  responses: {
+    201: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/projects/{id}/access-members/{memberId}",
+  tags: ["projects"],
+  summary: "Remove a project access member",
+  request: { params: z.object({ id: z.string(), memberId: z.string() }) },
+  responses: {
+    200: r.ok(),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
 });
 
 registry.registerPath({

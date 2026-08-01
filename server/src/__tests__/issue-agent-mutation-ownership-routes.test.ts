@@ -222,7 +222,9 @@ function registerRouteMocks() {
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     taskWatchdogService: () => mockTaskWatchdogService,
     logActivity: mockLogActivity,
-    projectService: () => ({}),
+    projectService: () => ({
+      getById: vi.fn(async (id: string) => ({ id, companyId })),
+    }),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
@@ -387,14 +389,16 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "issue:mutate" ||
-        input.action === "company_scope:read",
+        input.action === "company_scope:read" ||
+        input.action === "project:read",
       action: input.action,
       reason:
         input.action === "tasks:assign" ||
           input.action === "issue:comment" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
+          input.action === "company_scope:read" ||
+          input.action === "project:read"
           ? "allow_explicit_grant"
           : "deny_missing_grant",
       explanation:
@@ -402,7 +406,8 @@ describe("agent issue mutation checkout ownership", () => {
           input.action === "issue:comment" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
+          input.action === "company_scope:read" ||
+          input.action === "project:read"
           ? "Allowed by test default."
           : "Missing permission.",
     }));
