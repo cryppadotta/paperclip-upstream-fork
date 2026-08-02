@@ -8759,28 +8759,6 @@ export function issueRoutes(
       };
     }
 
-    const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
-    if (boardUserId && existing.status !== "done" && issue.status === "done") {
-      const archiveState = await svc.archiveInbox(issue.companyId, issue.id, boardUserId);
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.inbox_archived",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          userId: boardUserId,
-          archivedAt: archiveState.archivedAt,
-          targetResolvedFrom: "responsible_user",
-          source: "issue_status_done",
-        },
-      });
-    }
-
     const assigneeChanged =
       issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
     const statusChangedFromBacklog =

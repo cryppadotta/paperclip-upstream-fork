@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -245,6 +245,39 @@ describeEmbeddedPostgres("inbox archive routes", () => {
       })
       .expect(200)
       .expect(({ body }) => expect(body.map((issue: { id: string }) => issue.id)).not.toContain(seeded.issueId));
+  });
+
+  it("rolls back completion when the inbox archive audit cannot be written", async () => {
+    const seeded = await seed();
+    const app = appFor({
+      type: "board",
+      source: "session",
+      userId: seeded.responsibleUserId,
+      companyIds: [seeded.companyId],
+      memberships: [{ companyId: seeded.companyId, membershipRole: "operator", status: "active" }],
+      isInstanceAdmin: false,
+    });
+
+    await db.execute(sql`
+      alter table activity_log
+      add constraint reject_done_inbox_archive_audit
+      check (action <> 'issue.inbox_archived')
+    `);
+    try {
+      await request(app)
+        .patch(`/api/issues/${seeded.issueId}`)
+        .send({ status: "done" })
+        .expect(500);
+    } finally {
+      await db.execute(sql`
+        alter table activity_log
+        drop constraint reject_done_inbox_archive_audit
+      `);
+    }
+
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue.status).toBe("todo");
+    expect(await db.select().from(issueInboxArchives)).toHaveLength(0);
   });
 
   it("does not archive a responsible user's inbox when an agent moves an issue to done", async () => {
