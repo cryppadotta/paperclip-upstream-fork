@@ -40,6 +40,7 @@ import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import {
   cleanupWorktreeInstanceArtifacts,
+  deriveWorktreeInstanceId,
   readWorktreeInstancePointer,
   WORKTREE_INSTANCE_ROOT_METADATA_KEY,
   type WorktreeInstancePointer,
@@ -3211,7 +3212,9 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
+  let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
+    expectedWorktreeInstanceId = deriveWorktreeInstanceId(workspacePath);
     try {
       // Capture the pointer before custom cleanup commands can remove the repo-local env file.
       worktreeInstancePointer = await readWorktreeInstancePointer(workspacePath);
@@ -3254,12 +3257,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
-  if (worktreeInstancePointer && workspacePath) {
+  if (worktreeInstancePointer && workspacePath && expectedWorktreeInstanceId) {
     try {
       const result = await cleanupWorktreeInstanceArtifacts({
         pointer: worktreeInstancePointer,
         workspaceId: input.workspace.id,
         workspacePath,
+        expectedInstanceId: expectedWorktreeInstanceId,
         expectedInstanceRoot:
           typeof input.workspace.metadata?.[WORKTREE_INSTANCE_ROOT_METADATA_KEY] === "string"
             ? input.workspace.metadata[WORKTREE_INSTANCE_ROOT_METADATA_KEY]
