@@ -117,11 +117,13 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  type ActivityPublication,
   type IssueFilters,
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
   logActivity,
+  publishActivity,
   projectService,
   routineService,
   workProductService,
@@ -8199,6 +8201,7 @@ export function issueRoutes(
     const stopRelayResult: {
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
+    const postCommitActivityPublications: ActivityPublication[] = [];
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
@@ -8212,6 +8215,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
             },
             tx,
+            postCommitActivityPublications,
           );
           if (!updated) return null;
 
@@ -8240,7 +8244,7 @@ export function issueRoutes(
             ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
-          }, tx);
+          }, tx, postCommitActivityPublications);
           if (!updated) return null;
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           return updated;
@@ -8250,7 +8254,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
+        }, db, postCommitActivityPublications);
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
@@ -8279,6 +8283,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
 
     if (enteringBlocked) {
       const blockedIssue = issue;

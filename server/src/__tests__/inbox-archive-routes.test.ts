@@ -20,6 +20,7 @@ import {
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -249,6 +250,8 @@ describeEmbeddedPostgres("inbox archive routes", () => {
 
   it("rolls back completion when the inbox archive audit cannot be written", async () => {
     const seeded = await seed();
+    const liveEvents: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    const unsubscribe = subscribeCompanyLiveEvents(seeded.companyId, (event) => liveEvents.push(event));
     const app = appFor({
       type: "board",
       source: "session",
@@ -268,7 +271,12 @@ describeEmbeddedPostgres("inbox archive routes", () => {
         .patch(`/api/issues/${seeded.issueId}`)
         .send({ status: "done" })
         .expect(500);
+      expect(liveEvents).not.toContainEqual(expect.objectContaining({
+        type: "activity.logged",
+        payload: expect.objectContaining({ action: "issue.inbox_archived" }),
+      }));
     } finally {
+      unsubscribe();
       await db.execute(sql`
         alter table activity_log
         drop constraint reject_done_inbox_archive_audit

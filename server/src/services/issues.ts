@@ -115,7 +115,12 @@ import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
-import { logActivity } from "./activity-log.js";
+import {
+  logActivity,
+  persistActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -7024,7 +7029,10 @@ export function issueService(db: Db) {
         actorUserId?: string | null;
       },
       dbOrTx: any = db,
+      postCommitActivityPublications?: ActivityPublication[],
     ) => {
+      const ownedActivityPublications: ActivityPublication[] = [];
+      const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
       const existing = await dbOrTx
         .select()
         .from(issues)
@@ -7371,7 +7379,7 @@ export function issueService(db: Db) {
             undefined,
             tx,
           );
-          await logActivity(tx as unknown as Db, {
+          const { publication } = await persistActivity(tx as unknown as Db, {
             companyId: updated.companyId,
             actorType: "user",
             actorId: actorUserId,
@@ -7385,6 +7393,7 @@ export function issueService(db: Db) {
               source: "issue_status_done",
             },
           });
+          activityPublications.push(publication);
         }
         return {
           ...enriched,
@@ -7393,7 +7402,11 @@ export function issueService(db: Db) {
         };
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
+      if (dbOrTx === db && !postCommitActivityPublications) {
+        for (const publication of ownedActivityPublications) publishActivity(publication);
+      }
+      return result;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
