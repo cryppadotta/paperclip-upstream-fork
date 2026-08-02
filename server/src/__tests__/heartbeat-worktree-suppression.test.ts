@@ -304,6 +304,37 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await heartbeat.waitForRunExecutionDrain(userRun!.id);
   }, 10_000);
 
+  it("applies the cutoff inside issue locking when project context bypasses the preliminary issue lookup", async () => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date(Date.now() + 1_000));
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      payload: { issueId },
+      contextSnapshot: { issueId, projectId: randomUUID() },
+      requestedByActorType: "system",
+    });
+
+    expect(run).toBeNull();
+    const skippedWake = await db
+      .select({ reason: agentWakeupRequests.reason, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .orderBy(sql`${agentWakeupRequests.createdAt} desc`)
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    expect(skippedWake).toMatchObject({
+      reason: "heartbeat.worktree_execution_cutoff",
+      payload: { heartbeatSkip: { reason: "worktree_execution_cutoff", issueId } },
+    });
+  });
+
   it("still creates live-plane assignment runs when suppression is not active", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
     await db
