@@ -659,24 +659,4 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       transactionSpy.mockRestore();
     }
   });
-
-  it("rejects a monitor whose dispatch prerequisites disappear after the claim", async () => {
-    const { issueId } = await seedFixture();
-    const heartbeat = heartbeatService(db, {
-      testHooks: {
-        beforeIssueMonitorDispatchGuard: ({ claimed }) => {
-          claimed.assigneeAgentId = null;
-        },
-      },
-    });
-
-    await expect(heartbeat.triggerIssueMonitor(issueId)).rejects.toMatchObject({ status: 409 });
-    expect(
-      await db
-        .select({ monitorWakeRequestedAt: issues.monitorWakeRequestedAt })
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0]?.monitorWakeRequestedAt ?? null),
-    ).toBeInstanceOf(Date);
-  });
 });

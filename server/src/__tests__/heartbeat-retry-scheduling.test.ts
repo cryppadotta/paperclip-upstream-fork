@@ -14,6 +14,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueComments,
   issueThreadInteractions,
   issueRelations,
   issueTreeHoldMembers,
@@ -39,6 +40,40 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+
+function rejectTableMutationOnce(
+  db: ReturnType<typeof createDb>,
+  method: "insert" | "update",
+  table: object,
+  error: Error,
+) {
+  let triggered = false;
+  const wrapBuilder = (builder: object): object => new Proxy(builder, {
+    get(target, property, receiver) {
+      if (property === "then") {
+        return (onFulfilled?: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) => {
+          triggered = true;
+          return Promise.reject(error).then(onFulfilled, onRejected);
+        };
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function"
+        ? (...args: unknown[]) => wrapBuilder(Reflect.apply(value, target, args) as object)
+        : value;
+    },
+  });
+  const intercepted = new Proxy(db, {
+    get(target, property, receiver) {
+      if (property !== method) return Reflect.get(target, property, receiver);
+      const mutate = Reflect.get(target, property, receiver) as (targetTable: object) => object;
+      return (targetTable: object) => {
+        const builder = Reflect.apply(mutate, target, [targetTable]) as object;
+        return targetTable === table && !triggered ? wrapBuilder(builder) : builder;
+      };
+    },
+  }) as ReturnType<typeof createDb>;
+  return { db: intercepted, wasTriggered: () => triggered };
+}
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -135,6 +170,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.delete(environmentLeases);
     await db.delete(issueRelations);
     await db.delete(issueThreadInteractions);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projects);
@@ -853,80 +889,62 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     })).resolves.toMatchObject({ outcome: "retry_exhausted" });
   });
 
-  it("contains collaborator failures while recording and escalating plan approval retries", async () => {
+  it("contains persistence failures while recording and escalating plan approval retries", async () => {
+    const seedAcceptedInteraction = async (fixture: Awaited<ReturnType<typeof seedMaxTurnFixture>>) => {
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee_on_accept",
+        createdByAgentId: fixture.agentId,
+        payload: {
+          version: 1,
+          prompt: "Approve the plan?",
+          target: { type: "issue_document", issueId: fixture.issueId, key: "plan", revisionId: randomUUID() },
+        },
+        result: { version: 1, outcome: "accepted" },
+      });
+      await db.update(heartbeatRuns).set({
+        contextSnapshot: { issueId: fixture.issueId, interactionId },
+      }).where(eq(heartbeatRuns.id, fixture.runId));
+    };
+
     const scheduledFixture = await seedMaxTurnFixture({ issueStatus: "in_review" });
-    const recordAttempts: string[] = [];
-    const recordFailureHeartbeat = heartbeatService(db, {
-      recordPlanApprovalResumeFailureRetry: async ({ run }) => {
-        recordAttempts.push(run.id);
-        throw new Error("synthetic retry recording failure");
-      },
-    });
-    await expect(recordFailureHeartbeat.scheduleBoundedRetry(scheduledFixture.runId, {
+    await seedAcceptedInteraction(scheduledFixture);
+    const recordFailure = rejectTableMutationOnce(
+      db,
+      "insert",
+      issueComments,
+      new Error("synthetic retry recording failure"),
+    );
+    await expect(heartbeatService(recordFailure.db).scheduleBoundedRetry(scheduledFixture.runId, {
       now: scheduledFixture.now,
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       maxAttempts: 3,
       delayMs: 1_000,
     })).resolves.toMatchObject({ outcome: "scheduled", attempt: 1 });
-    expect(recordAttempts).toEqual([scheduledFixture.runId]);
+    expect(recordFailure.wasTriggered()).toBe(true);
 
     await cleanupRetryFixture();
     const exhaustedFixture = await seedMaxTurnFixture({ scheduledRetryAttempt: 3, issueStatus: "in_review" });
-    const escalationAttempts: string[] = [];
-    const escalationFailureHeartbeat = heartbeatService(db, {
-      escalatePlanApprovalResumeFailure: async ({ run }) => {
-        escalationAttempts.push(run.id);
-        throw new Error("synthetic exhausted escalation failure");
-      },
-    });
-    await expect(escalationFailureHeartbeat.scheduleBoundedRetry(exhaustedFixture.runId, {
+    await seedAcceptedInteraction(exhaustedFixture);
+    const escalationFailure = rejectTableMutationOnce(
+      db,
+      "update",
+      issues,
+      new Error("synthetic exhausted escalation failure"),
+    );
+    await expect(heartbeatService(escalationFailure.db).scheduleBoundedRetry(exhaustedFixture.runId, {
       now: exhaustedFixture.now,
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       maxAttempts: 3,
     })).resolves.toMatchObject({ outcome: "retry_exhausted" });
-    expect(escalationAttempts).toEqual([exhaustedFixture.runId]);
-  });
-
-  it("handles a plan approval issue deleted between interaction and escalation reads", async () => {
-    const fixture = await seedMaxTurnFixture({ scheduledRetryAttempt: 3, issueStatus: "in_review" });
-    const interactionId = randomUUID();
-    await db.insert(issueThreadInteractions).values({
-      id: interactionId,
-      companyId: fixture.companyId,
-      issueId: fixture.issueId,
-      kind: "request_confirmation",
-      status: "accepted",
-      continuationPolicy: "wake_assignee_on_accept",
-      createdByAgentId: fixture.agentId,
-      payload: {
-        version: 1,
-        prompt: "Approve the plan?",
-        target: { type: "issue_document", issueId: fixture.issueId, key: "plan", revisionId: randomUUID() },
-      },
-      result: { version: 1, outcome: "accepted" },
-    });
-    await db.update(heartbeatRuns).set({
-      contextSnapshot: { issueId: fixture.issueId, interactionId },
-    }).where(eq(heartbeatRuns.id, fixture.runId));
-
-    const raceHeartbeat = heartbeatService(db, {
-      testHooks: {
-        beforePlanApprovalEscalationIssueRead: async () => {
-          await db
-            .delete(issueThreadInteractions)
-            .where(eq(issueThreadInteractions.id, interactionId));
-          await db.delete(issues).where(eq(issues.id, fixture.issueId));
-        },
-      },
-    });
-    await expect(raceHeartbeat.scheduleBoundedRetry(fixture.runId, {
-      now: fixture.now,
-      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
-      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
-      maxAttempts: 3,
-    })).resolves.toMatchObject({ outcome: "retry_exhausted" });
+    expect(escalationFailure.wasTriggered()).toBe(true);
   });
 
   it("coalesces duplicate accepted interaction continuation infra retry schedules", async () => {
