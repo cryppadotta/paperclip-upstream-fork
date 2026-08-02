@@ -51,6 +51,7 @@ import { runningProcesses } from "../adapters/index.ts";
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
+const mockEnvironmentOrchestratorReleaseFault = vi.hoisted(() => ({ current: null as Error | null }));
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
@@ -96,6 +97,27 @@ vi.mock("../adapters/index.ts", async () => {
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
+  };
+});
+
+vi.mock("../services/environment-run-orchestrator.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/environment-run-orchestrator.js")>(
+    "../services/environment-run-orchestrator.js",
+  );
+  return {
+    ...actual,
+    environmentRunOrchestrator: (...args: Parameters<typeof actual.environmentRunOrchestrator>) => {
+      const orchestrator = actual.environmentRunOrchestrator(...args);
+      return {
+        ...orchestrator,
+        releaseForRun: async (...releaseArgs: Parameters<typeof orchestrator.releaseForRun>) => {
+          if (mockEnvironmentOrchestratorReleaseFault.current) {
+            throw mockEnvironmentOrchestratorReleaseFault.current;
+          }
+          return orchestrator.releaseForRun(...releaseArgs);
+        },
+      };
+    },
   };
 });
 
@@ -328,6 +350,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    mockEnvironmentOrchestratorReleaseFault.current = null;
+    // Some race-focused cases intentionally queue one-shot adapter outcomes.
+    // Clear any unconsumed outcomes so later liveness assertions cannot inherit
+    // a result from a different scenario.
+    mockAdapterExecute.mockReset();
     const localServiceSupervisor = await vi.importActual<typeof import("../services/local-service-supervisor.js")>(
       "../services/local-service-supervisor.js",
     );
@@ -4333,6 +4360,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       unmanagedBackgroundTask: { stopped: true },
     });
     expect(updated?.livenessReason).toBe(UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
+  });
+
+  it("contains an environment lease lookup failure during run finalization", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const failure = rejectMatchingQueryOnce(
+      db,
+      /from "environment_leases"/,
+      new Error("synthetic environment lease lookup failure"),
+    );
+    const heartbeat = heartbeatService(failure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(failure.wasTriggered()).toBe(true);
+  });
+
+  it("contains an environment orchestrator rejection during run finalization", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockEnvironmentOrchestratorReleaseFault.current = new Error("synthetic orchestrator release rejection");
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains a continuation-summary lookup failure during run finalization", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const failure = rejectMatchingQueryOnce(
+      db,
+      /from "issue_documents"/,
+      new Error("synthetic continuation summary lookup failure"),
+      2,
+    );
+    const heartbeat = heartbeatService(failure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(failure.wasTriggered()).toBe(true);
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
