@@ -168,7 +168,8 @@ export function IssueRow({
         // No color transition on the row band: hover/selection must snap
         // instantly. A fade (transition-colors) leaves a trail of fading bands
         // when scrubbing the mouse fast across the list.
-        "group relative flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
+        "group relative flex items-start gap-2 rounded-lg py-2.5 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
+        showUnreadSlot ? "pl-4" : "pl-2",
         "[&_button]:relative [&_button]:z-10",
         className,
       )}
@@ -318,11 +319,10 @@ export function IssueRow({
         </span>
       ) : null}
       {showUnreadDot ? (
-        // Mobile places the dot in the row's existing left padding so unread
-        // state never adds a flex column or shifts the status/title. Keeping it
-        // outside the leading-control slot also avoids competing with a parent
-        // row's collapse chevron.
-        <span className="absolute -left-1 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center sm:hidden">
+        // Inbox rows reserve a mobile gutter on both read and unread rows. The
+        // full control stays inside overflow-clipping row containers while its
+        // absolute position avoids shifting or covering the leading control.
+        <span className="absolute left-0 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center sm:hidden">
           {unreadDotButton}
         </span>
       ) : null}

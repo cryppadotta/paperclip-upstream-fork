@@ -224,15 +224,16 @@ describe("IssueRow", () => {
     expect(slot).not.toBeNull();
     expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
 
-    // Mobile: a separate absolute dot uses the row's existing left padding,
-    // so it adds no flex column and cannot indent the status or title.
+    // Mobile: all inbox rows reserve a gutter and the dot stays fully inside
+    // it, so the control cannot be clipped or indent the status/title.
     const mobileDot = container
       .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
       ?.closest("span.sm\\:hidden");
     expect(mobileDot).not.toBeNull();
     expect(mobileDot?.className).toContain("absolute");
-    expect(mobileDot?.className).toContain("-left-1");
+    expect(mobileDot?.className).toContain("left-0");
     expect(mobileDot?.className).not.toContain("order-first");
+    expect(container.firstElementChild?.className).toContain("pl-4");
 
     act(() => {
       root.unmount();
