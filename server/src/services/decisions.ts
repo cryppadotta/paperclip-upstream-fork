@@ -5,7 +5,7 @@ import { companyMemberships, decisionBundles, decisionEffectExecutions, decision
 import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
 
@@ -337,7 +337,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     });
 
     try {
-      return await db.transaction(async (tx) => {
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      const executionResult = await db.transaction(async (tx) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
         let execution = await tx.select().from(decisionEffectExecutions).where(and(eq(decisionEffectExecutions.decisionId, decision.id), eq(decisionEffectExecutions.effectIndex, effectIndex)))
           .then((rows) => rows[0] ?? null);
@@ -391,23 +392,45 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             await collectDescendantIds(decision.companyId, target.id, tx as unknown as Db));
           if (staleReference || changedTree) return finish("skipped", "target_changed", { reason: "target_changed" });
         }
-        const svc = issueService(tx as unknown as Db);
+        const svc = issueService(db);
         const values = decision.inputValues ?? {};
         let result: Record<string, unknown>;
         if (effect.type === "comment_on_issue") {
           const comment = await svc.addComment(target.id, interpolate(effect.bodyMarkdown, values), { userId: decidedByUserId }, undefined, tx);
           result = { commentId: comment.id };
         } else if (effect.type === "update_issue_status") {
-          const updated = await svc.update(target.id, { status: effect.status, actorUserId: decidedByUserId }, tx);
+          const updated = await svc.update(
+            target.id,
+            { status: effect.status, actorUserId: decidedByUserId },
+            tx,
+            postCommitActivityPublications,
+          );
           if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
           result = { issueId: updated?.id, status: updated?.status };
         } else if (effect.type === "assign_issue") {
-          const updated = await svc.update(target.id, { assigneeAgentId: effect.assigneeAgentId ?? null, assigneeUserId: effect.assigneeUserId ?? null, actorUserId: decidedByUserId }, tx);
+          const updated = await svc.update(
+            target.id,
+            {
+              assigneeAgentId: effect.assigneeAgentId ?? null,
+              assigneeUserId: effect.assigneeUserId ?? null,
+              actorUserId: decidedByUserId,
+            },
+            tx,
+            postCommitActivityPublications,
+          );
           if (effect.comment) await svc.addComment(target.id, interpolate(effect.comment, values), { userId: decidedByUserId }, undefined, tx);
           result = { issueId: updated?.id };
         } else if (effect.type === "resolve_blocker") {
           const current = await tx.select({ id: issueRelations.issueId }).from(issueRelations).where(and(eq(issueRelations.companyId, decision.companyId), eq(issueRelations.relatedIssueId, target.id), eq(issueRelations.type, "blocks")));
-          await svc.update(target.id, { blockedByIssueIds: current.map((row) => row.id).filter((id) => !effect.removeBlockedByIssueIds.includes(id)), actorUserId: decidedByUserId }, tx);
+          await svc.update(
+            target.id,
+            {
+              blockedByIssueIds: current.map((row) => row.id).filter((id) => !effect.removeBlockedByIssueIds.includes(id)),
+              actorUserId: decidedByUserId,
+            },
+            tx,
+            postCommitActivityPublications,
+          );
           result = { removedBlockedByIssueIds: effect.removeBlockedByIssueIds };
         } else if (effect.type === "create_issue") {
           const draft = effect.draft;
@@ -418,7 +441,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
           result = { issueId: created.id };
         } else {
           const cancelled = [target.id, ...cancellationDescendantIds!].reverse();
-          for (const id of cancelled) await svc.update(id, { status: "cancelled", actorUserId: decidedByUserId }, tx);
+          for (const id of cancelled) {
+            await svc.update(
+              id,
+              { status: "cancelled", actorUserId: decidedByUserId },
+              tx,
+              postCommitActivityPublications,
+            );
+          }
           await svc.addComment(target.id, interpolate(effect.reasonComment, values), { userId: decidedByUserId }, undefined, tx);
           result = { cancelledIssueIds: cancelled };
         }
@@ -426,6 +456,8 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const [row] = await tx.update(decisionEffectExecutions).set({ status: "executed", result, error: null, activityLogId: activity?.id ?? null, executedAt: new Date() }).where(eq(decisionEffectExecutions.id, execution.id)).returning();
         return row;
       });
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
+      return executionResult;
     } catch (error) {
       const message = error instanceof Error ? error.message : "Decision effect execution failed";
       return recordFailure("effect_execution_failed", { reason: "effect_execution_failed", message });

@@ -7370,6 +7370,9 @@ export function issueService(db: Db) {
           }
         }
         if (actorUserId && receiptExisting.status !== "done" && updated.status === "done") {
+          if (dbOrTx !== db && !postCommitActivityPublications) {
+            throw new Error("Human completion in an external transaction requires a post-commit activity queue");
+          }
           const now = new Date();
           const archiveState = await archiveInbox(
             updated.companyId,

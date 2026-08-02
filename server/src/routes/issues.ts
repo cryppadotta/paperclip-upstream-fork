@@ -8202,21 +8202,29 @@ export function issueRoutes(
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
     const postCommitActivityPublications: ActivityPublication[] = [];
+    const issueUpdateData = {
+      ...updateFields,
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+    };
+    const shouldCollectCompletionPublication =
+      actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
+    const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
+      if (tx) {
+        return shouldCollectCompletionPublication
+          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications)
+          : svc.update(id, issueUpdateData, tx);
+      }
+      return shouldCollectCompletionPublication
+        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
+        : svc.update(id, issueUpdateData);
+    };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(
-            id,
-            {
-              ...updateFields,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            },
-            tx,
-            postCommitActivityPublications,
-          );
+          const updated = await updateIssue(tx);
           if (!updated) return null;
 
           await tx.insert(issueExecutionDecisions).values({
@@ -8240,21 +8248,13 @@ export function issueRoutes(
         });
       } else if (shouldRelayStop) {
         issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(id, {
-            ...updateFields,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-          }, tx, postCommitActivityPublications);
+          const updated = await updateIssue(tx);
           if (!updated) return null;
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           return updated;
         });
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        }, db, postCommitActivityPublications);
+        issue = await updateIssue();
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
@@ -10333,6 +10333,7 @@ export function issueRoutes(
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
+      const postCommitActivityPublications: ActivityPublication[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
           const insertedComment = await svc.addComment(
@@ -10346,7 +10347,9 @@ export function issueRoutes(
             commentOptions,
             tx,
           );
-          const updated = await svc.update(id, updatePatch, tx);
+          const updated = actor.actorType === "user" && currentIssue.status !== "done"
+            ? await svc.update(id, updatePatch, tx, postCommitActivityPublications)
+            : await svc.update(id, updatePatch, tx);
           // Throw (not return null) so drizzle rolls back the inserted comment when the issue
           // has been concurrently deleted between the initial fetch and the in-transaction update.
           if (!updated) throw new AutoApprovalIssueMissingError();
@@ -10375,6 +10378,7 @@ export function issueRoutes(
         }
         throw err;
       }
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
       comment = txResult.comment;
       currentIssue = txResult.issue;
       // Mirror the normal status-change audit trail: every other in_review -> done path
