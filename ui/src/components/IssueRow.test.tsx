@@ -212,7 +212,7 @@ describe("IssueRow", () => {
     });
   });
 
-  it("puts the unread dot in the reserved far-left slot on desktop and in flow on mobile", () => {
+  it("puts the unread dot in the reserved desktop slot and overlays it on mobile", () => {
     const root = createRoot(container);
     act(() => {
       root.render(<IssueRow issue={createIssue()} unreadState="visible" />);
@@ -224,12 +224,15 @@ describe("IssueRow", () => {
     expect(slot).not.toBeNull();
     expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
 
-    // Mobile: a separate in-flow, order-first dot (mobile has no reserved slot).
+    // Mobile: a separate absolute dot uses the row's existing left padding,
+    // so it adds no flex column and cannot indent the status or title.
     const mobileDot = container
       .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
       ?.closest("span.sm\\:hidden");
     expect(mobileDot).not.toBeNull();
-    expect(mobileDot?.className).toContain("order-first");
+    expect(mobileDot?.className).toContain("absolute");
+    expect(mobileDot?.className).toContain("-left-1");
+    expect(mobileDot?.className).not.toContain("order-first");
 
     act(() => {
       root.unmount();

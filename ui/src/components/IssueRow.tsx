@@ -318,10 +318,11 @@ export function IssueRow({
         </span>
       ) : null}
       {showUnreadDot ? (
-        // Mobile keeps the dot in flow as the leading item (mobile has no
-        // reserved desktop dot gutter). Desktop renders the dot in the reserved
-        // leading slot above instead, so this is mobile-only.
-        <span className="order-first inline-flex h-4 w-4 shrink-0 items-center justify-center self-center sm:hidden">
+        // Mobile places the dot in the row's existing left padding so unread
+        // state never adds a flex column or shifts the status/title. Keeping it
+        // outside the leading-control slot also avoids competing with a parent
+        // row's collapse chevron.
+        <span className="absolute -left-1 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center sm:hidden">
           {unreadDotButton}
         </span>
       ) : null}
