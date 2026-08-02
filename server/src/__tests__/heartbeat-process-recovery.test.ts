@@ -56,6 +56,14 @@ const mockTerminateLocalService = vi.hoisted(() => vi.fn());
 const mockEnvironmentOrchestratorReleaseFault = vi.hoisted(() => ({ current: null as Error | null }));
 const mockRunLogFinalizeFault = vi.hoisted(() => ({ current: null as Error | null }));
 const mockRuntimeServiceReleaseFault = vi.hoisted(() => ({ current: null as Error | null }));
+const mockRuntimeServicesForRun = vi.hoisted(() => ({
+  current: null as Array<Record<string, unknown>> | null,
+}));
+const mockScratchFaults = vi.hoisted(() => ({
+  prepare: null as Error | null,
+  cleanup: null as Error | null,
+  cleanupEventReady: false,
+}));
 const mockAdapterProfileResolutionFault = vi.hoisted(() => ({ current: null as Error | null }));
 const mockSupportsLocalAgentJwt = vi.hoisted(() => ({ current: false }));
 const mockAdapterExecute = vi.hoisted(() =>
@@ -156,9 +164,33 @@ vi.mock("../services/workspace-runtime.js", async () => {
   );
   return {
     ...actual,
+    ensureRuntimeServicesForRun: async (...args: Parameters<typeof actual.ensureRuntimeServicesForRun>) =>
+      mockRuntimeServicesForRun.current ?? actual.ensureRuntimeServicesForRun(...args),
     releaseRuntimeServicesForRun: async (...args: Parameters<typeof actual.releaseRuntimeServicesForRun>) => {
       if (mockRuntimeServiceReleaseFault.current) throw mockRuntimeServiceReleaseFault.current;
       return actual.releaseRuntimeServicesForRun(...args);
+    },
+  };
+});
+
+vi.mock("../services/run-scratch.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/run-scratch.js")>(
+    "../services/run-scratch.js",
+  );
+  return {
+    ...actual,
+    prepareHeartbeatRunScratch: async (...args: Parameters<typeof actual.prepareHeartbeatRunScratch>) => {
+      if (mockScratchFaults.prepare) throw mockScratchFaults.prepare;
+      return actual.prepareHeartbeatRunScratch(...args);
+    },
+    cleanupHeartbeatRunScratch: async (...args: Parameters<typeof actual.cleanupHeartbeatRunScratch>) => {
+      if (mockScratchFaults.cleanup) {
+        mockScratchFaults.cleanupEventReady = true;
+        throw mockScratchFaults.cleanup;
+      }
+      const result = await actual.cleanupHeartbeatRunScratch(...args);
+      mockScratchFaults.cleanupEventReady = true;
+      return result;
     },
   };
 });
@@ -601,6 +633,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockEnvironmentOrchestratorReleaseFault.current = null;
     mockRunLogFinalizeFault.current = null;
     mockRuntimeServiceReleaseFault.current = null;
+    mockRuntimeServicesForRun.current = null;
+    mockScratchFaults.prepare = null;
+    mockScratchFaults.cleanup = null;
+    mockScratchFaults.cleanupEventReady = false;
     mockAdapterProfileResolutionFault.current = null;
     mockSupportsLocalAgentJwt.current = false;
     // Some race-focused cases intentionally queue one-shot adapter outcomes.
@@ -8798,4 +8834,175 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(dependencyWakeFault.wasTriggered()).toBe(true);
     expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
   });
+
+  it("runs the selected-environment callback during low-trust workspace preflight", async () => {
+    const { companyId, agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      permissions: {
+        trustPreset: "low_trust_review",
+        authorizationPolicy: {
+          managedBy: "core-trust-preset",
+          trustBoundary: {
+            mode: "low_trust_review",
+            companyId,
+            rootIssueId: issueId,
+            issueIds: [issueId],
+          },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("persists runtime-service URLs and contains a workspace-ready comment failure", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      adapterConfig: {
+        workspaceRuntime: {
+          services: [null, "ignored", { name: "preview", command: "pnpm dev" }],
+        },
+      },
+      runtimeConfig: {
+        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+      },
+    }).where(eq(agents.id, agentId));
+    mockRuntimeServicesForRun.current = [{
+      id: randomUUID(),
+      serviceName: "preview",
+      status: "running",
+      scopeType: "run",
+      url: "http://127.0.0.1:4310",
+      reused: false,
+    }];
+    const commentFault = rejectIssueCommentInsertOnce(
+      db,
+      new Error("synthetic workspace-ready comment fault"),
+    );
+    const heartbeat = heartbeatService(commentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    const persistedRun = await heartbeat.getRun(runId, { unsafeFullResultJson: true });
+    expect(persistedRun?.contextSnapshot).toMatchObject({
+      paperclipRuntimePrimaryUrl: "http://127.0.0.1:4310",
+    });
+  });
+
+  it("continues a local run when scratch preparation fails", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockScratchFaults.prepare = new Error("synthetic scratch preparation fault");
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains scratch cleanup and cleanup-event persistence failures", async () => {
+    const first = await seedQueuedIssueRunFixture();
+    let firstScratchDir: string | null = null;
+    mockScratchFaults.cleanup = new Error("synthetic scratch cleanup fault");
+    mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+      const input = rawInput as { config?: { env?: Record<string, string> } };
+      firstScratchDir = input.config?.env?.PAPERCLIP_RUN_SCRATCH_DIR ?? null;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Scratch cleanup failure was contained.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const cleanupEventFault = rejectMatchingQueryWhen(
+      db,
+      /insert into "heartbeat_run_events"/,
+      () => mockScratchFaults.cleanupEventReady,
+      new Error("synthetic scratch cleanup error-event fault"),
+    );
+    const firstHeartbeat = heartbeatService(cleanupEventFault.db);
+
+    await firstHeartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(firstHeartbeat, first.runId);
+    await firstHeartbeat.drainActiveRunExecutions();
+
+    expect(cleanupEventFault.wasTriggered()).toBe(true);
+    expect((await firstHeartbeat.getRun(first.runId))?.status).toBe("succeeded");
+    if (firstScratchDir) await fs.rm(firstScratchDir, { recursive: true, force: true });
+
+    mockScratchFaults.cleanup = null;
+    mockScratchFaults.cleanupEventReady = false;
+    const second = await seedQueuedIssueRunFixture();
+    const lifecycleEventFault = rejectMatchingQueryWhen(
+      db,
+      /insert into "heartbeat_run_events"/,
+      () => mockScratchFaults.cleanupEventReady,
+      new Error("synthetic scratch cleanup lifecycle-event fault"),
+    );
+    const secondHeartbeat = heartbeatService(lifecycleEventFault.db);
+
+    await secondHeartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(secondHeartbeat, second.runId);
+    await secondHeartbeat.drainActiveRunExecutions();
+
+    expect(lifecycleEventFault.wasTriggered()).toBe(true);
+    expect((await secondHeartbeat.getRun(second.runId))?.status).toBe("succeeded");
+  });
+
+  it("recovers a setup-failure agent lookup on the second attempt", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const secret = await secretService(db).create(companyId, {
+      name: `unbound-agent-reread-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "never-resolved",
+    });
+    await db.update(agents).set({
+      adapterConfig: {
+        env: {
+          UNBOUND_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    let configurationLookupCompleted = false;
+    const setupSignal = tapMatchingQueryOnce(db, /from "company_secret_bindings"/, () => {
+      configurationLookupCompleted = true;
+    });
+    const firstAgentLookupFault = rejectMatchingQueryWhen(
+      setupSignal.db,
+      /from "agents"/,
+      () => configurationLookupCompleted,
+      new Error("synthetic first setup-failure agent lookup fault"),
+    );
+    const secondAgentLookupFault = rejectMatchingQueryWhen(
+      firstAgentLookupFault.db,
+      /from "agents"/,
+      () => configurationLookupCompleted && firstAgentLookupFault.wasTriggered(),
+      new Error("synthetic second setup-failure agent lookup fault"),
+    );
+    const heartbeat = heartbeatService(secondAgentLookupFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupSignal.wasTriggered()).toBe(true);
+    expect(firstAgentLookupFault.wasTriggered()).toBe(true);
+    expect(secondAgentLookupFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
 });
