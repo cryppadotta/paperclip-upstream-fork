@@ -8550,6 +8550,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(updatedIssue?.responsibleUserId).toBe("responsible-user");
   });
 
+  it("propagates a non-conflict auto-checkout failure into setup failure containment", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({
+      status: "todo",
+      checkoutRunId: null,
+      startedAt: null,
+    }).where(eq(issues.id, issueId));
+    const checkoutFailure = rejectMatchingQueryOnce(
+      db,
+      /update "issues" set .*"checkout_run_id"/,
+      new Error("synthetic non-conflict checkout persistence failure"),
+    );
+    const heartbeat = heartbeatService(checkoutFailure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(checkoutFailure.wasTriggered()).toBe(true);
+    expect(await heartbeat.getRun(runId)).toMatchObject({
+      status: "failed",
+      errorCode: "setup_failed",
+      error: "synthetic non-conflict checkout persistence failure",
+    });
+  });
+
   it("rejects wakeup for an agent that does not exist", async () => {
     const heartbeat = heartbeatService(db);
 
