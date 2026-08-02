@@ -1391,6 +1391,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
     expect(resolved.body.recoveryAction.resolvedAt).toBeTruthy();
     expect(await recoveryActionSvc.getActiveForIssue(companyId, sourceIssueId)).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(issueInboxArchives)
+        .where(eq(issueInboxArchives.issueId, sourceIssueId)),
+    ).toHaveLength(1);
 
     const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
     expect(detail.body.activeRecoveryAction).toBeNull();

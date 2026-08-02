@@ -5736,6 +5736,7 @@ export function issueRoutes(
     });
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
+    const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
       let issue = existing;
       if (outcome === "blocked") {
@@ -5767,6 +5768,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           },
           tx,
+          postCommitActivityPublications,
         );
         if (!updatedIssue) throw notFound("Issue not found");
         issue = updatedIssue;
@@ -5787,6 +5789,7 @@ export function issueRoutes(
 
       return { issue, recoveryAction };
     });
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
 
     await routinesSvc.syncRunStatusForIssue(result.issue.id);
 
