@@ -4396,6 +4396,34 @@ export function issueRoutes(
     };
   }
 
+  /**
+   * Refuse an agent creating a child issue assigned to the agent that created
+   * a still-open ancestor in the same chain. That shape is a delegation cycle
+   * (A delegates to B, B delegates the same work back to A): each agent lacks
+   * something the other assumed it had, the chain of blocked issues grows,
+   * and no one tells the human. Humans are unaffected, and closed ancestors
+   * do not count — re-engaging the creator of finished work is normal.
+   */
+  async function assertNoAgentDelegationCycle(input: {
+    actorType: string;
+    parentIssueId: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+  }) {
+    if (input.actorType !== "agent") return;
+    if (!input.parentIssueId || !input.assigneeAgentId) return;
+    const ancestor = await svc.findOpenAncestorCreatedByAgent(input.parentIssueId, input.assigneeAgentId);
+    if (!ancestor) return;
+    throw conflict(
+      `Delegation cycle: ${ancestor.identifier ?? "an ancestor issue"} in this chain was created by the agent this child would be assigned to. ` +
+        "Complete the remaining work in your own issue, leave the child unassigned, or escalate to a board operator — do not delegate the work back to the agent that delegated it to you.",
+      {
+        code: "delegation_cycle",
+        ancestorIssueId: ancestor.id,
+        assigneeAgentId: input.assigneeAgentId,
+      },
+    );
+  }
+
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
@@ -7146,6 +7174,11 @@ export function issueRoutes(
       rawCreateBody.assigneeAgentId as string | null | undefined,
       { actorType: req.actor.type },
     );
+    await assertNoAgentDelegationCycle({
+      actorType: req.actor.type,
+      parentIssueId: typeof effectiveParentId === "string" ? effectiveParentId : null,
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+    });
     const actor = getActorInfo(req);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
       ? null
@@ -7362,6 +7395,11 @@ export function issueRoutes(
       sanitizedBody.assigneeAgentId as string | null | undefined,
       { actorType: req.actor.type },
     );
+    await assertNoAgentDelegationCycle({
+      actorType: req.actor.type,
+      parentIssueId: parent.id,
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+    });
     const createBody = {
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
@@ -8008,6 +8046,7 @@ export function issueRoutes(
         agentId: actor.agentId ?? null,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
+      allowBoardOverride: req.actor.type === "board",
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,

@@ -14,6 +14,7 @@ const agentStatusById: Record<string, string> = {
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  findOpenAncestorCreatedByAgent: vi.fn(),
   update: vi.fn(),
   create: vi.fn(),
   createChild: vi.fn(),
@@ -148,6 +149,18 @@ function agentActor(): Actor {
   };
 }
 
+// Minimal chainable/thenable db stub: any query resolves to an empty row set.
+// Needed because some route paths (e.g. source-trust resolution for agent
+// actors) query the db directly rather than through the mocked services.
+function stubDb(): any {
+  const query: any = {};
+  for (const method of ["select", "from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "groupBy", "for"]) {
+    query[method] = () => query;
+  }
+  query.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([]));
+  return { select: () => query };
+}
+
 function createApp(actor: Actor) {
   const app = express();
   app.use(express.json());
@@ -155,7 +168,7 @@ function createApp(actor: Actor) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(stubDb() as any, {} as any));
   app.use(errorHandler);
   return app;
 }
@@ -184,6 +197,8 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 describe("issue assignee invokability guard", () => {
   beforeEach(() => {
     mockIssueService.getById.mockReset();
+    mockIssueService.findOpenAncestorCreatedByAgent.mockReset();
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(null);
     mockIssueService.update.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.createChild.mockReset();
@@ -248,5 +263,81 @@ describe("issue assignee invokability guard", () => {
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+});
+
+describe("agent delegation cycle guard", () => {
+  beforeEach(() => {
+    mockIssueService.getById.mockReset();
+    mockIssueService.findOpenAncestorCreatedByAgent.mockReset();
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue(null);
+    mockIssueService.create.mockReset();
+    mockIssueService.createChild.mockReset();
+  });
+
+  it("refuses an agent child assigned to the creator of an open ancestor", async () => {
+    const parent = makeIssue();
+    mockIssueService.getById.mockResolvedValue(parent);
+    mockIssueService.findOpenAncestorCreatedByAgent.mockResolvedValue({
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      identifier: "PAP-100",
+      parentId: null,
+      createdByAgentId: IDLE_AGENT_ID,
+      status: "in_progress",
+    });
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/issues/${parent.id}/children`)
+      .send({
+        title: "Hand it back",
+        description: "Bounce",
+        assigneeAgentId: IDLE_AGENT_ID,
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain("Delegation cycle");
+    expect(res.body.details).toMatchObject({ code: "delegation_cycle" });
+    expect(mockIssueService.createChild).not.toHaveBeenCalled();
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).toHaveBeenCalledWith(parent.id, IDLE_AGENT_ID);
+  });
+
+  it("allows the same child when no open ancestor was created by the assignee", async () => {
+    const parent = makeIssue();
+    mockIssueService.getById.mockResolvedValue(parent);
+    mockIssueService.createChild.mockResolvedValue({
+      issue: makeIssue({ id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", parentId: parent.id, assigneeAgentId: IDLE_AGENT_ID }),
+      parentBlockerAdded: false,
+    });
+
+    const res = await request(createApp(agentActor()))
+      .post(`/api/issues/${parent.id}/children`)
+      .send({
+        title: "Legit subtask",
+        description: "Fine",
+        assigneeAgentId: IDLE_AGENT_ID,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.createChild).toHaveBeenCalled();
+  });
+
+  it("does not consult the guard for board actors", async () => {
+    const parent = makeIssue({ assigneeAgentId: null });
+    mockIssueService.getById.mockResolvedValue(parent);
+    mockIssueService.createChild.mockResolvedValue({
+      issue: makeIssue({ id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", parentId: parent.id, assigneeAgentId: IDLE_AGENT_ID }),
+      parentBlockerAdded: false,
+    });
+
+    const res = await request(createApp(boardActor()))
+      .post(`/api/issues/${parent.id}/children`)
+      .send({
+        title: "Human-created child",
+        description: "Deliberate",
+        assigneeAgentId: IDLE_AGENT_ID,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.findOpenAncestorCreatedByAgent).not.toHaveBeenCalled();
   });
 });

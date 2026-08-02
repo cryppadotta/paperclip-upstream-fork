@@ -4,8 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   cleanupWorktreeInstanceArtifacts,
+  deriveWorktreeInstanceId,
   readManagedWorktreeInstanceOwnership,
   readWorktreeInstancePointer,
+  stopEmbeddedPostgresIfRunning,
 } from "../services/workspace-instance-cleanup.js";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.js";
@@ -79,6 +81,15 @@ afterEach(async () => {
 });
 
 describe("worktree instance cleanup", () => {
+  it("derives different instance IDs for distinct paths with the same normalized name", () => {
+    const parent = path.join(os.tmpdir(), "paperclip-instance-id-collision");
+    const plusPath = path.join(parent, "feature+cleanup");
+    const dashPath = path.join(parent, "feature-cleanup");
+
+    expect(deriveWorktreeInstanceId(plusPath)).not.toBe(deriveWorktreeInstanceId(dashPath));
+    expect(deriveWorktreeInstanceId(plusPath)).toMatch(/^feature-cleanup-[a-f0-9]{12}$/);
+    expect(deriveWorktreeInstanceId(dashPath)).toMatch(/^feature-cleanup-[a-f0-9]{12}$/);
+  });
   it("removes an instance directory inside the managed worktree instances root", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
@@ -156,7 +167,6 @@ describe("worktree instance cleanup", () => {
       readManagedWorktreeInstanceOwnership(workspacePath, worktreesDir),
     ).resolves.toEqual({ instanceId: "owned-instance", instanceRoot });
   });
-
   it("stops embedded Postgres before deleting the instance root", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
@@ -227,7 +237,6 @@ describe("worktree instance cleanup", () => {
       }),
     ]);
   });
-
   it("refuses a managed-root symlink that canonically escapes the guard", async () => {
     const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
     const outsideRoot = await makeTempRoot("paperclip-outside-instance-");
@@ -272,5 +281,46 @@ describe("worktree instance cleanup", () => {
     expect(result).toMatchObject({ status: "refused" });
     expect((result as { warning: string }).warning).toContain("managed instances directory");
     await expect(fs.stat(liveInstanceRoot)).resolves.toBeDefined();
+  });
+  it("refuses an instance pointer that belongs to a sibling worktree", async () => {
+    const worktreesDir = await makeTempRoot("paperclip-managed-worktrees-");
+    const workspacePath = await makeTempRoot("paperclip-cleanup-workspace-");
+    const siblingRoot = path.join(worktreesDir, "instances", "sibling-worktree");
+    await fs.mkdir(siblingRoot, { recursive: true });
+    await fs.writeFile(path.join(siblingRoot, "marker"), "keep me", "utf8");
+    await writeWorkspaceEnv(workspacePath, worktreesDir, "sibling-worktree");
+    const stopEmbeddedPostgres = vi.fn(async () => false);
+    const removeInstanceRoot = vi.fn(async () => {});
+
+    const pointer = await readWorktreeInstancePointer(workspacePath);
+    const result = await cleanupWorktreeInstanceArtifacts({
+      pointer: pointer!,
+      workspaceId: "workspace-1",
+      workspacePath,
+      expectedInstanceRoot: path.join(worktreesDir, "instances", "owned-worktree"),
+      worktreesDir,
+      dependencies: { stopEmbeddedPostgres, removeInstanceRoot },
+    });
+
+    expect(result).toMatchObject({ status: "refused", instanceRoot: siblingRoot });
+    expect((result as { warning: string }).warning).toContain("persisted instance root");
+    expect(stopEmbeddedPostgres).not.toHaveBeenCalled();
+    expect(removeInstanceRoot).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(siblingRoot, "marker"), "utf8")).toBe("keep me");
+  });
+
+  it("treats an ESRCH signal race as an already-stopped PostgreSQL process", async () => {
+    const instanceRoot = await makeTempRoot("paperclip-postgres-exit-race-");
+    const dataDir = path.join(instanceRoot, "db");
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(dataDir, "postmaster.pid"), `4242\n${dataDir}\n`, "utf8");
+    const signalError = Object.assign(new Error("process exited"), { code: "ESRCH" });
+
+    await expect(stopEmbeddedPostgresIfRunning(dataDir, {
+      processIsAlive: () => true,
+      readVerifiedPostgresCommand: async () => `postgres -D ${dataDir}`,
+      signalProcess: () => { throw signalError; },
+      wait: async () => {},
+    })).resolves.toBe(false);
   });
 });

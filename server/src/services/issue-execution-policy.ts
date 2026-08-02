@@ -49,6 +49,7 @@ type TransitionInput = {
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
+  allowBoardOverride?: boolean;
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
@@ -837,6 +838,16 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         };
       }
 
+      if (
+        input.allowBoardOverride &&
+        requestedStatus &&
+        requestedStatus !== "in_review" &&
+        requestedStatus !== "in_progress"
+      ) {
+        patch.executionState = null;
+        return { patch };
+      }
+
       if (requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
@@ -897,6 +908,37 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       input.issue.status !== "in_review" ||
       !principalsEqual(currentAssignee, currentParticipant) ||
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
+
+    if (input.allowBoardOverride && attemptedStageAdvance) {
+      if (requestedStatus !== undefined && requestedStatus !== "in_review") {
+        patch.executionState = null;
+        return { patch };
+      }
+      // Assignee-only override: the issue stays in_review, so clearing the
+      // execution state would strand it with no participant or return
+      // assignment. Re-pend the stage when the board's chosen assignee is an
+      // eligible stage participant; otherwise (unassign or a non-participant)
+      // dissolve the review — storing an ineligible participant would be
+      // silently replaced by the stage-membership repair on the next
+      // transition.
+      if (explicitAssignee && stageHasParticipant(activeStage, explicitAssignee)) {
+        buildPendingStagePatch({
+          patch,
+          previous: existingState,
+          policy: input.policy,
+          stage: activeStage,
+          participant: explicitAssignee,
+          returnAssignee: existingState?.returnAssignee ?? currentAssignee ?? actor,
+          reviewRequest: effectiveReviewRequest,
+        });
+        return { patch };
+      }
+      patch.executionState = null;
+      if (input.issue.status === "in_review") {
+        patch.status = "in_progress";
+      }
+      return { patch };
+    }
 
     if (attemptedStageAdvance && !stageStateDrifted) {
       throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
