@@ -37,41 +37,6 @@ describe("attentionApi.list", () => {
     );
   });
 
-  it("paginates unscoped complete-feed views", async () => {
-    mockApi.get
-      .mockResolvedValueOnce({
-        companyId: "company-1",
-        generatedAt: "2026-08-03T12:00:00.000Z",
-        totalCount: 2,
-        deskBadgeCount: 2,
-        nextCursor: "next/page",
-        countsBySourceKind: {},
-        items: [{ id: "attention-1" }],
-      })
-      .mockResolvedValueOnce({
-        companyId: "company-1",
-        generatedAt: "2026-08-03T12:00:01.000Z",
-        totalCount: 2,
-        deskBadgeCount: 2,
-        nextCursor: null,
-        countsBySourceKind: {},
-        items: [{ id: "attention-2" }],
-      });
-
-    const feed = await attentionApi.listAll("company-1", { includeDismissed: true });
-
-    expect(mockApi.get).toHaveBeenNthCalledWith(
-      1,
-      "/companies/company-1/attention?includeDismissed=true&limit=100",
-    );
-    expect(mockApi.get).toHaveBeenNthCalledWith(
-      2,
-      "/companies/company-1/attention?includeDismissed=true&cursor=next%2Fpage&limit=100",
-    );
-    expect(feed.items.map((item) => item.id)).toEqual(["attention-1", "attention-2"]);
-    expect(feed.nextCursor).toBeNull();
-  });
-
   it("omits the query delimiter when no options are supplied", async () => {
     await attentionApi.list("company-1");
 

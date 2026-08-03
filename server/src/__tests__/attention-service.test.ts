@@ -1636,6 +1636,10 @@ describeEmbeddedPostgres("attention service", () => {
     };
 
     await request(app(board)).get(`/api/companies/${companyId}/attention`).expect(200);
+    const completeFeed = await request(app(board))
+      .get(`/api/companies/${companyId}/attention?includeDismissed=true&all=true`)
+      .expect(200);
+    expect(completeFeed.body.nextCursor).toBeNull();
     await request(app(board))
       .get(`/api/companies/${companyId}/attention?activitySince=yesterday`)
       .expect(400, { error: "activitySince must be an ISO timestamp" });
