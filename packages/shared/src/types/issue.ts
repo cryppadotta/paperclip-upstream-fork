@@ -403,6 +403,10 @@ export interface IssueBlockerAttention {
   pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
+  /** True when a blocker or one of its open descendants is actively progressing. */
+  blockingTreeLive?: boolean;
+  /** The sampled leaf blocker that requires action, rather than the blocked root. */
+  terminalBlockerIssueId?: string | null;
 }
 
 export type IssueInboxAttentionKind = "blocked";
