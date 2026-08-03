@@ -1528,6 +1528,51 @@ describeEmbeddedPostgres("attention service", () => {
     })).rejects.toThrow("all cannot be combined with cursor or limit");
   });
 
+  it("does not apply the open-decision safety limit to complete snapshots", async () => {
+    const { companyId, workerId } = await seedCompany("ATC");
+    const originIssueId = await insertIssue({
+      companyId,
+      identifier: "ATC-1",
+      title: "Decision origin",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: workerId,
+      status: "succeeded",
+      contextSnapshot: { issueId: originIssueId },
+    });
+    await db.insert(decisions).values(["First decision", "Second decision"].map((title) => ({
+      id: randomUUID(),
+      companyId,
+      originAgentId: workerId,
+      originIssueId,
+      originRunId: runId,
+      title,
+      body: title,
+      options: [],
+      status: "open" as const,
+      expiresAt: new Date("2026-08-10T00:00:00.000Z"),
+      signedSpec: "test",
+      targetSnapshots: {},
+    })));
+
+    const svc = attentionService(db, { openDecisionLimit: 1 });
+    const limited = await svc.list(companyId, { userId: "board-user" });
+    expect(limited.items.filter((item) => item.sourceKind === "decision")).toHaveLength(1);
+
+    const complete = await svc.list(companyId, {
+      userId: "board-user",
+      all: true,
+      allowUnscopedAll: true,
+    });
+    expect(complete.items.filter((item) => item.sourceKind === "decision")).toHaveLength(2);
+    expect(complete.nextCursor).toBeNull();
+  });
+
   it("keeps this-week deadlines in the current UTC week", async () => {
     const { companyId, workerId } = await seedCompany("ATW");
     const now = Date.parse("2026-08-02T12:00:00.000Z"); // Sunday in an ISO Monday-Sunday week.

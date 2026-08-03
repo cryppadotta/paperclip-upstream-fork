@@ -1177,7 +1177,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
-      const openDecisions = await db.select({
+      const openDecisionQuery = db.select({
         id: decisions.id,
         bundleId: decisions.bundleId,
         originAgentId: decisions.originAgentId,
@@ -1190,8 +1190,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         createdAt: decisions.createdAt,
         updatedAt: decisions.updatedAt,
       }).from(decisions).where(and(eq(decisions.companyId, companyId), eq(decisions.status, "open")))
-        .orderBy(desc(decisions.updatedAt), desc(decisions.id))
-        .limit(openDecisionLimit);
+        .orderBy(desc(decisions.updatedAt), desc(decisions.id));
+      const openDecisions = options.all
+        ? await openDecisionQuery
+        : await openDecisionQuery.limit(openDecisionLimit);
       const decisionIssueMap = await issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId));
       // Bundle titles let the feed render a single "Agent proposed N decisions"
       // group header over sibling decisions (v1 still decides each independently).
