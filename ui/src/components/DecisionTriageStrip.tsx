@@ -422,7 +422,7 @@ function DropdownMenuSeparatorLike() {
  * "Ask agent for recommendation" — posts a mention-comment on the linked task
  * asking the agent to prepare a recommendation and re-surface the decision. It
  * does not reassign the task, so the label says exactly what it does
- * (PAP-16195 §3, was "Route to agent").
+ * (Previously labeled "Route to agent".)
  */
 function AskAgentPicker({
   agents,

@@ -1929,7 +1929,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
-        // Desk badge (PAP-16190 P3, D1 Option A): distinct items that surfaced
+        // Desk badge: distinct items that surfaced
         // today OR carry an explicit decide-by deadline due today/past. Counted
         // over the full ranked set (pre-pagination) so the sidebar badge stays
         // company-wide accurate even on a small first page.

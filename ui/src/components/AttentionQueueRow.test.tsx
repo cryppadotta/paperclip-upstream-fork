@@ -732,7 +732,7 @@ describe("AttentionQueueRow", () => {
   }
 
   // Training lives in the row's overflow menu AND on a visible inline "Train"
-  // pill for untrained rows (PAP-16195 §2). Menu items live in a portal that
+  // pill for untrained rows. Menu items live in a portal that
   // only mounts once opened — environment-flaky in jsdom (see the dismiss test
   // above) — so the untrained path asserts the menu exists, no trained badge is
   // shown, and the onTrain contract is exercised through the visible pill.

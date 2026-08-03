@@ -13,7 +13,7 @@ import { Button } from "./ui/button";
 /**
  * A collapsible shelf header + body (snoozed / dismissed / aging / decided /
  * expired). Shared by the desk and the per-queue page so both collapse the same
- * way (PAP-16195 §1).
+ * way across both decision surfaces.
  */
 export function Curtain({
   label,

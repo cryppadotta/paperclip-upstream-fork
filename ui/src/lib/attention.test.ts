@@ -128,7 +128,7 @@ describe("attentionBadgeCount", () => {
 });
 
 // Desk grouping — arrival-based ("New today" / "Earlier") with a "Decide now"
-// shelf only when an explicit decide-by deadline is due (PAP-16190 P3, Option A).
+// shelf only when an explicit decide-by deadline is due.
 describe("buildDeskShelves", () => {
   const NOW = Date.parse("2026-07-09T12:00:00Z");
   const todayIso = "2026-07-09T09:00:00Z";

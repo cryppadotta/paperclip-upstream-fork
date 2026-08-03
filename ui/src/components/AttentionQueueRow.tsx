@@ -297,7 +297,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               Trained ✓
             </button>
           )}
-          {/* Visible train affordance for untrained rows (PAP-16195 §2). Trained
+          {/* Visible train affordance for untrained rows. Trained
               rows already carry the "Trained ✓" badge above; both surfaces also
               keep the overflow "Train this decision" entry. Sits in the same slot
               as the badge so a row's training state reads from one place. */}

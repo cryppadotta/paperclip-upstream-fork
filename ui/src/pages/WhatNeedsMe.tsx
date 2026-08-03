@@ -251,7 +251,7 @@ export function WhatNeedsMe() {
   // Filter → sort → group, all client-side so switching re-buckets without a
   // refetch. In the default (ungrouped) view the desk groups by arrival —
   // "New today" then "Earlier" — with a "Decide now" shelf only when something
-  // carries an explicit, due decide-by (D1 Option A, PAP-16190 P3). Any explicit
+  // carries an explicit, due decide-by. Any explicit
   // group-by keeps the Inbox-style activity grouping.
   const groups = useMemo<AttentionGroup[]>(() => {
     const filtered = filterAttentionItems(deskItems, filters);

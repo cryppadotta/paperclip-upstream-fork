@@ -41,7 +41,7 @@ interface DecisionsToolbarProps {
 /**
  * The decisions filter / group / sort / training toolbar, shared verbatim by the
  * desk (WhatNeedsMe) and the per-queue page so both surfaces expose an identical
- * control set (PAP-16195 §1). All state lives in the parent; this is presentation
+ * control set. All state lives in the parent; this is presentation
  * plus the filter popover only.
  */
 export function DecisionsToolbar({

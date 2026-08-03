@@ -413,7 +413,7 @@ export const TodaysDesk: Story = {
 /**
  * Screen 1 variant — no item has an explicit decide-by deadline, so there is no
  * "Decide now" shelf and no "can wait" claim; the desk is purely the arrival
- * groups "New today" / "Earlier" (D1 Option A, PAP-16190 P3).
+ * groups "New today" / "Earlier".
  */
 export const DeskClearToday: Story = {
   render: () => (
@@ -437,7 +437,7 @@ export const AgingShelf: Story = {
 };
 
 /**
- * Screen 2 — a queue page. As of PAP-16195 the queue carries the same toolbar as
+ * Screen 2 — a queue page. The queue carries the same toolbar as
  * the desk (filter / group / sort / training), the date-range chips, the arrival
  * timeline groupings ("Decide now" / "New today" / "Earlier") and the aging
  * shelf, above the seed-rules card (with its rewritten copy) and the per-item

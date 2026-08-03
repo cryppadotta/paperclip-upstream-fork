@@ -265,7 +265,7 @@ export function attentionBadgeCount(feed: AttentionFeed | null | undefined): num
 }
 
 // ---------------------------------------------------------------------------
-// Today's desk (PAP-16032 §4.3, revised PAP-16190 P3 / D1 Option A)
+// Today's desk
 //
 // The default ungrouped desk reflects *what came up*, not a judgement about
 // what "can wait". It builds up to three shelves in order:
@@ -331,7 +331,7 @@ export interface DeskShelf {
 
 /**
  * Build the default (ungrouped) desk layout — the arrival-based grouping that
- * replaced the "Decide now" / "Can wait" split (PAP-16190 P3, D1 Option A):
+ * replaced the "Decide now" / "Can wait" split:
  *
  *   • "Decide now" — items with an explicit decide-by deadline due today/past,
  *     ordered by deadline. Omitted entirely when nothing has a due deadline, so

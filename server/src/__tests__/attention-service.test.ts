@@ -1054,7 +1054,7 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.some((item) => item.sourceKind === "blocker_attention")).toBe(false);
   });
 
-  it("suppresses a PAP-15839-shaped mixed blocker tree when any blocker is live", async () => {
+  it("suppresses a mixed blocker tree when any blocker is live", async () => {
     const { companyId } = await seedCompany("ATL");
     const blockedId = await insertIssue({
       companyId,
@@ -1378,7 +1378,7 @@ describeEmbeddedPostgres("attention service", () => {
       limit: 20,
     });
     // Desk badge = distinct items surfaced today OR with a due decide-by
-    // (PAP-16190 P3). Everything here was seeded ~now, so every visible row
+    // Everything here was seeded ~now, so every visible row
     // counts; the whole page fits under limit:20 so items == rankedItems.
     const startOfUtcDay = Date.UTC(
       new Date(now).getUTCFullYear(),

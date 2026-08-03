@@ -225,8 +225,7 @@ export interface AttentionFeed {
    * The sidebar badge: distinct items that either surfaced today ("new today")
    * or carry an explicit decide-by deadline that is due today/past ("overdue").
    * Computed before pagination so a small first page still reflects the
-   * company-wide load. (Renamed from `decideNowCount` — PAP-16190 P3, D1
-   * Option A: the desk no longer editorializes about what "can wait".)
+   * company-wide load. The desk no longer editorializes about what "can wait".
    */
   deskBadgeCount: number;
   nextCursor: string | null;

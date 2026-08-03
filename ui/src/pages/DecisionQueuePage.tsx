@@ -50,11 +50,11 @@ import { Button } from "../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 
 /**
- * Queue page (PAP-16032 §4.1 / wireframe screen 2). A single queue's pending
+ * Queue page. A single queue's pending
  * decisions with per-item resolution, exclusion (with an optional reason), and
  * the queue's seed-rules card with an enable/disable toggle.
  *
- * As of PAP-16195 §1 the queue exposes the same toolbar the desk does — filter,
+ * The queue exposes the same toolbar the desk does — filter,
  * group-by, sort, the arrival timeline groupings, the date-range chips, and the
  * aging shelf — sharing the desk's `DecisionsToolbar`, grouping helpers, and
  * shelf components so a decision looks, groups, and resolves the same wherever it
@@ -378,7 +378,7 @@ export function DecisionQueuePage() {
  * Auto-seed card: explains in place what seeding does — the queue's seed rules
  * (from `DECISION_QUEUE_SEEDS`) that pull matching decisions in automatically —
  * and what the toggle changes. Disabling stops only the automatic adds; anything
- * already here stays, and manual adds keep working (PAP-16195 §4).
+ * already here stays, and manual adds keep working.
  */
 function SeedRulesCard({
   enabled,
