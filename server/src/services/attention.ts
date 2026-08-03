@@ -491,6 +491,12 @@ function isDecideNow(item: AttentionItem, now: number) {
   return bucket === 0 && deadline <= endOfUtcDay(now);
 }
 
+/** Surfaced today (arrival). Mirrors `attentionIsNewToday` in `ui/src/lib/attention.ts`. */
+function isNewToday(item: AttentionItem, now: number) {
+  const ts = timestamp(item.createdAt);
+  return ts > 0 && ts >= startOfUtcDay(now);
+}
+
 function compareDecideItems(left: AttentionItem, right: AttentionItem, now: number) {
   const [leftBucket, leftDeadline] = decideOrder(left, now);
   const [rightBucket, rightDeadline] = decideOrder(right, now);
@@ -1922,7 +1928,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
-        decideNowCount: rankedItems.filter((item) => isDecideNow(item, now)).length,
+        // Desk badge (PAP-16190 P3, D1 Option A): distinct items that surfaced
+        // today OR carry an explicit decide-by deadline due today/past. Counted
+        // over the full ranked set (pre-pagination) so the sidebar badge stays
+        // company-wide accurate even on a small first page.
+        deskBadgeCount: rankedItems.filter((item) => isNewToday(item, now) || isDecideNow(item, now)).length,
         nextCursor,
         countsBySourceKind,
         items,

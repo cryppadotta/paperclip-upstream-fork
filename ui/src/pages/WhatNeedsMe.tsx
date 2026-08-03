@@ -16,7 +16,6 @@ import {
   ATTENTION_AGING_DAYS,
   ATTENTION_GROUP_BY_OPTIONS,
   ATTENTION_SORT_OPTIONS,
-  attentionDecideOrder,
   attentionIdleDays,
   attentionIsAging,
   buildAttentionFilterOptions,
@@ -30,7 +29,7 @@ import {
   loadAttentionSortOrder,
   loadCollapsedAttentionGroupKeys,
   NO_GROUP_SENTINEL,
-  partitionDecideNow,
+  buildDeskShelves,
   planAttentionRenderRows,
   resolveAttentionDateRange,
   saveAttentionFilters,
@@ -235,9 +234,9 @@ export function WhatNeedsMe() {
     [allItems, pendingHide, pendingRestore],
   );
 
-  // The server's clock at feed time — used for the decide-by split and the aging
-  // idle labels so they match `decideNowCount` and the sidebar badge exactly,
-  // and stay stable across renders (Date.now() only as a pre-load fallback).
+  // The server's clock at feed time — used for the arrival/decide-by shelves and
+  // the aging idle labels so they match `deskBadgeCount` and the sidebar badge
+  // exactly, and stay stable across renders (Date.now() only as a pre-load fallback).
   const now = useMemo(
     () => (feed?.generatedAt ? new Date(feed.generatedAt).getTime() : Date.now()),
     [feed?.generatedAt],
@@ -267,34 +266,18 @@ export function WhatNeedsMe() {
   const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems]);
 
   // Filter → sort → group, all client-side so switching re-buckets without a
-  // refetch. In the default (ungrouped) view the desk splits into the two §4.3
-  // shelves — "Decide now" (due today / overdue) and "Can wait" — ordered by
-  // decide-by; any explicit group-by keeps the Inbox-style activity grouping.
+  // refetch. In the default (ungrouped) view the desk groups by arrival —
+  // "New today" then "Earlier" — with a "Decide now" shelf only when something
+  // carries an explicit, due decide-by (D1 Option A, PAP-16190 P3). Any explicit
+  // group-by keeps the Inbox-style activity grouping.
   const groups = useMemo<AttentionGroup[]>(() => {
     const filtered = filterAttentionItems(deskItems, filters);
     if (groupBy === "none") {
-      const ordered = [...filtered].sort((a, b) => {
-        const [aBucket, aDeadline] = attentionDecideOrder(a, now);
-        const [bBucket, bDeadline] = attentionDecideOrder(b, now);
-        if (aBucket !== bBucket) return aBucket - bBucket;
-        if (aDeadline !== bDeadline) return aDeadline - bDeadline;
-        return a.rank - b.rank;
-      });
-      const { decideNow, canWait } = partitionDecideNow(ordered, now);
-      const shelves: AttentionGroup[] = [];
-      if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", label: "Decide now", items: decideNow });
-      if (canWait.length > 0) shelves.push({ key: "desk:can-wait", label: "Can wait", items: canWait });
-      return shelves;
+      return buildDeskShelves(filtered, now);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
   }, [deskItems, filters, sortOrder, groupBy, now]);
-
-  // "Today is clear" — the desk has decisions but none are due today.
-  const deskClearToday = useMemo(
-    () => groupBy === "none" && deskItems.length > 0 && !groups.some((group) => group.key === "desk:decide-now"),
-    [groupBy, deskItems, groups],
-  );
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -692,7 +675,6 @@ export function WhatNeedsMe() {
             <CaughtUpNote filtered={deskItems.length > 0} />
           ) : (
             <>
-              {deskClearToday && <TodayClearNote />}
               {groups.map((group) => {
               const groupLabel = group.label;
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
@@ -1105,22 +1087,6 @@ function Curtain({
       />
       {open && <div className="space-y-4">{children}</div>}
     </section>
-  );
-}
-
-/**
- * Slim banner shown at the top of the desk when there are decisions but none
- * are due today — the "Decide now" shelf is empty, so we say so rather than
- * leading with a bare "Can wait" header (§4.3 "empty state when today is clear").
- */
-function TodayClearNote() {
-  return (
-    <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-4 py-3">
-      <Sun className="h-4 w-4 shrink-0 text-green-500" />
-      <p className="text-sm text-foreground">
-        Nothing needs a decision <span className="font-medium">today</span>. Everything below can wait.
-      </p>
-    </div>
   );
 }
 

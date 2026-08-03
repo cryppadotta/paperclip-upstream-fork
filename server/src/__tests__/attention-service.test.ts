@@ -1377,7 +1377,19 @@ describeEmbeddedPostgres("attention service", () => {
       sort: "decide",
       limit: 20,
     });
-    expect(feed.decideNowCount).toBe(2);
+    // Desk badge = distinct items surfaced today OR with a due decide-by
+    // (PAP-16190 P3). Everything here was seeded ~now, so every visible row
+    // counts; the whole page fits under limit:20 so items == rankedItems.
+    const startOfUtcDay = Date.UTC(
+      new Date(now).getUTCFullYear(),
+      new Date(now).getUTCMonth(),
+      new Date(now).getUTCDate(),
+    );
+    const expectedBadge = feed.items.filter(
+      (item) => new Date(item.createdAt).getTime() >= startOfUtcDay || item.decideBy === "today",
+    ).length;
+    expect(expectedBadge).toBeGreaterThanOrEqual(2);
+    expect(feed.deskBadgeCount).toBe(expectedBadge);
     expect(feed.items.some((item) => item.subject.id === snoozedId)).toBe(false);
     expect(feed.items.slice(0, 3).map((item) => item.subject.id)).toEqual([
       expiringSoonId,
@@ -1410,7 +1422,7 @@ describeEmbeddedPostgres("attention service", () => {
       sort: "decide",
       limit: 1,
     });
-    expect(firstPage).toMatchObject({ totalCount: 2, decideNowCount: 2 });
+    expect(firstPage).toMatchObject({ totalCount: 2, deskBadgeCount: 2 });
     expect(firstPage.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
     expect(firstPage.nextCursor).toBeTruthy();
     const secondPage = await attentionService(db).list(companyId, {
