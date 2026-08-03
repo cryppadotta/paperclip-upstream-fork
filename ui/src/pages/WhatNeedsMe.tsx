@@ -163,7 +163,11 @@ export function WhatNeedsMe() {
       activityBounds.activitySince ?? null,
       activityBounds.activityUntil ?? null,
     ],
-    queryFn: () => attentionApi.list(selectedCompanyId!, { includeDismissed: true, ...activityBounds }),
+    queryFn: () => attentionApi.list(selectedCompanyId!, {
+      includeDismissed: true,
+      all: true,
+      ...activityBounds,
+    }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: true,
   });
