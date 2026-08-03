@@ -21,4 +21,28 @@ export const attentionApi = {
     const query = params.toString();
     return api.get<AttentionFeed>(`/companies/${companyId}/attention${query ? `?${query}` : ""}`);
   },
+
+  /** Fetch every page for views that apply company-wide triage on the client. */
+  async listAll(
+    companyId: string,
+    options: Omit<AttentionFeedQuery, "all" | "cursor" | "limit"> = {},
+  ): Promise<AttentionFeed> {
+    const items: AttentionFeed["items"] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    let firstPage: AttentionFeed | null = null;
+
+    do {
+      const page = await attentionApi.list(companyId, { ...options, cursor, limit: 100 });
+      firstPage ??= page;
+      items.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+      if (cursor && seenCursors.has(cursor)) {
+        throw new Error("Attention pagination returned a repeated cursor");
+      }
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor);
+
+    return { ...firstPage!, items, nextCursor: null };
+  },
 };

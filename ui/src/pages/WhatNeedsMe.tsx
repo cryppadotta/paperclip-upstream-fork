@@ -163,9 +163,8 @@ export function WhatNeedsMe() {
       activityBounds.activitySince ?? null,
       activityBounds.activityUntil ?? null,
     ],
-    queryFn: () => attentionApi.list(selectedCompanyId!, {
+    queryFn: () => attentionApi.listAll(selectedCompanyId!, {
       includeDismissed: true,
-      all: true,
       ...activityBounds,
     }),
     enabled: !!selectedCompanyId,
