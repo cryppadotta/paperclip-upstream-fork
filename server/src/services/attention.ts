@@ -234,10 +234,11 @@ function isPlanDocumentTarget(payload: Record<string, unknown>) {
   return target.type === "issue_document" && target.key === "plan";
 }
 
-function issueContext(issue: IssueSummaryRow | null | undefined) {
+function issueContext(issue: IssueSummaryRow | IssueSubjectRow | null | undefined) {
+  const summary = issue && "project" in issue ? issue : null;
   return {
-    project: issue?.project ?? null,
-    workspace: issue?.workspace ?? null,
+    project: summary?.project ?? null,
+    workspace: summary?.workspace ?? null,
   };
 }
 
