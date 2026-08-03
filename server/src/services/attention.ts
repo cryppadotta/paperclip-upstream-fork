@@ -699,6 +699,32 @@ function interactionVerbs(kind: string, payload: Record<string, unknown>) {
   );
 }
 
+function collapsePendingConfirmationsToNewest<T extends {
+  id: string;
+  issueId: string;
+  kind: string;
+  createdAt: Date;
+}>(rows: T[]) {
+  const newestByGroup = new Map<string, T>();
+  for (const row of rows) {
+    if (row.kind !== "request_confirmation") continue;
+    const groupKey = `${row.issueId}:${row.kind}`;
+    const newest = newestByGroup.get(groupKey);
+    if (
+      !newest
+      || row.createdAt.getTime() > newest.createdAt.getTime()
+      || (row.createdAt.getTime() === newest.createdAt.getTime() && row.id > newest.id)
+    ) {
+      newestByGroup.set(groupKey, row);
+    }
+  }
+
+  return rows.filter((row) => (
+    row.kind !== "request_confirmation"
+    || newestByGroup.get(`${row.issueId}:${row.kind}`)?.id === row.id
+  ));
+}
+
 function budgetObservedPercent(amountObserved: number, amountLimit: number) {
   return amountLimit > 0 ? Math.round((amountObserved / amountLimit) * 10_000) / 100 : 0;
 }
@@ -1092,11 +1118,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
-      const interactionIssueMap = await issueSummaryMap(db, companyId, interactionRows.map((row) => row.issueId));
-      const interactionImageMap = await issueImageMap(db, companyId, interactionRows.map((row) => row.issueId));
-      const interactionPlanDocumentMap = await planDocumentMap(db, companyId, interactionRows.map((row) => row.issueId));
+      const visibleInteractionRows = collapsePendingConfirmationsToNewest(interactionRows);
+      const interactionIssueMap = await issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId));
+      const interactionImageMap = await issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId));
+      const interactionPlanDocumentMap = await planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId));
 
-      for (const interaction of interactionRows) {
+      for (const interaction of visibleInteractionRows) {
         const issue = interactionIssueMap.get(interaction.issueId) ?? null;
         const payload = readRecord(interaction.payload);
         const detail = interactionDetail({
