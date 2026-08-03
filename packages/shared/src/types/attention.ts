@@ -158,6 +158,7 @@ export type AttentionItemDetail =
         identifier: string | null;
         title: string | null;
       } | null;
+      blockedTaskCount?: number;
       images: AttentionDetailImage[];
     }
   | {

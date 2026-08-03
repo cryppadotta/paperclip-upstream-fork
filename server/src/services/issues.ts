@@ -1879,8 +1879,8 @@ function lowTrustBoundaryIssueCondition(
 }
 
 const BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES = ["done", "cancelled"];
-const BLOCKER_ATTENTION_MAX_DEPTH = 8;
-const BLOCKER_ATTENTION_MAX_NODES = 2000;
+export const BLOCKER_ATTENTION_MAX_DEPTH = 8;
+export const BLOCKER_ATTENTION_MAX_NODES = 2000;
 const BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
 
 type IssueBlockerAttentionNode = {
@@ -2049,6 +2049,8 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     pendingFinalizeBlockerIssueIds: input.pendingFinalizeBlockerIssueIds ?? [],
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
+    blockingTreeLive: input.blockingTreeLive ?? false,
+    terminalBlockerIssueId: input.terminalBlockerIssueId ?? null,
   };
 }
 
@@ -2620,6 +2622,29 @@ async function listIssueBlockerAttentionMap(
     return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
   };
 
+  const pathHasLiveWork = (nodeId: string, seen: Set<string>): boolean => {
+    if (seen.has(nodeId)) return false;
+    const node = nodesById.get(nodeId);
+    if (!node || node.companyId !== companyId) return false;
+    if (node.status === "in_progress" || activeIssueIds.has(node.id)) return true;
+
+    const nextSeen = new Set(seen);
+    nextSeen.add(nodeId);
+    return (edgesByIssueId.get(node.id) ?? []).some((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      if (blocker?.status === "done" && !pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId)) return false;
+      return pathHasLiveWork(edge.blockerIssueId, nextSeen);
+    });
+  };
+
+  const issueIdForSample = (sample: string | null | undefined) => {
+    if (!sample) return null;
+    for (const node of nodesById.values()) {
+      if (node.id === sample || node.identifier === sample) return node.id;
+    }
+    return null;
+  };
+
   for (const root of roots) {
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
@@ -2629,6 +2654,7 @@ async function listIssueBlockerAttentionMap(
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
         reason: "attention_required",
+        terminalBlockerIssueId: root.id,
       }));
       continue;
     }
@@ -2647,6 +2673,9 @@ async function listIssueBlockerAttentionMap(
     const sampleStalledFromChain = classified
       .map((entry) => entry.result.sampleStalledBlockerIdentifier)
       .find((value) => value);
+    const sampledTerminalIdentifier = sampleEntry?.result.stalled
+      ? sampleEntry.result.sampleStalledBlockerIdentifier ?? sampleEntry.result.sampleBlockerIdentifier
+      : sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode);
 
     let state: IssueBlockerAttention["state"];
     let reason: IssueBlockerAttention["reason"];
@@ -2676,6 +2705,8 @@ async function listIssueBlockerAttentionMap(
       sampleBlockerIdentifier: sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode),
       sampleStalledBlockerIdentifier:
         stalledEntry?.result.sampleStalledBlockerIdentifier ?? sampleStalledFromChain ?? null,
+      blockingTreeLive: topLevelEdges.some((edge) => pathHasLiveWork(edge.blockerIssueId, new Set([root.id]))),
+      terminalBlockerIssueId: issueIdForSample(sampledTerminalIdentifier),
     }));
   }
 
