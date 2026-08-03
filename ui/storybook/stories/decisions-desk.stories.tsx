@@ -374,8 +374,10 @@ function PrimeDeskFixtures({
       );
     }
     if (queueItems) {
+      // The queue feed key carries the resolved activity bounds (null/null for
+      // the default "all" range), matching the page's real query key.
       queryClient.setQueryData(
-        [...queryKeys.attention(companyId), "queue", "prs"],
+        [...queryKeys.attention(companyId), "queue", "prs", null, null],
         feed(queueItems),
       );
     }
@@ -435,21 +437,40 @@ export const AgingShelf: Story = {
 };
 
 /**
- * Screen 2 — a queue page. Homogeneous list where each source-native decision
- * resolves per item (approve/reject on the card, plus Exclude-with-reason);
- * the queue rail (active chip) and the seed-rules card with its enable/disable
- * toggle sit above. Bulk accept/reject was pulled until a cross-domain
- * exact-set transaction can preserve side effects atomically (see PAP-16032
- * follow-up); screen 2 ships per-item-only for now.
+ * Screen 2 — a queue page. As of PAP-16195 the queue carries the same toolbar as
+ * the desk (filter / group / sort / training), the date-range chips, the arrival
+ * timeline groupings ("Decide now" / "New today" / "Earlier") and the aging
+ * shelf, above the seed-rules card (with its rewritten copy) and the per-item
+ * Exclude-with-reason affordance. Each source-native decision still resolves per
+ * item (approve/reject on the card).
  */
 export const QueuePage: Story = {
   render: () => (
     <PrimeDeskFixtures
       queueItems={[
-        approval("q-pr-1", "Merge PR #10664: decisions desk data layer", "CI green; ready to merge.", { queues: [PRS_QUEUE_REF] }),
-        approval("q-pr-2", "Merge PR #10651: prioritized attention feed", "Second review approved.", { queues: [PRS_QUEUE_REF] }),
-        approval("q-pr-3", "Merge PR #10636: quieter workspace-ready", "Reviewed and passing.", { queues: [PRS_QUEUE_REF] }),
-        approval("q-pr-4", "Merge PR #10623: inbox sort pinning", "Awaiting a merge decision.", { queues: [PRS_QUEUE_REF] }),
+        approval("q-pr-1", "Merge PR #10664: decisions desk data layer", "CI green; ready to merge.", {
+          queues: [PRS_QUEUE_REF],
+          decideBy: "today",
+          decideByAttribution: attribution("Prioritizer"),
+          expiresAt: iso(NOW + 5 * HOUR),
+        }),
+        approval("q-pr-2", "Merge PR #10651: prioritized attention feed", "Second review approved.", {
+          queues: [PRS_QUEUE_REF],
+          createdAt: iso(NOW - 2 * HOUR),
+        }),
+        approval("q-pr-3", "Merge PR #10636: quieter workspace-ready", "Reviewed and passing.", {
+          queues: [PRS_QUEUE_REF],
+          createdAt: iso(NOW - 4 * DAY),
+        }),
+        approval("q-pr-4", "Merge PR #10623: inbox sort pinning", "Awaiting a merge decision.", {
+          queues: [PRS_QUEUE_REF],
+          createdAt: iso(NOW - 5 * DAY),
+        }),
+        approval("q-pr-5", "Merge PR #9744: legacy exporter cleanup", "No activity in over a month.", {
+          queues: [PRS_QUEUE_REF],
+          shelf: true,
+          activityAt: iso(NOW - 44 * DAY),
+        }),
       ]}
     >
       <div className="p-6">
