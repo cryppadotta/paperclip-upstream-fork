@@ -3799,12 +3799,12 @@ export function issueRoutes(
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
-    if (interaction.addresseeAgentId && interaction.addresseeAgentId !== actorAgentId) {
-      res.status(403).json({ error: "Only the addressed agent or a board user may resolve this issue-thread interaction" });
+    if (interaction.effectiveResolverPolicy !== "board_or_agents") {
+      res.status(403).json({ error: "This issue-thread interaction is board-only" });
       return false;
     }
-    if (!interaction.addresseeAgentId && interaction.effectiveResolverPolicy !== "board_or_agents") {
-      res.status(403).json({ error: "This issue-thread interaction is board-only" });
+    if (interaction.addresseeAgentId && interaction.addresseeAgentId !== actorAgentId) {
+      res.status(403).json({ error: "Only the addressed agent or a board user may resolve this issue-thread interaction" });
       return false;
     }
     if (interaction.createdByAgentId === actorAgentId) {

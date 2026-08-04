@@ -243,7 +243,7 @@ POST /api/issues/{issueId}/interactions/{interactionId}/verdicts
 POST /api/issues/{issueId}/interactions/{interactionId}/withdraw
 ```
 
-Board users can resolve all interactions. Unaddressed interactions allow agent resolution only when the immutable effective policy is `board_or_agents`; addressed interactions allow only their `addresseeAgentId`. Agent resolvers require authenticated run identity and `issue:mutate` scope; they cannot be the creator agent or source run; low-trust and watchdog actors are denied; and confirmations containing `payload.toolAction` are always board-only. Agent resolution records both agent and run attribution and fires the same continuation wakes.
+Board users can resolve all interactions. Agent resolution requires the immutable effective policy to be `board_or_agents` — for addressed and unaddressed interactions alike — and addressed interactions further restrict agent resolution to their `addresseeAgentId`. Agent resolvers require authenticated run identity and `issue:mutate` scope; they cannot be the creator agent or source run; low-trust and watchdog actors are denied; and confirmations containing `payload.toolAction` are always board-only. Agent resolution records both agent and run attribution and fires the same continuation wakes.
 
 The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
 
