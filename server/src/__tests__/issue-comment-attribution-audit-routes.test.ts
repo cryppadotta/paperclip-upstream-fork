@@ -117,19 +117,30 @@ describeEmbeddedPostgres("issue comment attribution and patch audit routes", () 
       status: "active",
       membershipRole: "member",
     });
+    const [sourceIssue, issue] = await db.insert(issues).values([
+      {
+        companyId: company.id,
+        identifier: `${company.issuePrefix}-1`,
+        title: "Source issue",
+        status: "in_progress" as const,
+        priority: "medium" as const,
+        assigneeAgentId: actorAgent.id,
+      },
+      {
+        companyId: company.id,
+        identifier: `${company.issuePrefix}-2`,
+        title: "Foreign issue",
+        status: "done" as const,
+        priority: "medium" as const,
+        assigneeAgentId: targetAgent.id,
+      },
+    ]).returning();
     const run = await db.insert(heartbeatRuns).values({
       companyId: company.id,
       agentId: actorAgent.id,
       status: "running",
       responsibleUserId,
-    }).returning().then((rows) => rows[0]!);
-    const issue = await db.insert(issues).values({
-      companyId: company.id,
-      identifier: `${company.issuePrefix}-1`,
-      title: "Foreign issue",
-      status: "done",
-      priority: "medium",
-      assigneeAgentId: targetAgent.id,
+      contextSnapshot: { issueId: sourceIssue.id },
     }).returning().then((rows) => rows[0]!);
 
     return { company, actorAgent, responsibleUserId, boardUserId, run, issue };
