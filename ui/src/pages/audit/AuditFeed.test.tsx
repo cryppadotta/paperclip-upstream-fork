@@ -327,10 +327,24 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("Export CSV");
   });
 
-  it("labels a stripped agent row as an agent, not the system", async () => {
-    // The basic tier nulls `agentId` but keeps `actorType: "agent"`.
+  it("resolves a basic-tier agent name from the company-readable actorId", async () => {
+    // The basic tier nulls privileged attribution but retains the acting
+    // principal, which is also available through the company agent directory.
     listAgentActionsMock.mockResolvedValue({
       items: [record({ agentId: null, runId: null, responsibleUserId: null, details: null })],
+      nextCursor: null,
+      accessTier: "basic",
+    });
+    await render({ mode: "all", onModeChange: vi.fn() });
+
+    expect(container.textContent).toContain("Fable");
+    expect(container.textContent).not.toContain("Agent commented");
+    expect(container.textContent).not.toContain("System");
+  });
+
+  it("falls back to the actor type when an agent is absent from the readable directory", async () => {
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({ actorId: "filtered-agent", agentId: null, runId: null, responsibleUserId: null, details: null })],
       nextCursor: null,
       accessTier: "basic",
     });

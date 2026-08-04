@@ -100,7 +100,14 @@ function AuditActor({
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
 }) {
-  const agent = record.agentId ? agentMap.get(record.agentId) : null;
+  // Agent names are company-readable through the same authorization-filtered
+  // directory used by this page. The basic audit tier strips privileged
+  // attribution (`agentId`) but retains the acting principal (`actorId`), so
+  // use that principal to avoid presenting a trivially joinable identity as
+  // an anonymous "Agent" in the UI.
+  const actorAgentId = record.agentId
+    ?? (record.actorType === "agent" ? record.actorId : null);
+  const agent = actorAgentId ? agentMap.get(actorAgentId) : null;
   if (agent) {
     return (
       <span className="inline-flex min-w-0 items-center gap-1.5" title={agent.name}>
@@ -122,9 +129,8 @@ function AuditActor({
       />
     );
   }
-  // Fall back to the actor *type*, never a blanket "System". The basic tier
-  // strips `agentId` but keeps `actorType`, so every agent action would
-  // otherwise be mislabeled as the system on the shared all-activity feed.
+  // Fall back to the actor *type*, never a blanket "System". This still covers
+  // deleted or authorization-filtered agents that are absent from the directory.
   const label =
     record.actorType === "plugin"
       ? "Plugin"
