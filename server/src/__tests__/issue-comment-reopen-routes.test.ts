@@ -1874,6 +1874,30 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("counts a comment-only cross-issue PATCH once", async () => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    const existing = {
+      ...makeIssue("todo"),
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    };
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...existing,
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor(agentA)))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Comment without an issue update" });
+
+    expect(res.status).toBe(200);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "comment" }),
+    );
+  });
+
   it.each([
     ["comment", (app: express.Express) => request(app)
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")

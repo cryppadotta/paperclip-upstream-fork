@@ -8076,7 +8076,10 @@ export function issueRoutes(
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
       return;
     }
-    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))) return;
+    if (
+      isAgentWorkUpdate &&
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))
+    ) return;
     if (
       commentBody &&
       !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment"))
