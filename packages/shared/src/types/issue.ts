@@ -892,7 +892,8 @@ export interface IssueComment {
   authorType: IssueCommentAuthorType;
   authorAgentId: string | null;
   authorUserId: string | null;
-  onBehalfOfUserId: string | null;
+  /** Responsible user attribution. Legacy and plugin-provided comment values may omit it. */
+  onBehalfOfUserId?: string | null;
   createdByRunId?: string | null;
   derivedAuthorAgentId?: string | null;
   derivedCreatedByRunId?: string | null;
