@@ -193,7 +193,9 @@ export function describeIssueWriteDenial(
         code,
         status: 403,
         tone: "boundary",
-        boundary: "Responsible user unavailable",
+        // Distinct from the title, which already says "unavailable" — the
+        // boundary names the *mechanism*, so the two do not read as a stutter.
+        boundary: "Responsible-user availability",
         title: unavailable.title,
         description: `${unavailable.description} The write to ${issue} was refused for that reason.`,
         whoCanAct: `A board member, or ${actor} once it has an active responsible user.`,
@@ -226,7 +228,8 @@ export function describeIssueWriteDenial(
         code,
         status: 429,
         tone: "cap",
-        boundary: `Per-run cross-issue cap (${cap} writes)`,
+        // No parentheses: surfaces render the boundary inside their own parens.
+        boundary: `Per-run cross-issue cap of ${cap} writes`,
         title: "This run has spent its cross-issue write budget",
         description:
           `A single heartbeat run may make at most ${cap} cross-issue comments or task ` +

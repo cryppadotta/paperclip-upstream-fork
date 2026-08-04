@@ -33,6 +33,16 @@ describe("describeIssueWriteDenial", () => {
     }
   });
 
+  it("keeps the boundary free of parentheses and distinct from the title", () => {
+    for (const code of ISSUE_WRITE_DENIAL_CODES) {
+      const copy = describeIssueWriteDenial(code, { cap: 20 });
+      // Surfaces render the boundary inside their own parens — nesting stutters.
+      expect(copy.boundary, code).not.toMatch(/[()]/);
+      // A title echoed verbatim as its own boundary reads as a mistake.
+      expect(copy.boundary.toLowerCase(), code).not.toBe(copy.title.toLowerCase());
+    }
+  });
+
   it("names the actor, assignee, and task when they are known", () => {
     const copy = describeIssueWriteDenial("issue_write_not_visible", {
       actorLabel: "Fable",
