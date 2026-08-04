@@ -439,8 +439,11 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const stackRole = stackMembershipRole(req.header("x-paperclip-cloud-stack-role"));
   const userName = req.header("x-paperclip-cloud-user-name")?.trim() || userEmail;
   const paperclipCompanyId = req.header("x-paperclip-cloud-paperclip-company-id")?.trim();
+  const paperclipCompanyName = req
+    .header("x-paperclip-cloud-paperclip-company-name")
+    ?.trim();
   const companyId = cloudTenantCompanyId(stackId);
-  const companyName = paperclipCompanyId || `${stackId} Paperclip`;
+  const companyName = paperclipCompanyName || humanizeCloudStackSlug(stackId);
   const now = new Date();
 
   await db
@@ -486,6 +489,15 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     .onConflictDoNothing({
       target: companies.id,
     });
+
+  if (paperclipCompanyName) {
+    await repairCloudTenantCompanyName(db, {
+      companyId,
+      paperclipCompanyId,
+      paperclipCompanyName,
+      now,
+    });
+  }
 
   const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
   const membership = await db
@@ -600,6 +612,77 @@ function cloudTenantCompanyId(stackId: string): string {
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const hex = bytes.subarray(0, 16).toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function humanizeCloudStackSlug(stackId: string): string {
+  const slug = stackId
+    .trim()
+    .replace(/^paperclip-stack-/i, "")
+    .replace(/^stack-/i, "");
+  const displayName = slug
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+  return displayName || "Workspace";
+}
+
+export function isKnownBadCloudCompanyName(
+  name: string,
+  ids: { companyId: string; paperclipCompanyId?: string },
+): boolean {
+  const normalized = name.trim();
+  return (
+    /^paperclip-stack-.+/i.test(normalized) ||
+    /^stack-.+\s+paperclip$/i.test(normalized) ||
+    normalized === ids.companyId ||
+    (ids.paperclipCompanyId !== undefined &&
+      normalized === ids.paperclipCompanyId)
+  );
+}
+
+async function repairCloudTenantCompanyName(
+  db: Db,
+  input: {
+    companyId: string;
+    paperclipCompanyId?: string;
+    paperclipCompanyName: string;
+    now: Date;
+  },
+): Promise<void> {
+  try {
+    const existing = await db
+      .select({ name: companies.name })
+      .from(companies)
+      .where(eq(companies.id, input.companyId))
+      .then((rows) => rows[0]);
+    if (
+      !existing ||
+      !isKnownBadCloudCompanyName(existing.name, {
+        companyId: input.companyId,
+        paperclipCompanyId: input.paperclipCompanyId,
+      })
+    ) {
+      return;
+    }
+    await db
+      .update(companies)
+      .set({ name: input.paperclipCompanyName, updatedAt: input.now })
+      .where(
+        and(
+          eq(companies.id, input.companyId),
+          // A user may rename the company between the read above and this
+          // repair. Match the exact observed machine name so that concurrent
+          // genuine renames always win.
+          eq(companies.name, existing.name),
+        ),
+      );
+  } catch (err) {
+    logger.warn(
+      { err, companyId: input.companyId },
+      "Failed to repair legacy Cloud tenant company name",
+    );
+  }
 }
 
 function issuePrefixForCloudStack(stackId: string): string {
