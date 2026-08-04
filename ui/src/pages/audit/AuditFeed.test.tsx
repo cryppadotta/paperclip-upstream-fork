@@ -322,6 +322,34 @@ describe("AuditFeed", () => {
     expect(calls).toBe(settledCalls);
   }, 30_000);
 
+  it("renders the feed when the recovery refetch cannot clear the mixed tiers", async () => {
+    // Pathological but reachable: the refetch succeeds and still returns one
+    // full page plus one basic page. The recovery has had its shot, so the feed
+    // must render at the least-privileged tier instead of sitting on the banner.
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) =>
+      filters.cursor === "cursor-2"
+        ? Promise.resolve({
+            items: [record({ id: "evt-2", agentId: null, runId: null, responsibleUserId: null, details: null })],
+            nextCursor: null,
+            accessTier: "basic",
+          })
+        : Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" }),
+    );
+    await render();
+    await clickButton("Load more");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Refreshing audit access…");
+    expect(container.textContent).toContain("commented on");
+    // Least-privileged page wins, so the privileged chrome stays hidden.
+    expect(container.textContent).not.toContain("Export CSV");
+
+    const settledCalls = listAgentActionsMock.mock.calls.length;
+    await flushReact();
+    expect(listAgentActionsMock.mock.calls.length).toBe(settledCalls);
+  });
+
   it("hides the agent filter and pins the query when lockedAgentId is set", async () => {
     await render({ lockedAgentId: "agent-1" });
 

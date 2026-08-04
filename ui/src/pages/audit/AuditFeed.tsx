@@ -349,16 +349,18 @@ export function AuditFeed({
   const canUseAdvancedControls = lockedAgentId
     ? true
     : accessTier === "full";
-  // A failed recovery refetch leaves the mixed pages in the cache, so
-  // `hasMixedAccessTiers` stays true forever. Stop calling that "recovering"
-  // once the attempt has settled with an error, or the banner below would hide
-  // the error state and its "Try again" button for good.
-  const downgradeRecoveryFailed = Boolean(
-    hasMixedAccessTiers && downgradeRecoveryAttempted && feed.error && !feed.isFetching,
+  // The recovery refetch below gets one shot. If it does not clear the mixed
+  // pages — it errored, or it somehow came back mixed again — the cache keeps
+  // them, so `hasMixedAccessTiers` would stay true forever. Only call the feed
+  // "recovering" while that attempt is outstanding; once it has settled, fall
+  // through to normal rendering. Otherwise the banner permanently hides the
+  // error state and its "Try again" button, with no way off the page.
+  const downgradeRecoveryExhausted = Boolean(
+    hasMixedAccessTiers && downgradeRecoveryAttempted && !feed.isFetching,
   );
   const recoveringFromAccessDowngrade = Boolean(
     !lockedAgentId
-      && !downgradeRecoveryFailed
+      && !downgradeRecoveryExhausted
       && ((permissionDenied && hasActiveFilters) || hasMixedAccessTiers),
   );
   // A reader without `audit:view_agent_actions` can still land on the
