@@ -229,6 +229,21 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
   };
 }
 
+function makeIssueUpdateReceipt(
+  existing: ReturnType<typeof makeIssue>,
+  patch: Record<string, unknown>,
+) {
+  const fields = Object.fromEntries(
+    Object.entries(patch).filter(([key]) => key !== "actorAgentId" && key !== "actorUserId"),
+  );
+  const changes = Object.fromEntries(
+    Object.entries(fields)
+      .filter(([key, value]) => !Object.is(existing[key as keyof typeof existing], value))
+      .map(([key, value]) => [key, { from: existing[key as keyof typeof existing], to: value }]),
+  );
+  return { ...existing, ...fields, changes };
+}
+
 function agentActor(agentId = "22222222-2222-4222-8222-222222222222") {
   return {
     type: "agent",
@@ -428,11 +443,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -506,11 +520,10 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
   it("reopens closed issues via the PATCH comment path", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -540,11 +553,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -682,11 +694,10 @@ describe.sequential("issue comment reopen routes", () => {
   // reopen=true is the same log-class signal — the guard must suppress reopen.
   it("does not reopen via POST comment+reopen when the assignee agent is the actor on a done issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -814,11 +825,10 @@ describe.sequential("issue comment reopen routes", () => {
       reason: "allow_explicit_grant",
       explanation: "Allowed by test grant.",
     }));
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(
       await installActor(createApp(), {
@@ -1047,9 +1057,10 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "Paperclip needs a disposition before this issue can continue.",
-      { agentId: undefined, userId: "local-board", runId: null },
+      { agentId: undefined, userId: "local-board", runId: null, onBehalfOfUserId: undefined },
       {
         authorType: "user",
+        authorizationReason: "allow_board_actor",
         presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata,
         sourceTrust: null,
@@ -1099,7 +1110,12 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "Recovered the execution path.\nHanded back to the original owner.",
-      { agentId: "22222222-2222-4222-8222-222222222222", userId: undefined, runId: "run-1" },
+      {
+        agentId: "22222222-2222-4222-8222-222222222222",
+        userId: undefined,
+        runId: "run-1",
+        onBehalfOfUserId: null,
+      },
       expect.objectContaining({
         authorType: "agent",
         presentation: {
@@ -1124,7 +1140,12 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "Normal work update.",
-      { agentId: "22222222-2222-4222-8222-222222222222", userId: undefined, runId: "run-1" },
+      {
+        agentId: "22222222-2222-4222-8222-222222222222",
+        userId: undefined,
+        runId: "run-1",
+        onBehalfOfUserId: null,
+      },
       expect.objectContaining({ presentation: null }),
     );
   });
@@ -1152,7 +1173,12 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "The run completed; here is the required summary.",
-      { agentId: "22222222-2222-4222-8222-222222222222", userId: undefined, runId: "run-1" },
+      {
+        agentId: "22222222-2222-4222-8222-222222222222",
+        userId: undefined,
+        runId: "run-1",
+        onBehalfOfUserId: null,
+      },
       expect.objectContaining({ presentation: null }),
     );
   });
@@ -1331,11 +1357,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
+    const issue = makeIssue("blocked");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1590,11 +1615,10 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("explicit same-agent resume works through the PATCH comment path", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+      makeIssueUpdateReceipt(issue, patch));
 
     const res = await request(await installActor(createApp(), agentActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1624,6 +1648,8 @@ describe.sequential("issue comment reopen routes", () => {
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
         reason: "issue_reopened_via_comment",
+        requestedByActorType: "agent",
+        requestedByActorId: "22222222-2222-4222-8222-222222222222",
         payload: expect.objectContaining({
           commentId: "comment-1",
           reopenedFrom: "done",
