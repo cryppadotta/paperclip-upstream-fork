@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -10,6 +10,7 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
+  toolActionRequests,
 } from "@paperclipai/db";
 import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
@@ -409,6 +410,14 @@ function buildStaleTargetResult(
   } as const;
 }
 
+function buildSupersededByNewerRequestResult(replacementInteractionId: string) {
+  return {
+    version: 1,
+    outcome: "superseded_by_newer_request",
+    supersededByInteractionId: replacementInteractionId,
+  } as const;
+}
+
 function buildAdministrativeOutcomeResult(
   row: IssueThreadInteractionRow,
   outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
@@ -428,6 +437,46 @@ function buildAdministrativeOutcomeResult(
     } satisfies RequestItemVerdictsResult;
   }
   return { version: 1, outcome, reason } as const;
+}
+
+// Rollback sentinel: the interaction was resolved by another actor between the
+// pending-rows read and the conditional update, so the enclosing transaction's
+// tool-action revocation must be undone.
+class InteractionResolvedConcurrentlyError extends Error {
+  constructor() {
+    super("Interaction was resolved concurrently");
+  }
+}
+
+// A request_confirmation card can govern a parked tool call via a linked
+// tool_action_requests row. Administrative resolutions (withdraw, terminal-issue
+// expiry) must settle that row too, or the parked call stays approvable under
+// its own one-hour lifecycle after its card is gone.
+async function resolveLinkedToolActionRequests(
+  db: Pick<Db, "update">,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "kind">,
+  outcome: {
+    status: "expired" | "cancelled";
+    fromStatuses: Array<"pending" | "approved">;
+    actor: InteractionActor;
+    now: Date;
+  },
+) {
+  if (interaction.kind !== "request_confirmation") return;
+  await db
+    .update(toolActionRequests)
+    .set({
+      status: outcome.status,
+      resolvedByAgentId: outcome.actor.agentId ?? null,
+      resolvedByUserId: outcome.actor.userId ?? null,
+      resolvedAt: outcome.now,
+      updatedAt: outcome.now,
+    })
+    .where(and(
+      eq(toolActionRequests.companyId, interaction.companyId),
+      eq(toolActionRequests.interactionId, interaction.id),
+      inArray(toolActionRequests.status, outcome.fromStatuses),
+    ));
 }
 
 function resolveActorKind(interaction: Pick<IssueThreadInteraction, "resolvedByAgentId" | "resolvedByUserId">) {
@@ -1275,6 +1324,83 @@ export function issueThreadInteractionService(db: Db) {
       return cancelled;
     },
 
+    sweepSupersededPendingRequestConfirmations: async () => {
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.kind, "request_confirmation"),
+          eq(issueThreadInteractions.status, "pending"),
+          isNotNull(issueThreadInteractions.createdByAgentId),
+        ))
+        .orderBy(
+          asc(issueThreadInteractions.companyId),
+          asc(issueThreadInteractions.issueId),
+          asc(issueThreadInteractions.kind),
+          asc(issueThreadInteractions.createdByAgentId),
+          desc(issueThreadInteractions.createdAt),
+          desc(issueThreadInteractions.id),
+        );
+
+      const newestByGroup = new Map<string, IssueThreadInteractionRow>();
+      const supersededRows: Array<{
+        row: IssueThreadInteractionRow;
+        replacementInteractionId: string;
+      }> = [];
+      for (const row of rows) {
+        if (!row.createdByAgentId) continue;
+        const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
+        const newest = newestByGroup.get(groupKey);
+        if (!newest) {
+          newestByGroup.set(groupKey, row);
+          continue;
+        }
+        supersededRows.push({ row, replacementInteractionId: newest.id });
+      }
+
+      if (supersededRows.length === 0) return { expired: 0 };
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      for (const { row, replacementInteractionId } of supersededRows) {
+        const updated = await db.transaction(async (tx) => {
+          const [updatedRow] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByNewerRequestResult(replacementInteractionId),
+              resolvedByAgentId: null,
+              resolvedByUserId: null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!updatedRow) return null;
+          await resolveLinkedToolActionRequests(tx, updatedRow, {
+            status: "expired",
+            fromStatuses: ["pending", "approved"],
+            actor: {},
+            now,
+          });
+          return updatedRow;
+        });
+        if (!updated) continue;
+        expired.push(hydrateInteraction(updated));
+      }
+
+      if (expired.length > 0) {
+        for (const issueId of new Set(expired.map((interaction) => interaction.issueId))) {
+          await touchIssue(db, issueId);
+        }
+        await emitResolvedInteractionsTelemetry(db, expired);
+      }
+      return { expired: expired.length };
+    },
+
     create: async (
       issue: { id: string; companyId: string },
       input: CreateIssueThreadInteraction,
@@ -1380,28 +1506,80 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       let created: IssueThreadInteractionRow;
+      let superseded: IssueThreadInteractionRow[] = [];
       try {
-        [created] = await db
-          .insert(issueThreadInteractions)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            kind: data.kind,
-            status: "pending",
-            continuationPolicy: data.continuationPolicy,
-            requestedResolverPolicy: policy.requestedResolverPolicy,
-            effectiveResolverPolicy: policy.effectiveResolverPolicy,
-            idempotencyKey: data.idempotencyKey ?? null,
-            sourceCommentId: data.sourceCommentId ?? null,
-            sourceRunId: data.sourceRunId ?? null,
-            title: data.title ?? null,
-            summary: data.summary ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            addresseeAgentId: data.addresseeAgentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            payload: data.payload,
-          })
-          .returning();
+        // A terminal issue must not regain pending actionable cards. FOR UPDATE
+        // on the issue row serializes this insert both against terminal status
+        // transitions and against concurrent confirmations on the same issue.
+        // Idempotent reuse above stays allowed so retries of a pre-close
+        // create keep returning the (by now expired) original.
+        const result = await db.transaction(async (tx) => {
+          const [issueRow] = await tx
+            .select({ status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+            .for("update");
+          if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
+            throw conflict("Cannot create an interaction on a closed issue");
+          }
+          const [row] = await tx
+            .insert(issueThreadInteractions)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              kind: data.kind,
+              status: "pending",
+              continuationPolicy: data.continuationPolicy,
+              requestedResolverPolicy: policy.requestedResolverPolicy,
+              effectiveResolverPolicy: policy.effectiveResolverPolicy,
+              idempotencyKey: data.idempotencyKey ?? null,
+              sourceCommentId: data.sourceCommentId ?? null,
+              sourceRunId: data.sourceRunId ?? null,
+              title: data.title ?? null,
+              summary: data.summary ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              addresseeAgentId: data.addresseeAgentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              payload: data.payload,
+            })
+            .returning();
+
+          if (data.kind !== "request_confirmation" || !actor.agentId) {
+            return { row, supersededRows: [] };
+          }
+
+          const now = new Date();
+          const supersededRows = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildSupersededByNewerRequestResult(row.id),
+              resolvedByAgentId: actor.agentId,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.companyId, issue.companyId),
+              eq(issueThreadInteractions.issueId, issue.id),
+              eq(issueThreadInteractions.kind, data.kind),
+              eq(issueThreadInteractions.createdByAgentId, actor.agentId),
+              eq(issueThreadInteractions.status, "pending"),
+              ne(issueThreadInteractions.id, row.id),
+            ))
+            .returning();
+          for (const supersededRow of supersededRows) {
+            await resolveLinkedToolActionRequests(tx, supersededRow, {
+              status: "expired",
+              fromStatuses: ["pending", "approved"],
+              actor,
+              now,
+            });
+          }
+          return { row, supersededRows };
+        });
+        created = result.row;
+        superseded = result.supersededRows;
       } catch (error) {
         if (!normalizedData.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
@@ -1421,6 +1599,9 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
+      if (superseded.length > 0) {
+        await emitResolvedInteractionsTelemetry(db, superseded.map(hydrateInteraction));
+      }
       return hydrateInteraction(created);
     },
 
@@ -2092,21 +2273,42 @@ export function issueThreadInteractionService(db: Db) {
       const now = new Date();
       const expired: IssueThreadInteraction[] = [];
       for (const row of rows) {
-        const [updated] = await db
-          .update(issueThreadInteractions)
-          .set({
+        // Same ordering as withdrawal: revoke the linked tool action before
+        // resolving the card, inside one transaction. A concurrent gateway
+        // claim (approved -> executing) blocks on the revocation's row lock
+        // and then aborts; if the card was concurrently resolved instead, the
+        // no-row update below rolls the revocation back. A claim that already
+        // committed is in flight and cannot be recalled — the card still
+        // expires and the execution result lands on it via the gateway's
+        // lifecycle reflection.
+        const updated = await db.transaction(async (tx) => {
+          await resolveLinkedToolActionRequests(tx, row, {
             status: "expired",
-            result: buildAdministrativeOutcomeResult(row, "issue_closed"),
-            resolvedByAgentId: actor.agentId ?? null,
-            resolvedByUserId: actor.userId ?? null,
-            resolvedAt: now,
-            updatedAt: now,
-          })
-          .where(and(
-            eq(issueThreadInteractions.id, row.id),
-            eq(issueThreadInteractions.status, "pending"),
-          ))
-          .returning();
+            fromStatuses: ["pending", "approved"],
+            actor,
+            now,
+          });
+          const [resolved] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+              resolvedByAgentId: actor.agentId ?? null,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!resolved) throw new InteractionResolvedConcurrentlyError();
+          return resolved;
+        }).catch((err: unknown) => {
+          if (err instanceof InteractionResolvedConcurrentlyError) return null;
+          throw err;
+        });
         if (updated) expired.push(hydrateInteraction(updated));
       }
       if (expired.length > 0) {
@@ -2135,23 +2337,52 @@ export function issueThreadInteractionService(db: Db) {
 
       const reason = data.reason?.trim() || null;
       const now = new Date();
-      const [updated] = await db
-        .update(issueThreadInteractions)
-        .set({
+      // One transaction, linked tool action first: revoking pending/approved
+      // requests before resolving the card means a concurrent gateway claim
+      // (approved -> executing) either loses to the revocation's row lock or
+      // is detected below and aborts the withdrawal; a concurrent card
+      // resolution rolls the revocation back via the status="pending" guard.
+      // "approved" is revoked too — the request can be approved from the tool
+      // review queue while the card is still pending, and an executable
+      // request must not outlive a withdrawn card.
+      const updated = await db.transaction(async (tx) => {
+        await resolveLinkedToolActionRequests(tx, current, {
           status: "cancelled",
-          result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
-          resolvedByAgentId: actor.agentId ?? null,
-          resolvedByRunId: actor.runId ?? null,
-          resolvedByUserId: actor.userId ?? null,
-          resolvedAt: now,
-          updatedAt: now,
-        })
-        .where(and(
-          eq(issueThreadInteractions.id, interactionId),
-          eq(issueThreadInteractions.status, "pending"),
-        ))
-        .returning();
-      if (!updated) throw conflict("Interaction has already been resolved");
+          fromStatuses: ["pending", "approved"],
+          actor,
+          now,
+        });
+        if (current.kind === "request_confirmation") {
+          const active = await tx
+            .select({ id: toolActionRequests.id })
+            .from(toolActionRequests)
+            .where(and(
+              eq(toolActionRequests.companyId, current.companyId),
+              eq(toolActionRequests.interactionId, current.id),
+              inArray(toolActionRequests.status, ["executing", "executed"]),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (active) throw conflict("The linked tool action is already executing and can no longer be withdrawn");
+        }
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByRunId: actor.runId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw conflict("Interaction has already been resolved");
+        return row;
+      });
 
       await touchIssue(db, issue.id);
       const withdrawn = hydrateInteraction(updated);

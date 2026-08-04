@@ -20,6 +20,8 @@ export type ExecutionWorkspaceMode =
   | "reuse_existing"
   | "agent_default";
 
+export type SharedWorkspaceConcurrency = "auto" | "serialize" | "allow";
+
 export type ExecutionWorkspaceProviderType =
   | "local_fs"
   | "git_worktree"
@@ -76,12 +78,14 @@ export interface ExecutionWorkspaceStrategy {
   branchTemplate?: string | null;
   worktreeParentDir?: string | null;
   provisionCommand?: string | null;
+  runtimeProvisionCommand?: string | null;
   teardownCommand?: string | null;
 }
 
 export interface ExecutionWorkspaceConfig {
   environmentId?: string | null;
   provisionCommand: string | null;
+  runtimeProvisionCommand?: string | null;
   teardownCommand: string | null;
   cleanupCommand: string | null;
   workspaceRuntime: Record<string, unknown> | null;
@@ -147,6 +151,7 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
+  sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;
   defaultProjectWorkspaceId?: string | null;
@@ -162,6 +167,7 @@ export interface ProjectExecutionWorkspacePolicy {
 
 export interface IssueExecutionWorkspaceSettings {
   mode?: ExecutionWorkspaceMode;
+  sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   environmentId?: string | null;
   workspaceStrategy?: ExecutionWorkspaceStrategy | null;
   workspaceRuntime?: Record<string, unknown> | null;
@@ -275,7 +281,7 @@ export interface WorkspaceRuntimeService {
   scopeType: "project_workspace" | "execution_workspace" | "run" | "agent";
   scopeId: string | null;
   serviceName: string;
-  status: "starting" | "running" | "stopped" | "failed";
+  status: "provisioning" | "starting" | "running" | "stopped" | "failed";
   lifecycle: "shared" | "ephemeral";
   reuseKey: string | null;
   command: string | null;
@@ -330,8 +336,22 @@ export interface WorkspaceRealizationRequest {
     branchName: string | null;
     worktreePath: string | null;
   };
+  /**
+   * Read-only referenced (mentioned) project sources for this run, one per authorized additional
+   * project. Additive and backward-compatible: it defaults to an empty array for legacy payloads
+   * and for the anchor-only path. Additional sources are plain trees; they never get git-worktree
+   * realization (that stays the anchor-only path).
+   */
+  additionalSources?: Array<{
+    localPath: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
   runtimeOverlay: {
     provisionCommand: string | null;
+    runtimeProvisionCommand: string | null;
     teardownCommand: string | null;
     cleanupCommand: string | null;
     workspaceRuntime: Record<string, unknown> | null;
@@ -360,6 +380,20 @@ export interface WorkspaceRealizationRecord {
     branchName: string | null;
     worktreePath: string | null;
   };
+  /**
+   * Realized read-only referenced (mentioned) project workspaces for this run, one per authorized
+   * additional source in the request. This field carries each resolved path to the execution
+   * target so the target can expose the referenced trees to the agent. It is additive and
+   * backward-compatible: it defaults to an empty array for legacy records and for the anchor-only
+   * path.
+   */
+  additional?: Array<{
+    path: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
   remote: {
     path: string | null;
     host?: string | null;

@@ -52,7 +52,9 @@ import type {
   WorkerToHostMethods,
   InitializeParams,
 } from "@paperclipai/plugin-sdk";
+import { getActiveStepContext } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { logger } from "../middleware/logger.js";
+import { traceparentFromContextToken } from "../instrumentation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -61,8 +63,22 @@ import { logger } from "../middleware/logger.js";
 /** Default timeout for RPC calls in milliseconds. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
+/**
+ * Upper bound for the *default* RPC timeout path (15 minutes). Explicit
+ * caller-supplied timeouts are not subject to this cap: execute-class RPCs such
+ * as `environmentExecute` run entire sandboxed agent sessions in one call and
+ * their callers deliberately request multi-hour budgets (see
+ * `resolvePluginExecuteRpcTimeoutMs` in plugin-environment-driver.ts).
+ * Clamping those explicit budgets here killed long sandboxed runs mid-work.
+ */
 const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+
+/**
+ * Maximum delay accepted by Node timers before Node clamps the timeout to 1ms.
+ * Keep accepted explicit RPC budgets inside this range before calling
+ * setTimeout, otherwise a huge timeout can expire almost immediately.
+ */
+const MAX_NODE_TIMER_TIMEOUT_MS = 2_147_483_647;
 
 /** Timeout for the initialize RPC call. */
 const INITIALIZE_TIMEOUT_MS = 15_000;
@@ -155,6 +171,30 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
 }
 
 /**
+ * Resolve the effective timeout for an RPC call.
+ *
+ * An explicit, positive, finite caller-supplied timeout bypasses the 15-minute
+ * RPC cap after normalization to Node's timer-safe integer range. Callers that
+ * pass one (e.g. the environment driver for `environmentExecute`) own their
+ * budget, and independent inactivity/safety guards bound hung runs. Only the
+ * default path (no usable explicit timeout) is clamped to MAX_RPC_TIMEOUT_MS so
+ * ordinary plugin calls stay bounded.
+ */
+export function resolveRpcCallTimeoutMs(
+  explicitTimeoutMs: number | undefined,
+  defaultTimeoutMs: number,
+): number {
+  if (
+    explicitTimeoutMs !== undefined &&
+    Number.isFinite(explicitTimeoutMs) &&
+    explicitTimeoutMs > 0
+  ) {
+    return Math.min(Math.max(Math.trunc(explicitTimeoutMs), 1), MAX_NODE_TIMER_TIMEOUT_MS);
+  }
+  return Math.min(defaultTimeoutMs, MAX_RPC_TIMEOUT_MS);
+}
+
+/**
  * Options for starting a worker process.
  */
 export interface WorkerStartOptions {
@@ -222,6 +262,10 @@ interface PendingRequest {
 interface ActiveInvocation {
   scope: PluginInvocationScope;
   timer?: ReturnType<typeof setTimeout>;
+  // The host-minted W3C `traceparent` for the active startup span, or undefined
+  // when no startup span is active. The span host handler reads it to mint the
+  // parentage, so a worker never supplies the parent itself.
+  traceparent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -583,11 +627,20 @@ export function createPluginWorkerHandle(
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
+    // Mint a W3C `traceparent` from the active startup span, so the worker's
+    // provider span can parent to it. The host keeps the value on its own record
+    // (below) and never trusts the worker to supply the parent. Outside a
+    // measured startup step there is no active span, so this is undefined.
+    const activeStep = getActiveStepContext();
+    const traceparent = activeStep
+      ? traceparentFromContextToken(activeStep.parentContext)
+      : undefined;
     const invocation: PluginInvocationContext = {
       id: randomUUID(),
       scope,
+      ...(traceparent ? { traceparent } : {}),
     };
-    const entry: ActiveInvocation = { scope };
+    const entry: ActiveInvocation = { scope, traceparent };
     if (ttlMs !== undefined) {
       entry.timer = setTimeout(() => {
         activeInvocations.delete(invocation.id);
@@ -665,7 +718,7 @@ export function createPluginWorkerHandle(
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
-    return { invocationScope: entry.scope };
+    return { invocationScope: entry.scope, traceparent: entry.traceparent };
   }
 
   /**
@@ -1232,7 +1285,7 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
-      const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
+      const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
 
@@ -1357,6 +1410,9 @@ export function createPluginWorkerHandle(
     notify(method: string, params: unknown) {
       if (status !== "running") return;
       const invocationScope = deriveInvocationScope(method, params);
+      // Notifications have no response to settle on, so the invocation scope
+      // is GC'd by TTL. Call-path invocations are registered without a TTL and
+      // cleared on settlement, so they survive arbitrarily long call timeouts.
       const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
         sendMessage({

@@ -363,14 +363,15 @@ export function InstanceExperimentalSettings() {
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
+  const enableTaskChatRedesign = experimentalQuery.data?.enableTaskChatRedesign === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
-  const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
+  const enableBetaSkills = experimentalQuery.data?.enableBetaSkills === true;
   const enableSummaries = experimentalQuery.data?.enableSummaries === true;
   const enableStatusCards = experimentalQuery.data?.enableStatusCards === true;
   const summariesManaged = managedKeys.enableSummaries?.managed === true;
@@ -560,6 +561,16 @@ export function InstanceExperimentalSettings() {
       />
 
       <ExperimentalToggleCard
+        title="Beta skills"
+        description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
+        checked={enableBetaSkills}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableBetaSkills: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableBetaSkills}
+        ariaLabel="Toggle beta skills experimental setting"
+      />
+
+      <ExperimentalToggleCard
         title="Summaries"
         description="Show Summarizer-generated status slots on project and workspace pages, with on-demand refresh and revision history. Existing summary data is kept when this is disabled."
         footnote="Status Cards requires Summaries. Disabling Summaries also disables Status Cards."
@@ -666,6 +677,18 @@ export function InstanceExperimentalSettings() {
       />
 
       <ExperimentalToggleCard
+        title="Chat-Style Tasks"
+        experimental
+        description="Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane."
+        footnote="Turning this off instantly restores the classic task page. No task data is affected."
+        checked={enableTaskChatRedesign}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableTaskChatRedesign: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableTaskChatRedesign}
+        ariaLabel="Toggle chat-style tasks experimental setting"
+      />
+
+      <ExperimentalToggleCard
         title="Task Watchdogs"
         description="Show task detail controls for configuring watchdog agents that verify stopped task subtrees and restore live paths when work should continue."
         checked={enableTaskWatchdogs}
@@ -673,16 +696,6 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableTaskWatchdogs}
         ariaLabel="Toggle task watchdogs experimental setting"
-      />
-
-      <ExperimentalToggleCard
-        title="Cloud Sync"
-        description="Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces. Saved connections and run history are preserved when this is disabled."
-        checked={enableCloudSync}
-        onCheckedChange={(checked) => toggleMutation.mutate({ enableCloudSync: checked })}
-        disabled={toggleMutation.isPending}
-        managed={managedKeys.enableCloudSync}
-        ariaLabel="Toggle cloud sync experimental setting"
       />
 
       <ExperimentalToggleCard

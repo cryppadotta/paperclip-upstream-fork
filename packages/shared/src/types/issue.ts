@@ -3,6 +3,7 @@ import type {
   IssueCommentMetadataRowType,
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
+  IssueCommentPresentationDensity,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -400,8 +401,13 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
+  pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
+  /** True when a blocker or one of its open descendants is actively progressing. */
+  blockingTreeLive?: boolean;
+  /** The sampled leaf blocker that requires action, rather than the blocked root. */
+  terminalBlockerIssueId?: string | null;
 }
 
 export type IssueInboxAttentionKind = "blocked";
@@ -630,6 +636,12 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  /**
+   * Maximum consecutive agent-initiated changes-requested rounds before the
+   * pending stage escalates to the responsible human. Null uses the server
+   * default. Human decisions reset the round counter.
+   */
+  maxReviewRounds?: number | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -665,6 +677,8 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
+  /** Consecutive agent-initiated changes-requested rounds on the current stage. */
+  changesRequestedCount?: number;
 }
 
 export interface IssueExecutionDecision {
@@ -709,6 +723,14 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByUserId: string | null;
   updatedByRunId: string | null;
 }
+
+export interface IssueChangeReceiptEntry {
+  from: unknown;
+  to: unknown;
+  updated?: true;
+}
+
+export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
   id: string;
@@ -954,6 +976,7 @@ export interface IssueCommentPresentation {
   tone: IssueCommentPresentationTone;
   title?: string | null;
   detailsDefaultOpen: boolean;
+  density?: IssueCommentPresentationDensity;
 }
 
 export interface IssueThreadInteractionActorFields {
@@ -1172,9 +1195,18 @@ export interface RequestItemVerdictsPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "withdrawn" | "issue_closed" | "addressee_deleted";
+  outcome:
+    | "accepted"
+    | "rejected"
+    | "superseded_by_comment"
+    | "superseded_by_newer_request"
+    | "stale_target"
+    | "withdrawn"
+    | "issue_closed"
+    | "addressee_deleted";
   reason?: string | null;
   commentId?: string | null;
+  supersededByInteractionId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
   resumeFailure?: {
     status: "retrying" | "needs_attention";

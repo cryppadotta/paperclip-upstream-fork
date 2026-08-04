@@ -611,6 +611,7 @@ function createProject(overrides: Partial<Project> = {}): Project {
         branchTemplate: "{issueIdentifier}-{slug}",
         worktreeParentDir: storybookWorktreeRoot,
         provisionCommand: null,
+        runtimeProvisionCommand: "bash ./scripts/provision-worktree-runtime.sh",
         teardownCommand: null,
       },
       workspaceRuntime: null,

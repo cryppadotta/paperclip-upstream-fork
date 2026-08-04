@@ -65,6 +65,8 @@ interface IssueThreadInteractionCardProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** Render confirmation CTAs with the primary action rightmost (task-chat grammar). */
+  primaryActionOnRight?: boolean;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -218,6 +220,7 @@ function requestConfirmationResumeFailure(interaction: IssueThreadInteraction) {
 function planStatusClasses(
   status: IssueThreadInteraction["status"],
   resumeFailure?: ReturnType<typeof requestConfirmationResumeFailure>,
+  outcome?: string | null,
 ) {
   switch (status) {
     case "accepted":
@@ -241,7 +244,7 @@ function planStatusClasses(
       return {
         shell: "border-2 border-red-500/80 bg-transparent",
         badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: "Changes requested",
+        label: outcome === "withdrawn" ? "Withdrawn" : "Changes requested",
         Icon: XCircle,
       };
     case "failed":
@@ -1180,9 +1183,15 @@ function AskUserQuestionsCard({
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
-          <div className="font-semibold">Question cancelled</div>
+          <div className="font-semibold">
+            {interaction.result?.outcome === "withdrawn"
+              ? questions.length === 1 ? "Question withdrawn" : "Questions withdrawn"
+              : "Question cancelled"}
+          </div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
+          ) : interaction.result?.reason ? (
+            <p className="mt-1">{interaction.result.reason}</p>
           ) : (
             <p className="mt-1">No answer was recorded.</p>
           )}
@@ -1369,6 +1378,22 @@ function RequestConfirmationResolution({
       <div className="space-y-2">
         <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
           <span className="font-medium">Declined</span>
+          <RequestConfirmationTargetChip interaction={interaction} target={target} />
+        </div>
+        {interaction.result?.reason ? (
+          <div className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
+            <MarkdownBody>{interaction.result.reason}</MarkdownBody>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (interaction.status === "cancelled" && outcome === "withdrawn") {
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+          <span className="font-medium">Withdrawn</span>
           <RequestConfirmationTargetChip interaction={interaction} target={target} />
         </div>
         {interaction.result?.reason ? (
@@ -1857,6 +1882,7 @@ function RequestToolActionCard({
 function RequestConfirmationCard({
   interaction,
   isPlan = false,
+  primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
   onUploadImage,
@@ -1864,6 +1890,7 @@ function RequestConfirmationCard({
 }: {
   interaction: RequestConfirmationInteraction;
   isPlan?: boolean;
+  primaryActionOnRight?: boolean;
   onAcceptInteraction?: (
     interaction: RequestConfirmationInteraction,
   ) => Promise<void> | void;
@@ -1984,7 +2011,12 @@ function RequestConfirmationCard({
 
       {interaction.status === "pending" ? (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-end gap-2",
+              primaryActionOnRight && "flex-row-reverse justify-start",
+            )}
+          >
             <Button
               size="sm"
               variant={rejecting ? "outline" : isPlan ? "cta" : "default"}
@@ -3060,6 +3092,7 @@ export function IssueThreadInteractionCard({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  primaryActionOnRight,
   onSubmitInteractionVerdicts,
   onUploadImage,
   externalReferences,
@@ -3073,7 +3106,13 @@ export function IssueThreadInteractionCard({
       : null;
   const toolActionStyles = toolActionState ? toolActionStatusClasses(toolActionState) : null;
   const resumeFailure = requestConfirmationResumeFailure(interaction);
-  const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
+  const planStyles = isPlan
+    ? planStatusClasses(
+        interaction.status,
+        resumeFailure,
+        interaction.result && "outcome" in interaction.result ? interaction.result.outcome : null,
+      )
+    : null;
   const activeStyles = toolActionStyles ?? planStyles;
   const adminOutcome = getAdministrativeOutcome(interaction);
   const adminReason = adminOutcome ? getAdministrativeReason(interaction) : null;
@@ -3261,6 +3300,7 @@ export function IssueThreadInteractionCard({
           <RequestConfirmationCard
             interaction={interaction}
             isPlan={isPlan}
+            primaryActionOnRight={primaryActionOnRight}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onUploadImage={onUploadImage}
