@@ -473,6 +473,12 @@ describe("issue activity event routes", () => {
       ...issue,
       ...patch,
       updatedAt: new Date(),
+      changes: {
+        executionWorkspaceId: {
+          from: issue.executionWorkspaceId,
+          to: nextExecutionWorkspaceId,
+        },
+      },
     }));
 
     const dbMock = {
