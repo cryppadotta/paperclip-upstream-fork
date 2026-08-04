@@ -63,11 +63,15 @@ describe("loadWithoutCoordinatedShutdownSignalHooks", () => {
 });
 
 describe("coordinateHeartbeatSchedulerShutdown", () => {
-  it("captures a hot-restart snapshot without waiting for active scheduler work", async () => {
+  it("quiesces active scheduler work before capturing a hot-restart snapshot", async () => {
     let snapshotCaptured = false;
-    const waitForHeartbeatSchedulerIdle = vi.fn(() => new Promise<void>(() => undefined));
+    let releaseScheduler!: () => void;
+    const schedulerIdle = new Promise<void>((resolve) => {
+      releaseScheduler = resolve;
+    });
+    const waitForHeartbeatSchedulerIdle = vi.fn(() => schedulerIdle);
 
-    const result = await coordinateHeartbeatSchedulerShutdown({
+    const shutdown = coordinateHeartbeatSchedulerShutdown({
       signal: "SIGTERM",
       prepareHotRestartShutdown: vi.fn(async () => {
         snapshotCaptured = true;
@@ -76,39 +80,41 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
       waitForHeartbeatSchedulerIdle,
     });
 
+    await vi.waitFor(() => expect(waitForHeartbeatSchedulerIdle).toHaveBeenCalledOnce());
+    expect(snapshotCaptured).toBe(false);
+    releaseScheduler();
+
+    const result = await shutdown;
     expect(snapshotCaptured).toBe(true);
-    expect(waitForHeartbeatSchedulerIdle).not.toHaveBeenCalled();
     expect(result).toEqual({
       hotRestart: { mode: "prepared", skipDrain: true },
       preparationError: null,
-      waitedForSchedulerIdle: false,
+      waitedForSchedulerIdle: true,
     });
   });
 
-  it("does not wait for scheduler idle before a selective hot-restart drain", async () => {
-    const waitForHeartbeatSchedulerIdle = vi.fn(() => new Promise<void>(() => undefined));
+  it("quiesces scheduler work before selecting server-stdio runs to drain", async () => {
+    const waitForHeartbeatSchedulerIdle = vi.fn(async () => undefined);
 
     const result = await coordinateHeartbeatSchedulerShutdown({
       signal: "SIGTERM",
       prepareHotRestartShutdown: vi.fn(async () => ({
         mode: "acp_drain_required" as const,
         skipDrain: false,
-        skipSchedulerIdleWait: true,
         drainRunIds: ["acp-run"],
       })),
       waitForHeartbeatSchedulerIdle,
     });
 
-    expect(waitForHeartbeatSchedulerIdle).not.toHaveBeenCalled();
+    expect(waitForHeartbeatSchedulerIdle).toHaveBeenCalledOnce();
     expect(result).toEqual({
       hotRestart: {
         mode: "acp_drain_required",
         skipDrain: false,
-        skipSchedulerIdleWait: true,
         drainRunIds: ["acp-run"],
       },
       preparationError: null,
-      waitedForSchedulerIdle: false,
+      waitedForSchedulerIdle: true,
     });
   });
 

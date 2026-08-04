@@ -915,7 +915,6 @@ export async function startServer(): Promise<StartedServer> {
   ) => Promise<unknown>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
     skipDrain: boolean;
-    skipSchedulerIdleWait?: boolean;
     drainRunIds?: string[];
   }>) | null = null;
   let heartbeatSchedulerStopped = false;
@@ -1120,10 +1119,10 @@ export async function startServer(): Promise<StartedServer> {
     await runRetentionSweep();
 
     startHeartbeatSchedulerInterval(() => {
-      // Async so the suppression checks below can honor the override-aware
-      // resolver (e.g. worktree run-execution opt-in). The gated work is still
-      // wrapped in trackHeartbeatSchedulerWork with its own error handling.
-      void (async () => {
+      // Track the outer async callback as well as the work it starts. Shutdown
+      // can then wait through an already-running suppression check before it
+      // captures the authoritative set of running heartbeat rows.
+      trackHeartbeatSchedulerWork((async () => {
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
@@ -1278,7 +1277,9 @@ export async function startServer(): Promise<StartedServer> {
               logger.error({ err }, "periodic heartbeat recovery failed");
             }));
         }
-      })();
+      })().catch((err) => {
+        logger.error({ err }, "heartbeat scheduler tick failed");
+      }));
     });
   } else {
     startHeartbeatSchedulerInterval(() => {
@@ -1405,7 +1406,7 @@ export async function startServer(): Promise<StartedServer> {
       if (skipHeartbeatDrain) {
         logger.info(
           { signal, hotRestart: heartbeatShutdown.hotRestart },
-          "hot-restart shutdown prepared; skipping heartbeat scheduler idle wait and graceful run drain",
+          "hot-restart shutdown prepared after scheduler quiescence; skipping graceful run drain",
         );
       } else if (heartbeatShutdown.preparationError) {
         logger.error(

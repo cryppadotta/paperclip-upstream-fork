@@ -1,6 +1,5 @@
 type HotRestartShutdownPreparation = {
   skipDrain: boolean;
-  skipSchedulerIdleWait?: boolean;
 };
 
 const COORDINATED_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"] as const;
@@ -62,6 +61,12 @@ export async function coordinateHeartbeatSchedulerShutdown<
   let hotRestart: TPreparation | null = null;
   let preparationError: unknown = null;
 
+  // The signal handler stops the scheduler before entering this coordinator.
+  // Quiesce any callback that was already in flight before querying running
+  // rows for the shutdown snapshot, otherwise a late queue claim can create a
+  // run that is absent from both the snapshot and the selective drain set.
+  await input.waitForHeartbeatSchedulerIdle();
+
   if (input.prepareHotRestartShutdown) {
     try {
       hotRestart = await input.prepareHotRestartShutdown(input.signal);
@@ -70,15 +75,6 @@ export async function coordinateHeartbeatSchedulerShutdown<
     }
   }
 
-  if (hotRestart?.skipDrain || hotRestart?.skipSchedulerIdleWait) {
-    return {
-      hotRestart,
-      preparationError,
-      waitedForSchedulerIdle: false,
-    };
-  }
-
-  await input.waitForHeartbeatSchedulerIdle();
   return {
     hotRestart,
     preparationError,

@@ -1523,7 +1523,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       )).resolves.toEqual({
         mode: "acp_drain_required",
         skipDrain: false,
-        skipSchedulerIdleWait: true,
         activeRunIds: [runId],
         activeAcpRunIds: [runId],
         drainRunIds: [runId],
@@ -1583,6 +1582,61 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("reports a selectively drained ACP run as lost when terminal persistence fails", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "acp",
+        processTopology: "server_stdio",
+      },
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-acp-persistence-failure-version",
+        requestedAt: new Date("2026-08-04T00:15:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+      const heartbeat = heartbeatService(db);
+
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-04T00:16:00.000Z"),
+      );
+
+      // Model the failure boundary precisely: termination succeeded, but the
+      // interrupted status write never landed, so the durable row is running.
+      process.kill(child.pid!, "SIGKILL");
+      await waitForPidExit(child.pid!);
+
+      const reconciliation = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-04T00:17:00.000Z"),
+      );
+      expect(reconciliation).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [runId],
+        skippedRunIds: [],
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as { runs: Array<{ runId: string; classification: string; reason: string }> };
+      expect(report.runs).toContainEqual(expect.objectContaining({
+        runId,
+        classification: "lost",
+        reason: "selective_drain_not_finalized",
+      }));
+    });
+  });
+
   it("drains only server-stdio runs and preserves detached CLI adoption in a mixed restart", async () => {
     const acpChild = spawnAliveProcess();
     const cliChild = spawnAliveProcess();
@@ -1626,7 +1680,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(preparation).toMatchObject({
         mode: "acp_drain_required",
         skipDrain: false,
-        skipSchedulerIdleWait: true,
         activeAcpRunIds: [acp.runId],
         drainRunIds: [acp.runId],
         drainReason: "active_acp_run",

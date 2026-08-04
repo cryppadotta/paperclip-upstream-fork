@@ -10068,7 +10068,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return {
         mode: "acp_drain_required" as const,
         skipDrain: false as const,
-        skipSchedulerIdleWait: true as const,
         activeRunIds: snapshotRuns.map((run) => run.runId),
         activeAcpRunIds: activeServerStdioRunIds,
         drainRunIds: activeServerStdioRunIds,
@@ -10229,9 +10228,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const hasSelectiveAcpDrain = intent.drainReason === "active_acp_run"
         && (intent.drainRunIds?.length ?? 0) > 0;
+      if (hasSelectiveAcpDrain && intent.drainRunIds?.includes(candidate.runId)) {
+        // A selective ACP drain is expected to persist a terminal row before
+        // the new server starts. If the process was terminated but that write
+        // failed, surface the run as lost instead of hiding it as an expected
+        // drain skip.
+        classify(candidate, "lost", "selective_drain_not_finalized", patch);
+        continue;
+      }
       if (
         intent.drainRequired
-        && (!hasSelectiveAcpDrain || intent.drainRunIds?.includes(candidate.runId))
+        && !hasSelectiveAcpDrain
       ) {
         classify(candidate, "skipped", "drain_required", patch);
         continue;
