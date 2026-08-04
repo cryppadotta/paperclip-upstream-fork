@@ -665,18 +665,37 @@ async function repairCloudTenantCompanyName(
     ) {
       return;
     }
-    await db
-      .update(companies)
-      .set({ name: input.paperclipCompanyName, updatedAt: input.now })
-      .where(
-        and(
-          eq(companies.id, input.companyId),
-          // A user may rename the company between the read above and this
-          // repair. Match the exact observed machine name so that concurrent
-          // genuine renames always win.
-          eq(companies.name, existing.name),
-        ),
-      );
+    await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(companies)
+        .set({ name: input.paperclipCompanyName, updatedAt: input.now })
+        .where(
+          and(
+            eq(companies.id, input.companyId),
+            // A user may rename the company between the read above and this
+            // repair. Match the exact observed machine name so that concurrent
+            // genuine renames always win.
+            eq(companies.name, existing.name),
+          ),
+        )
+        .returning({ id: companies.id });
+      if (!updated) return;
+
+      await tx.insert(activityLog).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        entityId: input.companyId,
+        details: {
+          source: "cloud_tenant_auth",
+          reason: "legacy_machine_name_repair",
+          previousName: existing.name,
+          name: input.paperclipCompanyName,
+        },
+      });
+    });
   } catch (err) {
     logger.warn(
       { err, companyId: input.companyId },

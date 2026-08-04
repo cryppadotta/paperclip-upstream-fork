@@ -1,7 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
+import { activityLog, companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import {
   actorMiddleware,
   humanizeCloudStackSlug,
@@ -228,6 +228,7 @@ describe("actorMiddleware authenticated session profile", () => {
   it("repairs a legacy machine company name from the trusted human-name header", async () => {
     process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "tenant-token";
     const updates: Array<Record<string, unknown>> = [];
+    const activities: Array<Record<string, unknown>> = [];
     const insertChain = {
       values() {
         return insertChain;
@@ -258,15 +259,28 @@ describe("actorMiddleware authenticated session profile", () => {
             ),
         }),
       })),
-      insert: vi.fn(() => insertChain),
+      insert: vi.fn((table: unknown) => {
+        if (table !== activityLog) return insertChain;
+        return {
+          values(values: Record<string, unknown>) {
+            activities.push(values);
+            return Promise.resolve(undefined);
+          },
+        };
+      }),
       update: vi.fn(() => ({
         set(values: Record<string, unknown>) {
           updates.push(values);
-          return { where: () => Promise.resolve(undefined) };
+          return {
+            where: () => ({
+              returning: () => Promise.resolve([{ id: "company-1" }]),
+            }),
+          };
         },
       })),
       delete: vi.fn(() => ({ where: () => Promise.resolve(undefined) })),
     } as any;
+    db.transaction = vi.fn(async (run: (tx: typeof db) => Promise<void>) => run(db));
     const app = express();
     app.use(
       actorMiddleware(db, {
@@ -292,6 +306,20 @@ describe("actorMiddleware authenticated session profile", () => {
     expect(res.status).toBe(200);
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ name: "Purple Rain" });
+    expect(activities).toEqual([
+      expect.objectContaining({
+        companyId: expect.any(String),
+        actorType: "system",
+        actorId: "cloud-tenant-auth",
+        action: "company.updated",
+        entityType: "company",
+        details: expect.objectContaining({
+          reason: "legacy_machine_name_repair",
+          previousName: "paperclip-stack-purple-rain",
+          name: "Purple Rain",
+        }),
+      }),
+    ]);
   });
 
   it("purges a stale instance_admin row so the session path stops elevating the cloud-tenant user", async () => {
