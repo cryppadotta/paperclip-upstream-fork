@@ -50,7 +50,7 @@ describe("IssueWriteDenialNotice", () => {
   it("shows the cap and attempt count on a rate denial", () => {
     const html = renderToStaticMarkup(
       <IssueWriteDenialNotice
-        code="issue_write_cross_issue_cap_exceeded"
+        code="cross_issue_influence_cap_exceeded"
         context={{ cap: 20, count: 21, actorLabel: "Fable" }}
       />,
     );
@@ -68,7 +68,7 @@ describe("issueWriteDenialForActivity", () => {
       { actorLabel: "Fable" },
     );
 
-    expect(result?.code).toBe("issue_write_cross_issue_cap_exceeded");
+    expect(result?.code).toBe("cross_issue_influence_cap_exceeded");
     expect(result?.context).toMatchObject({
       actorLabel: "Fable",
       issueIdentifier: "TASK-482",

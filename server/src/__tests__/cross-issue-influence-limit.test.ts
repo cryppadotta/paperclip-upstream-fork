@@ -91,7 +91,7 @@ describe("cross-issue influence limit rollout", () => {
       issueIdentifier: "TASK-482",
     });
     expect(capError.details).toMatchObject({
-      code: "issue_write_cross_issue_cap_exceeded",
+      code: "cross_issue_influence_cap_exceeded",
       cap: 20,
       count: 21,
       mode: "enforce",
@@ -154,7 +154,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "issue_write_run_context_required" },
+      details: { code: "cross_issue_influence_run_context_required" },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -170,7 +170,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "issue_write_run_context_required" },
+      details: { code: "cross_issue_influence_run_context_required" },
     });
     expect(fake.inserted).toEqual([]);
   });
@@ -186,7 +186,7 @@ describe("cross-issue influence limit rollout", () => {
       kind: "update",
     })).rejects.toMatchObject({
       status: 403,
-      details: { code: "issue_write_run_context_required" },
+      details: { code: "cross_issue_influence_run_context_required" },
     });
     expect(fake.inserted).toEqual([]);
   });

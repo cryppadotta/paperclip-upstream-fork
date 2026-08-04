@@ -24,7 +24,7 @@ export type CrossIssueInfluenceDecision = {
 export function crossIssueInfluenceRunContextError() {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
-  const { body } = issueWriteDenialResponse("issue_write_run_context_required");
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
   return forbidden(body.error, body.details);
 }
 
@@ -178,7 +178,7 @@ export function crossIssueInfluenceLimitError(
 ) {
   // The cap is a rate backstop, not a permission decision — the shared copy
   // contract says so explicitly, and names the next run as the way forward.
-  const { body } = issueWriteDenialResponse("issue_write_cross_issue_cap_exceeded", {
+  const { body } = issueWriteDenialResponse("cross_issue_influence_cap_exceeded", {
     ...context,
     cap: decision.cap,
     count: decision.count,

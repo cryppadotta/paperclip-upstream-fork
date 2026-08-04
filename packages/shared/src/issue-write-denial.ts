@@ -29,8 +29,8 @@ export const ISSUE_WRITE_DENIAL_CODES = [
   "issue_write_responsible_user_ceiling",
   "issue_write_responsible_user_unavailable",
   "issue_write_assignee_run_lock",
-  "issue_write_cross_issue_cap_exceeded",
-  "issue_write_run_context_required",
+  "cross_issue_influence_cap_exceeded",
+  "cross_issue_influence_run_context_required",
   "issue_write_attribution_spoof_rejected",
 ] as const;
 
@@ -221,7 +221,7 @@ export function describeIssueWriteDenial(
           `wait for the run to release the lock and retry.`,
       };
 
-    case "issue_write_cross_issue_cap_exceeded": {
+    case "cross_issue_influence_cap_exceeded": {
       const cap = context.cap ?? 20;
       const attempt = context.count ?? null;
       return {
@@ -244,7 +244,7 @@ export function describeIssueWriteDenial(
       };
     }
 
-    case "issue_write_run_context_required":
+    case "cross_issue_influence_run_context_required":
       return {
         code,
         status: 403,

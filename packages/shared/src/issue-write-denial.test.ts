@@ -61,7 +61,7 @@ describe("describeIssueWriteDenial", () => {
   });
 
   it("frames the per-run cap as a rate backstop, not a permission decision", () => {
-    const copy = describeIssueWriteDenial("issue_write_cross_issue_cap_exceeded", {
+    const copy = describeIssueWriteDenial("cross_issue_influence_cap_exceeded", {
       cap: 20,
       count: 21,
       actorLabel: "Fable",
@@ -75,13 +75,13 @@ describe("describeIssueWriteDenial", () => {
   });
 
   it("defaults the cap to the shipped limit when context omits it", () => {
-    const copy = describeIssueWriteDenial("issue_write_cross_issue_cap_exceeded");
+    const copy = describeIssueWriteDenial("cross_issue_influence_cap_exceeded");
     expect(copy.boundary).toContain("20");
     expect(copy.description).not.toContain("attempt");
   });
 
   it("gives the run-context denial a copy-pasteable fix", () => {
-    const copy = describeIssueWriteDenial("issue_write_run_context_required");
+    const copy = describeIssueWriteDenial("cross_issue_influence_run_context_required");
     expect(copy.sanctionedPath).toContain("X-Paperclip-Run-Id");
     expect(copy.sanctionedPath).toContain("PAPERCLIP_RUN_ID");
   });
@@ -166,12 +166,12 @@ describe("issueWriteDenialApiMessage", () => {
 
 describe("issueWriteDenialResponse", () => {
   it("pairs the status with a machine-readable details payload", () => {
-    const { status, body } = issueWriteDenialResponse("issue_write_cross_issue_cap_exceeded", {
+    const { status, body } = issueWriteDenialResponse("cross_issue_influence_cap_exceeded", {
       cap: 20,
       count: 21,
     });
     expect(status).toBe(429);
-    expect(body.details.code).toBe("issue_write_cross_issue_cap_exceeded");
+    expect(body.details.code).toBe("cross_issue_influence_cap_exceeded");
     expect(body.details.boundary).toContain("20");
     expect(body.error).toContain("Who can act:");
   });

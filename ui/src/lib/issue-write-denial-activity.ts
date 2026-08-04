@@ -9,7 +9,7 @@ import type { IssueWriteDenialCode, IssueWriteDenialContext } from "@paperclipai
  * in the API error body.
  */
 const DENIAL_ACTIVITY_CODES: Record<string, IssueWriteDenialCode> = {
-  "issue.cross_issue_influence_cap_rejected": "issue_write_cross_issue_cap_exceeded",
+  "issue.cross_issue_influence_cap_rejected": "cross_issue_influence_cap_exceeded",
   "issue.attribution_spoof_rejected": "issue_write_attribution_spoof_rejected",
 };
 
