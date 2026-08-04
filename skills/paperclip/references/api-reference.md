@@ -881,7 +881,6 @@ Create a confirmation:
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
-  "resolverPolicy": "board_only",
   "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
   "title": "Plan approval",
   "continuationPolicy": "wake_assignee",
@@ -906,52 +905,11 @@ POST /api/issues/{issueId}/interactions
 }
 ```
 
-`resolverPolicy: "board_only" | "board_or_agents"`. If omitted, the company per-kind default applies: `ask_user_questions` defaults to `board_or_agents`, while all other kinds default to `board_only`. Company settings expose `interactionResolverGovernance`, keyed by interaction kind, with optional `defaultPolicy` and `cap`; a `board_only` cap always wins. The interaction response includes immutable `requestedResolverPolicy` and `effectiveResolverPolicy` snapshots, so later governance edits never widen an existing pending card.
+Resolver governance:
 
-`addresseeAgentId` is an optional same-company agent UUID for structured agent-to-agent asks. When present, Paperclip wakes that agent with reason `interaction_pending`, and resolution is restricted to that addressee or a board user even if the immutable effective resolver policy would otherwise allow more agents. The addressee must differ from `createdByAgentId`; `request_confirmation.payload.toolAction` plus `addresseeAgentId` returns `400`; low-trust/watchdog and same-run/self-resolution invariants still apply. Addressed pending interactions are omitted from the company attention feed but remain visible and board-resolvable in the issue thread.
-
-When `effectiveResolverPolicy` is `board_or_agents`, an eligible agent can call `accept`, `reject`, `respond`, or `verdicts`. Agent resolution requires authenticated run identity and standard `issue:mutate` scope. The resolver cannot be the creator agent or source run; low-trust and watchdog-scoped actors are denied; and `request_confirmation.payload.toolAction` is always board-only at both creation and resolution. Agent resolutions record `resolvedByAgentId` and `resolvedByRunId`, log an agent actor, and use deterministic continuation-wake idempotency.
-
-Agent-addressed question example:
-
-```json
-POST /api/issues/{issueId}/interactions
-{
-  "kind": "ask_user_questions",
-  "addresseeAgentId": "{agentId}",
-  "idempotencyKey": "agent-question:{issueId}:{questionKey}",
-  "continuationPolicy": "wake_assignee",
-  "payload": {
-    "version": 1,
-    "questions": [{
-      "id": "scope",
-      "prompt": "Which implementation scope should we use?",
-      "selectionMode": "single",
-      "options": [{ "id": "phase-1", "label": "Phase 1" }]
-    }]
-  }
-}
-```
-
-The create response includes `addresseeAgentId`. A successful addressee resolution uses the normal `accept`, `reject`, `respond`, or `verdicts` endpoint and the normal continuation wake behavior.
-
-Company governance update example:
-
-```json
-PATCH /api/companies/{companyId}
-{
-  "interactionResolverGovernance": {
-    "ask_user_questions": {
-      "defaultPolicy": "board_or_agents",
-      "cap": "board_or_agents"
-    },
-    "request_confirmation": {
-      "defaultPolicy": "board_only",
-      "cap": "board_only"
-    }
-  }
-}
-```
+- Create accepts optional `resolverPolicy: "board_only" | "board_or_agents"`. If omitted, the company per-kind default applies (`ask_user_questions` defaults to `board_or_agents`; every other kind defaults to `board_only`). The response snapshots immutable `requestedResolverPolicy` and `effectiveResolverPolicy`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a `board_only` cap always wins.
+- Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
+- When `effectiveResolverPolicy` is `board_or_agents`, an eligible agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity; resolution records `resolvedByAgentId`/`resolvedByRunId`. The resolver cannot be the creator agent or source run, low-trust and watchdog-scoped actors are denied, and `payload.toolAction` confirmations stay board-only regardless of policy.
 
 Rules:
 

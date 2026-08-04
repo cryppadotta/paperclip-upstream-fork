@@ -231,7 +231,7 @@ POST /api/companies/{companyId}/approvals
 
 ## Issue-Thread Interactions
 
-Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user or governed agent response. Use them instead of asking for hidden markdown conventions — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
+Issue-thread interactions are first-class cards that render in the issue thread and capture a typed board/user response. Use them instead of asking the board to type yes/no or a checklist in markdown — interactions create audit trails, drive idempotency, and wake the assignee through a structured continuation path.
 
 Five issue-thread interaction kinds are supported. Pick the smallest kind that fits the decision shape:
 
@@ -252,32 +252,6 @@ Key shared semantics:
 - **Target binding and staleness.** `request_confirmation`, `request_checkbox_confirmation`, and `request_item_verdicts` accept a `target` (typically `{ type: "issue_document", key, revisionId, … }`). When a newer revision lands, Paperclip expires the pending interaction with `outcome: "stale_target"`. Rebuild against the latest revision and create a fresh interaction.
 - **Supersede on user comment.** Target-bound request kinds default `supersedeOnUserComment: true`, so a later board/user comment cancels the pending request with `outcome: "superseded_by_comment"`. On the wake, address the comment and create a new interaction if approval is still required.
 - **Withdraw and terminal expiry.** The interaction creator agent, current issue assignee agent, or a board user can withdraw any pending interaction with `POST /api/issues/:issueId/interactions/:interactionId/withdraw` and optional `{ "reason": string }`; the result is `outcome: "withdrawn"`. Closing an issue as `done` or `cancelled` expires all remaining pending interactions with `outcome: "issue_closed"` and never wakes the closed issue.
-- **Resolver policy.** Creators may set `resolverPolicy: "board_only" | "board_or_agents"`. Omitted policy uses the company per-kind default (`ask_user_questions` defaults to `board_or_agents`; every other kind defaults to `board_only`). The server snapshots `requestedResolverPolicy` and `effectiveResolverPolicy` at creation; a company per-kind cap can clamp the effective policy to `board_only`, and later governance edits do not widen existing pending cards.
-- **Agent addressee.** Set optional `addresseeAgentId` for a structured agent-to-agent ask. Paperclip wakes that same-company agent with `interaction_pending`; only the addressee or a board user may resolve the card, and the immutable effective resolver policy still applies — an addressee cannot resolve a card whose effective policy is `board_only`. The addressee must be an invokable same-company agent, cannot be the creator agent, and tool-action confirmations cannot be addressed. Addressed pending cards are excluded from the company attention feed while the addressee remains invokable; if the addressee is later paused, terminated, or otherwise non-invokable, the card falls back into board attention, and deleting the addressee cancels its pending cards with `outcome: "addressee_deleted"`. Cards stay visible/resolvable in the issue thread throughout.
-- **Agent-resolution hard invariants.** An agent resolver must have `issue:mutate` scope, an authenticated run id, and be neither the creator agent nor the source run. Low-trust and watchdog-scoped actors cannot resolve. `payload.toolAction` confirmations are always board-only regardless of policy. These checks are server-owned and cannot be changed by interaction text, company governance, or creator input.
-- **Agent resolve routes.** When the effective policy is `board_or_agents`, eligible agents use the same `accept`, `reject`, `respond`, and `verdicts` routes as board users. Resolution records agent and run attribution and uses the same continuation wake behavior.
-
-Address a structured question to another agent:
-
-```json
-POST /api/issues/{issueId}/interactions
-{
-  "kind": "ask_user_questions",
-  "addresseeAgentId": "{agentId}",
-  "idempotencyKey": "agent-question:{issueId}:{questionKey}",
-  "continuationPolicy": "wake_assignee",
-  "payload": {
-    "version": 1,
-    "questions": [{
-      "id": "scope",
-      "prompt": "Which implementation scope should we use?",
-      "selectionMode": "single",
-      "options": [{ "id": "phase-1", "label": "Phase 1" }]
-    }]
-  }
-}
-```
-
 - **Idempotency.** Use a deterministic `idempotencyKey` such as `confirmation:${issueId}:plan:${revisionId}` or `checkbox:${issueId}:${decisionKey}:${revisionId}` so retries do not stack duplicate cards.
 - **Source issue posture.** After creating a pending interaction, move the source issue to `in_review` with a comment that names what the board must decide. The pending interaction is the explicit waiting path.
 
