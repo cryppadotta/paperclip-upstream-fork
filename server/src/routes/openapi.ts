@@ -1115,6 +1115,13 @@ registry.registerPath({
       // unavailable. Present on every response shape, including redacted ones.
       commit: z.string().nullable(),
       deploymentMode: z.string().optional(),
+      cloud: z.object({
+        managed: z.literal(true),
+        managedBy: z.literal("paperclip-cloud"),
+        stackSlug: z.string().nullable(),
+        stackDisplayName: z.string().optional(),
+        cloudBaseUrl: z.string().nullable(),
+      }).strict().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
       databaseBackup: z.object({
