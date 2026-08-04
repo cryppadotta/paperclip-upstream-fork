@@ -31,11 +31,22 @@ const mockAccessService = vi.hoisted(() => ({
   hasPermission: vi.fn(async () => false),
 }));
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  for: () => ({
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([{
+        id: "55555555-5555-4555-8555-555555555555",
+        companyId: "company-1",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+        permissions: null,
+      }]).then(onFulfilled, onRejected),
+  }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([{
+      id: "55555555-5555-4555-8555-555555555555",
       companyId: "company-1",
       agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: null,
+      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
       permissions: null,
     }]).then(onFulfilled, onRejected),
 })));
@@ -43,6 +54,8 @@ const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWher
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
+  transaction: vi.fn(async (callback: (tx: { select: typeof mockDbSelect }) => Promise<unknown>) =>
+    callback({ select: mockDbSelect })),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -186,11 +199,22 @@ describe("issue execution policy routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      for: () => ({
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([{
+            id: "55555555-5555-4555-8555-555555555555",
+            companyId: "company-1",
+            agentId: "33333333-3333-4333-8333-333333333333",
+            contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+            permissions: null,
+          }]).then(onFulfilled, onRejected),
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{
+          id: "55555555-5555-4555-8555-555555555555",
           companyId: "company-1",
           agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: null,
+          contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
           permissions: null,
         }]).then(onFulfilled, onRejected),
     }));
@@ -244,7 +268,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -286,7 +310,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review" });
@@ -331,7 +355,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ status: "in_review", executionPolicy: policy });
@@ -381,7 +405,7 @@ describe("issue execution policy routes", () => {
       type: "agent",
       agentId: "33333333-3333-4333-8333-333333333333",
       companyId: "company-1",
-      runId: "run-1",
+      runId: "55555555-5555-4555-8555-555555555555",
     }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({
