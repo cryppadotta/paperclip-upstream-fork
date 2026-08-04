@@ -759,6 +759,7 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/cloud/stacks",
   "GET /api/companies",
   "POST /api/companies",
   "GET /api/companies/stats",
@@ -1187,6 +1188,21 @@ registry.registerPath({
 });
 
 // ─── Companies ───────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/cloud/stacks",
+  tags: ["cloud"],
+  summary: "List the current Cloud tenant user's stacks",
+  responses: {
+    200: r.ok(),
+    403: r.forbidden,
+    404: r.notFound,
+    502: r.serverError,
+    503: r.serverError,
+    500: r.serverError,
+  },
+});
 
 registry.registerPath({
   method: "get",
