@@ -874,6 +874,8 @@ type IssueDetailChatTabProps = {
   companyId: string;
   projectId: string | null;
   issueStatus: Issue["status"];
+  /** Marks cross-issue agent comments in the thread (the open cross-task write design (attribution)). */
+  issueAssigneeAgentId: Issue["assigneeAgentId"];
   issueWorkMode: IssueWorkMode;
   executionRunId: string | null;
   blockedBy: Issue["blockedBy"];
@@ -980,6 +982,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   projectId,
   issueWorkMode,
   issueStatus,
+  issueAssigneeAgentId,
   executionRunId,
   blockedBy,
   liveIssueIds,
@@ -1259,6 +1262,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         companyId={companyId}
         projectId={projectId}
         issueStatus={issueStatus}
+        issueAssigneeAgentId={issueAssigneeAgentId}
         agentMap={agentMap}
         currentUserId={currentUserId}
         userLabelMap={userLabelMap}
@@ -4929,6 +4933,7 @@ export function IssueDetail() {
               companyId={issue.companyId}
               projectId={issue.projectId ?? null}
               issueStatus={issue.status}
+              issueAssigneeAgentId={issue.assigneeAgentId}
               issueWorkMode={issue.workMode ?? "standard"}
               executionRunId={issue.executionRunId ?? null}
               blockedBy={issue.blockedBy ?? []}
