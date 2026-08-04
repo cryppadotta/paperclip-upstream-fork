@@ -1438,6 +1438,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       processPid: child.pid ?? null,
       processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
     });
 
     await withTempPaperclipHome(async () => {
@@ -1486,6 +1490,91 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             processPid: child.pid,
           },
         ],
+      });
+    });
+  });
+
+  it("snapshots and drains a server-stdio ACP run before embedded database shutdown", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { agentId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "acp",
+        processTopology: "server_stdio",
+      },
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-acp-version",
+        requestedAt: new Date("2026-08-04T00:05:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+      const heartbeat = heartbeatService(db);
+
+      await expect(heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-08-04T00:06:00.000Z"),
+      )).resolves.toEqual({
+        mode: "acp_drain_required",
+        skipDrain: false,
+        activeRunIds: [runId],
+        activeAcpRunIds: [runId],
+        drainReason: "active_acp_run",
+      });
+      await expect(readHotRestartIntent()).resolves.toMatchObject({
+        drainRequired: true,
+        drainReason: "active_acp_run",
+        shutdownSnapshot: {
+          activeRuns: [expect.objectContaining({ runId, processPid: child.pid })],
+        },
+      });
+
+      const drain = await heartbeat.drainRunningRunsForShutdown(
+        "SIGTERM",
+        new Date("2026-08-04T00:06:01.000Z"),
+      );
+      expect(drain.interruptedRunIds).toEqual([runId]);
+      expect(drain.retryRunIds).toHaveLength(1);
+      await waitForPidExit(child.pid!);
+
+      const reconciliation = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-04T00:07:00.000Z"),
+      );
+      expect(reconciliation).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+        skippedRunIds: [],
+      });
+
+      const runs = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.find((run) => run.id === runId)).toMatchObject({
+        status: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+      });
+      expect(runs.find((run) => run.retryOfRunId === runId)).toMatchObject({
+        status: "queued",
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        drainRequired: true,
+        drainReason: "active_acp_run",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
       });
     });
   });
@@ -1675,6 +1764,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runStatus: "queued",
       processPid: null,
       processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
       includeIssue: false,
     });
     const heartbeat = heartbeatService(db);
@@ -1757,6 +1850,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       processPid: child.pid ?? null,
       processGroupId: null,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
     });
 
     await withTempPaperclipHome(async (home) => {
@@ -1825,6 +1922,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "running",
       processPid: orphan.processPid,
       processGroupId: orphan.processGroupId,
+      contextSnapshot: {
+        executionEngine: "cli",
+        processTopology: "detached",
+      },
     });
 
     await withTempPaperclipHome(async () => {

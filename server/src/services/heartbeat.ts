@@ -9990,6 +9990,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  function isServerStdioBoundHotRestartRun(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    adapterType: string;
+    adapterConfig: unknown;
+  }) {
+    const context = parseObject(input.run.contextSnapshot);
+    if (context.processTopology === "server_stdio" || context.executionEngine === "acp") {
+      return true;
+    }
+    if (context.processTopology === "detached" || context.executionEngine === "cli") {
+      return false;
+    }
+    if (!["claude_local", "codex_local", "gemini_local"].includes(input.adapterType)) {
+      return false;
+    }
+    return readNonEmptyString(parseObject(input.adapterConfig).engine) !== "cli";
+  }
+
   async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
@@ -10013,6 +10031,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .select({
         run: heartbeatRuns,
         adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -10022,6 +10041,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ...intent,
       previousServerVersion: intent.previousServerVersion ?? serverVersion,
     };
+
+    const serverStdioRuns = activeRuns.filter(isServerStdioBoundHotRestartRun);
+    if (serverStdioRuns.length > 0) {
+      const activeServerStdioRunIds = serverStdioRuns.map(({ run }) => run.id);
+      await writeHotRestartShutdownSnapshot({
+        intent: intentWithVersion,
+        signal,
+        activeRuns: snapshotRuns,
+        drainReason: "active_acp_run",
+        capturedAt: now,
+      });
+
+      logger.warn(
+        {
+          signal,
+          previousServerPid: intent.previousServerPid,
+          activeRunIds: snapshotRuns.map((run) => run.runId),
+          activeServerStdioRunIds,
+          drainReason: "active_acp_run",
+        },
+        "server-stdio agent run prevents hot-restart adoption; using graceful drain and retry",
+      );
+
+      return {
+        mode: "acp_drain_required" as const,
+        skipDrain: false as const,
+        activeRunIds: snapshotRuns.map((run) => run.runId),
+        activeAcpRunIds: activeServerStdioRunIds,
+        drainReason: "active_acp_run" as const,
+      };
+    }
 
     await writeHotRestartShutdownSnapshot({
       intent: intentWithVersion,
@@ -10083,12 +10133,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (!intent.shutdownSnapshot) {
-      logger.warn(
+      const log = intent.drainRequired ? logger.info.bind(logger) : logger.warn.bind(logger);
+      log(
         {
           previousServerPid: intent.previousServerPid,
           preflightActiveRunIds: intent.preflightActiveRunIds,
+          drainReason: intent.drainReason ?? null,
         },
-        "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
+        intent.drainRequired
+          ? "drain-required restart intent has no adoption snapshot"
+          : "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
       );
     }
     const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
@@ -10250,6 +10304,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedAt: intent.requestedAt,
       completedAt: now.toISOString(),
       drainRequired: intent.drainRequired,
+      drainReason: intent.drainReason ?? (intent.drainRequired ? "requested" : null),
       previousServerPid: intent.previousServerPid,
       newServerPid: process.pid,
       previousServerVersion: intent.previousServerVersion,

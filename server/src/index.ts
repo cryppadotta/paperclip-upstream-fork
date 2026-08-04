@@ -78,7 +78,10 @@ import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
-import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import {
+  coordinateHeartbeatSchedulerShutdown,
+  loadWithoutCoordinatedShutdownSignalHooks,
+} from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import type {
@@ -350,7 +353,13 @@ export async function startServer(): Promise<StartedServer> {
     const moduleName = "embedded-postgres";
     let EmbeddedPostgres: EmbeddedPostgresCtor;
     try {
-      const mod = await import(moduleName);
+      // embedded-postgres registers async-exit-hook handlers as an import side
+      // effect. Those handlers stop PostgreSQL immediately on SIGINT/SIGTERM,
+      // racing Paperclip's later heartbeat snapshot query. Paperclip explicitly
+      // stops the managed cluster in its own ordered shutdown path instead.
+      const mod = await loadWithoutCoordinatedShutdownSignalHooks(
+        () => import(moduleName),
+      );
       EmbeddedPostgres = mod.default as EmbeddedPostgresCtor;
     } catch {
       throw new Error(

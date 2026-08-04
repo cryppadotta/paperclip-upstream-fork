@@ -1,5 +1,66 @@
+import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import {
+  coordinateHeartbeatSchedulerShutdown,
+  loadWithoutCoordinatedShutdownSignalHooks,
+} from "./shutdown.js";
+
+describe("loadWithoutCoordinatedShutdownSignalHooks", () => {
+  it("removes the eager signal handlers from the real embedded-postgres import", async () => {
+    const before = {
+      SIGINT: process.rawListeners("SIGINT"),
+      SIGTERM: process.rawListeners("SIGTERM"),
+    };
+    const moduleName = "embedded-postgres";
+
+    await loadWithoutCoordinatedShutdownSignalHooks(() => import(moduleName));
+
+    expect(process.rawListeners("SIGINT")).toEqual(before.SIGINT);
+    expect(process.rawListeners("SIGTERM")).toEqual(before.SIGTERM);
+  });
+
+  it("keeps the database available for a marker-backed SIGTERM snapshot", async () => {
+    const signalTarget = new EventEmitter();
+    const preexistingSignalListener = vi.fn();
+    signalTarget.on("SIGTERM", preexistingSignalListener);
+
+    let databaseAvailable = true;
+    const embeddedPostgresExitHook = vi.fn(() => {
+      databaseAvailable = false;
+    });
+    await loadWithoutCoordinatedShutdownSignalHooks(
+      async () => {
+        signalTarget.on("SIGINT", embeddedPostgresExitHook);
+        signalTarget.on("SIGTERM", embeddedPostgresExitHook);
+        return { default: class EmbeddedPostgres {} };
+      },
+      signalTarget,
+    );
+
+    let shutdown: Promise<unknown> | null = null;
+    let snapshotCaptured = false;
+    signalTarget.once("SIGTERM", () => {
+      shutdown = coordinateHeartbeatSchedulerShutdown({
+        signal: "SIGTERM",
+        prepareHotRestartShutdown: async () => {
+          // This models the real failure path: a valid intent exists, and the
+          // snapshot must query embedded PostgreSQL after SIGTERM is delivered.
+          expect(databaseAvailable).toBe(true);
+          snapshotCaptured = true;
+          return { mode: "hot_restart" as const, skipDrain: true };
+        },
+        waitForHeartbeatSchedulerIdle: vi.fn(async () => undefined),
+      });
+    });
+
+    signalTarget.emit("SIGTERM");
+    await shutdown;
+
+    expect(preexistingSignalListener).toHaveBeenCalledOnce();
+    expect(embeddedPostgresExitHook).not.toHaveBeenCalled();
+    expect(snapshotCaptured).toBe(true);
+  });
+});
 
 describe("coordinateHeartbeatSchedulerShutdown", () => {
   it("captures a hot-restart snapshot without waiting for active scheduler work", async () => {
