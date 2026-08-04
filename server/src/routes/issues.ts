@@ -3469,6 +3469,22 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertIssueWriteInfluenceAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof decideIssueAccess>[1],
+  ) {
+    if (req.actor.type !== "agent") return true;
+    // Watchdog child creation keeps its dedicated subtree/revalidation grant;
+    // assertTaskWatchdogCreateIssueAllowed performs that check immediately
+    // after this generic collaboration gate at both create call sites.
+    if ((await resolveTaskWatchdogMutationScope(db, req.actor)).kind !== "none") return true;
+    const decision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (decision.allowed) return true;
+    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    return false;
+  }
+
   async function assertAgentIssueCommentAllowed(
     req: Request,
     res: Response,
@@ -3519,6 +3535,10 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
+  function isDefaultOpenIssueWriteDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_visible_issue_write";
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -3566,6 +3586,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { allowVisibleIssueWrite?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3617,7 +3638,7 @@ export function issueRoutes(
             actorAgentId,
           },
         });
-      } else {
+      } else if (!options.allowVisibleIssueWrite) {
         res.status(403).json({
           error: "Agent cannot mutate another agent's issue",
           details: {
@@ -3629,7 +3650,7 @@ export function issueRoutes(
           },
         });
       }
-      return false;
+      return issue.status !== "in_progress" && options.allowVisibleIssueWrite === true;
     }
     if (issue.status !== "in_progress") {
       return true;
@@ -7168,7 +7189,7 @@ export function issueRoutes(
         res.status(404).json({ error: "Parent issue not found" });
         return;
       }
-      if (!isTaskBridgeKeyActor(req) && !(await assertIssueReadAllowed(req, res, createParent))) return;
+      if (!isTaskBridgeKeyActor(req) && !(await assertIssueWriteInfluenceAllowed(req, res, createParent))) return;
     }
     if (
       !watchdogProductBugFollowUp &&
@@ -7386,7 +7407,7 @@ export function issueRoutes(
     const parentId = req.params.id as string;
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
-    if (!isTaskBridgeKeyActor(req) && !(await assertIssueReadAllowed(req, res, parent))) return;
+    if (!isTaskBridgeKeyActor(req) && !(await assertIssueWriteInfluenceAllowed(req, res, parent))) return;
     if (!(await assertTaskWatchdogCreateIssueAllowed(req, res, parent.companyId, parent))) return;
     if (await assertLowTrustControlPlaneDenied(req, res, parent.companyId, parent)) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
@@ -7821,7 +7842,7 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, { allowVisibleIssueWrite: true }))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -10133,7 +10154,8 @@ export function issueRoutes(
           issue.assigneeAgentId !== req.actor.agentId &&
           !reopenRequested &&
           !resumeRequested &&
-          isIssueMentionGrantDecision(commentAccessDecision)));
+          (isIssueMentionGrantDecision(commentAccessDecision) ||
+            isDefaultOpenIssueWriteDecision(commentAccessDecision))));
     const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
     const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
     if (
