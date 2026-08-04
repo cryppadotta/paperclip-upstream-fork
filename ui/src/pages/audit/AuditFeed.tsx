@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { cn, relativeTime } from "@/lib/utils";
@@ -52,6 +53,13 @@ const ENTITY_TYPES: { value: string; label: string }[] = [
   { value: "company", label: "Company" },
 ];
 
+/**
+ * Which actors the feed covers. `all` is the shared company activity view
+ * (people, agents, and the system); `agents` is the privileged agent-action
+ * audit that carries responsible-person and run attribution.
+ */
+export type AuditFeedMode = "all" | "agents";
+
 export interface AuditFeedProps {
   companyId: string;
   /**
@@ -61,6 +69,13 @@ export interface AuditFeedProps {
   lockedAgentId?: string;
   /** Hide the section header/description (the AgentDetail tab supplies its own chrome). */
   hideHeader?: boolean;
+  /**
+   * Controlled feed mode. Supplying `onModeChange` turns on the mode toggle for
+   * callers that hold `audit:view_agent_actions`; without it the feed stays in
+   * `mode` (or the all-actors default). Ignored when `lockedAgentId` is set.
+   */
+  mode?: AuditFeedMode;
+  onModeChange?: (mode: AuditFeedMode) => void;
 }
 
 function toStartIso(value: string): string | undefined {
@@ -226,7 +241,13 @@ function AuditUpsell() {
   );
 }
 
-export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedProps) {
+export function AuditFeed({
+  companyId,
+  lockedAgentId,
+  hideHeader,
+  mode,
+  onModeChange,
+}: AuditFeedProps) {
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
   const [responsibleUser, setResponsibleUser] = useState<string>(ALL);
@@ -255,11 +276,13 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     [userDirectory.data],
   );
 
+  // The per-agent tab keeps the legacy privileged scope because it always
+  // carries an attribution filter and must not silently downgrade to the basic
+  // tier. Everywhere else the mode picks the scope, defaulting to all actors.
+  const resolvedMode: AuditFeedMode = lockedAgentId ? "agents" : mode ?? "all";
+
   const filters: AuditActionFilters = {
-    // The company feed is the shared all-actors view. The per-agent tab keeps
-    // the legacy privileged scope because it always carries an attribution
-    // filter and must not silently downgrade to the basic tier.
-    actorScope: lockedAgentId ? "agents" : "all",
+    actorScope: resolvedMode,
     agentId: lockedAgentId ?? (agent === ALL ? undefined : agent),
     responsibleUserId: responsibleUser === ALL ? undefined : responsibleUser,
     action: actionDomain === ALL ? undefined : actionDomain,
@@ -313,6 +336,24 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     !lockedAgentId
       && ((permissionDenied && hasActiveFilters) || hasMixedAccessTiers),
   );
+  // A reader without `audit:view_agent_actions` can still land on the
+  // agent-actions mode through an old `/audit` deep link. Drop them into the
+  // shared all-activity feed instead of blocking the whole page with the upsell.
+  const fallingBackToAllActivity = Boolean(
+    permissionDenied && !lockedAgentId && resolvedMode === "agents" && onModeChange,
+  );
+  // The privileged mode is only offered to callers the server already answered
+  // at the full tier — everyone else just gets the basic all-activity feed.
+  const showModeToggle = Boolean(
+    !lockedAgentId
+      && onModeChange
+      && !fallingBackToAllActivity
+      && (resolvedMode === "agents" || accessTier === "full"),
+  );
+
+  useEffect(() => {
+    if (fallingBackToAllActivity) onModeChange?.("all");
+  }, [fallingBackToAllActivity, onModeChange]);
 
   useEffect(() => {
     if (!lockedAgentId && (accessTier === "basic" || recoveringFromAccessDowngrade)) {
@@ -352,7 +393,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `agent-audit-${companyId}.csv`;
+      link.download = `${resolvedMode === "agents" ? "agent-audit" : "activity"}-${companyId}.csv`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -371,7 +412,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     }
   };
 
-  if (permissionDenied && !recoveringFromAccessDowngrade) {
+  if (permissionDenied && !recoveringFromAccessDowngrade && !fallingBackToAllActivity) {
     return <AuditUpsell />;
   }
 
@@ -380,13 +421,23 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       {!hideHeader ? (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Audit</h1>
+            <h1 className="text-lg font-semibold text-foreground">Activity</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Everything your company did, newest first — each line is one recorded action. Full
-              audit access also shows responsible-person and run attribution.
+              {resolvedMode === "agents"
+                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
+                : "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."}
             </p>
           </div>
         </div>
+      ) : null}
+
+      {showModeToggle ? (
+        <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
+          <TabsList aria-label="Activity scope">
+            <TabsTrigger value="all">All activity</TabsTrigger>
+            <TabsTrigger value="agents">Agent actions</TabsTrigger>
+          </TabsList>
+        </Tabs>
       ) : null}
 
       {canUseAdvancedControls ? (
@@ -477,7 +528,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
         </div>
       ) : null}
 
-      {recoveringFromAccessDowngrade ? (
+      {recoveringFromAccessDowngrade || fallingBackToAllActivity ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">
             Refreshing audit access…
@@ -509,7 +560,9 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 {hasActiveFilters
                   ? "Try a wider date range or different filters."
-                  : "As soon as your agents start doing things, their actions show up here."}
+                  : resolvedMode === "agents"
+                    ? "As soon as your agents start doing things, their actions show up here."
+                    : "As soon as anyone in your company does something, it shows up here."}
               </p>
             </div>
             {hasActiveFilters ? (

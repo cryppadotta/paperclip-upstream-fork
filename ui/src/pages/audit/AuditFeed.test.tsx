@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,13 +105,25 @@ describe("AuditFeed", () => {
     vi.clearAllMocks();
   });
 
-  async function render(props: { companyId?: string; lockedAgentId?: string } = {}) {
+  async function render(
+    props: {
+      companyId?: string;
+      lockedAgentId?: string;
+      mode?: "all" | "agents";
+      onModeChange?: (mode: "all" | "agents") => void;
+    } = {},
+  ) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
-          <AuditFeed companyId={props.companyId ?? "company-1"} lockedAgentId={props.lockedAgentId} />
+          <AuditFeed
+            companyId={props.companyId ?? "company-1"}
+            lockedAgentId={props.lockedAgentId}
+            mode={props.mode}
+            onModeChange={props.onModeChange}
+          />
         </QueryClientProvider>,
       );
     });
@@ -124,6 +136,18 @@ describe("AuditFeed", () => {
     expect(btn, `button "${text}"`).toBeTruthy();
     return act(async () => {
       btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  /** Radix tabs activate on mousedown, so drive both events like a real click. */
+  function clickTab(label: string) {
+    const tab = Array.from(container.querySelectorAll('[role="tab"]')).find(
+      (el) => el.textContent?.trim() === label,
+    );
+    expect(tab, `tab "${label}"`).toBeTruthy();
+    return act(async () => {
+      tab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      tab!.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
     });
   }
 
@@ -256,6 +280,82 @@ describe("AuditFeed", () => {
     expect(filters).toEqual(expect.objectContaining({ actorScope: "agents", agentId: "agent-1" }));
     // No "All agents" option means the agent filter is hidden on the per-agent tab.
     expect(container.textContent).not.toContain("All agents");
+  });
+
+  it("ignores the mode toggle on the per-agent tab", async () => {
+    const onModeChange = vi.fn();
+    await render({ lockedAgentId: "agent-1", mode: "all", onModeChange });
+
+    expect(container.querySelector('[role="tab"]')).toBeFalsy();
+    expect(listAgentActionsMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "agents", agentId: "agent-1" }),
+    );
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  it("offers the agent-actions mode to a full-tier reader and requests the privileged scope", async () => {
+    // Mirror the page: the mode lives above the feed, so toggling re-queries.
+    function Harness() {
+      const [mode, setMode] = useState<"all" | "agents">("all");
+      return <AuditFeed companyId="company-1" mode={mode} onModeChange={setMode} />;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <Harness />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("All activity");
+    expect(container.textContent).toContain("Agent actions");
+    expect(listAgentActionsMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "all" }),
+    );
+
+    await clickTab("Agent actions");
+    await flushReact();
+
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "agents" }),
+    );
+    // The privileged scope keeps the attribution filters and the export.
+    expect(container.textContent).toContain("All responsible users");
+    expect(container.textContent).toContain("Export CSV");
+  });
+
+  it("hides the mode toggle from a basic all-actors reader", async () => {
+    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
+    await render({ mode: "all", onModeChange: vi.fn() });
+
+    expect(container.querySelector('[role="tab"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Agent actions");
+    // The basic feed itself still renders.
+    expect(container.textContent).toContain("commented on");
+  });
+
+  it("falls back to all-activity instead of the upsell when a basic reader opens the agent-actions mode", async () => {
+    listAgentActionsMock.mockRejectedValue(
+      new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
+    );
+    const onModeChange = vi.fn();
+    await render({ mode: "agents", onModeChange });
+
+    expect(onModeChange).toHaveBeenCalledWith("all");
+    expect(container.textContent).not.toContain("Paperclip Enterprise view");
+    expect(container.textContent).toContain("Refreshing audit access…");
+  });
+
+  it("still upsells an uncontrolled agent-actions feed that 403s", async () => {
+    listAgentActionsMock.mockRejectedValue(
+      new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
+    );
+    await render({ mode: "agents" });
+
+    expect(container.textContent).toContain("Paperclip Enterprise view");
   });
 
   it("only offers action domains present in the agent-action feed", async () => {
