@@ -80,7 +80,7 @@ export function IssueFieldChangeReceipt({
         // glued to the first word.
         <p className="min-w-0 text-(length:--text-micro) leading-4 text-muted-foreground">
           <ShieldCheck
-            className="mr-1 inline size-3 align-[-0.125em]"
+            className="mr-1 inline size-3 align-(--va-0_125em)"
             aria-hidden="true"
           />
           {responsibleUserName ? (
