@@ -94,14 +94,17 @@ export function IssueWriteDenialNotice({
             <span className="ml-1.5 font-normal opacity-80">({copy.boundary})</span>
           </p>
           <p className="leading-5">{copy.description}</p>
+          {/* Inline flow, not flex rows: a flex `dd` is an unbreakable line box,
+              so a long value drops whole and orphans its label. Inline keeps the
+              label and the first words of the value together at every width. */}
           <dl className={cn("space-y-0.5 text-xs leading-5", tone.action)}>
-            <div className="flex min-w-0 flex-wrap gap-x-1">
-              <dt className="font-medium">Who can act:</dt>
-              <dd className="min-w-0">{copy.whoCanAct}</dd>
+            <div className="min-w-0">
+              <dt className="inline font-medium">Who can act:</dt>{" "}
+              <dd className="inline">{copy.whoCanAct}</dd>
             </div>
-            <div className="flex min-w-0 flex-wrap gap-x-1">
-              <dt className="font-medium">Try this:</dt>
-              <dd className="min-w-0">{copy.sanctionedPath}</dd>
+            <div className="min-w-0">
+              <dt className="inline font-medium">Try this:</dt>{" "}
+              <dd className="inline">{copy.sanctionedPath}</dd>
             </div>
           </dl>
         </div>

@@ -75,17 +75,21 @@ export function IssueFieldChangeReceipt({
         </dl>
       ) : null}
       {reason ? (
-        <p className="flex min-w-0 flex-wrap items-center gap-1 text-(length:--text-micro) text-muted-foreground">
-          <ShieldCheck className="size-3 shrink-0" aria-hidden="true" />
-          <span>
-            {responsibleUserName ? (
-              <>
-                for <span className="text-foreground">{responsibleUserName}</span>
-                {" · "}
-              </>
-            ) : null}
-            authorized by {reason}
-          </span>
+        // Inline flow, not flex: as separate flex items the icon wraps onto its
+        // own line and orphans above the reason at narrow widths. Inline keeps it
+        // glued to the first word.
+        <p className="min-w-0 text-(length:--text-micro) leading-4 text-muted-foreground">
+          <ShieldCheck
+            className="mr-1 inline size-3 align-[-0.125em]"
+            aria-hidden="true"
+          />
+          {responsibleUserName ? (
+            <>
+              for <span className="text-foreground">{responsibleUserName}</span>
+              {" · "}
+            </>
+          ) : null}
+          authorized by {reason}
         </p>
       ) : null}
     </div>

@@ -50,6 +50,10 @@ export function CommentAttributionChip({
           variant="outline"
           data-testid="comment-attribution-chip"
           aria-label={`Posted on behalf of ${user}`}
+          // `Badge` renders a span, which is not focusable — without this a
+          // sighted keyboard user can never open the explanation. Radix opens
+          // the tooltip on focus as well as hover.
+          tabIndex={0}
           className={cn(
             "inline-flex max-w-40 items-center gap-1 whitespace-nowrap border-border px-1.5 py-0",
             "text-(length:--text-nano) font-medium tracking-normal text-muted-foreground",

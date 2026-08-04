@@ -32,6 +32,12 @@ describe("CommentAttributionChip", () => {
     expect(render(<CommentAttributionChip userName={undefined} />)).toBe(empty);
   });
 
+  it("is keyboard focusable so the tooltip is not hover-only", () => {
+    // Badge renders a span; without tabIndex a sighted keyboard user could never
+    // open the explanation of whose authority the comment rode.
+    expect(render(<CommentAttributionChip userName="Dotta" />)).toContain('tabindex="0"');
+  });
+
   it("trims a padded user name", () => {
     expect(render(<CommentAttributionChip userName="  Dotta  " />)).toContain("for Dotta");
   });
