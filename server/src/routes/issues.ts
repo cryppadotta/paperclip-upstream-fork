@@ -8077,6 +8077,10 @@ export function issueRoutes(
       return;
     }
     if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))) return;
+    if (
+      commentBody &&
+      !(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "comment"))
+    ) return;
 
     if (interruptRequested) {
       if (!commentBody) {

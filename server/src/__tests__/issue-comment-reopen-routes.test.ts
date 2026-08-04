@@ -1838,6 +1838,42 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("counts bundled cross-issue PATCH updates and comments separately before mutation", async () => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+    });
+    const app = await installActor(createApp(), agentActor(agentA));
+    mockObserveCrossIssueInfluence
+      .mockResolvedValueOnce({
+        allowed: true,
+        mode: "enforce",
+        count: 20,
+        cap: 20,
+        enforceAt: "2026-08-11T00:00:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        allowed: false,
+        mode: "enforce",
+        count: 21,
+        cap: 20,
+        enforceAt: "2026-08-11T00:00:00.000Z",
+      });
+
+    const res = await request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "Bundled update", comment: "Bundled comment" });
+
+    expect(res.status).toBe(429);
+    expect(mockObserveCrossIssueInfluence.mock.calls.map(([, input]) => input.kind)).toEqual([
+      "update",
+      "comment",
+    ]);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["comment", (app: express.Express) => request(app)
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
