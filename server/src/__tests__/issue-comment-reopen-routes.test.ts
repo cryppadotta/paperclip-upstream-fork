@@ -1838,6 +1838,38 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["hide", "2026-08-04T18:00:00.000Z"],
+    ["unhide", null],
+  ] as const)("counts a cross-issue %s PATCH before mutation", async (_label, hiddenAt) => {
+    const agentA = "44444444-4444-4444-8444-444444444444";
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      hiddenAt: hiddenAt === null ? new Date("2026-08-04T17:00:00.000Z") : null,
+    });
+    mockObserveCrossIssueInfluence.mockResolvedValue({
+      allowed: false,
+      mode: "enforce",
+      count: 21,
+      cap: 20,
+      enforceAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    const res = await request(await installActor(createApp(), agentActor(agentA)))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ hiddenAt });
+
+    expect(res.status).toBe(429);
+    expect(res.body.error).toContain("limited to 20 cross-issue comments or updates");
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ kind: "update" }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("counts bundled cross-issue PATCH updates and comments separately before mutation", async () => {
     const agentA = "44444444-4444-4444-8444-444444444444";
     mockIssueService.getById.mockResolvedValue({
