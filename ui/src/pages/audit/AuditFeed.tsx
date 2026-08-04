@@ -256,6 +256,10 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   );
 
   const filters: AuditActionFilters = {
+    // The company feed is the shared all-actors view. The per-agent tab keeps
+    // the legacy privileged scope because it always carries an attribution
+    // filter and must not silently downgrade to the basic tier.
+    actorScope: lockedAgentId ? "agents" : "all",
     agentId: lockedAgentId ?? (agent === ALL ? undefined : agent),
     responsibleUserId: responsibleUser === ALL ? undefined : responsibleUser,
     action: actionDomain === ALL ? undefined : actionDomain,
@@ -275,6 +279,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
 
   const feed = useInfiniteQuery({
     queryKey: queryKeys.audit.agentActions(companyId, {
+      actorScope: filters.actorScope,
       agentId: filters.agentId,
       responsibleUserId: filters.responsibleUserId,
       action: filters.action,
@@ -309,6 +314,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     setExporting(true);
     try {
       const blob = await auditApi.exportAgentActionsCsv(companyId, {
+        actorScope: filters.actorScope,
         agentId: filters.agentId,
         responsibleUserId: filters.responsibleUserId,
         action: filters.action,

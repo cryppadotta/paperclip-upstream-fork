@@ -129,6 +129,10 @@ describe("AuditFeed", () => {
   it("renders the humanized sentence, the task link, the excerpt, and the on-behalf chip", async () => {
     await render();
 
+    expect(listAgentActionsMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ actorScope: "all" }),
+    );
     expect(container.textContent).toContain("Fable");
     expect(container.textContent).toContain("commented on");
     const taskLink = container.querySelector('a[href="/issues/PAP-1"]');
@@ -155,7 +159,7 @@ describe("AuditFeed", () => {
     await render({ lockedAgentId: "agent-1" });
 
     const [, filters] = listAgentActionsMock.mock.calls[0];
-    expect((filters as { agentId?: string }).agentId).toBe("agent-1");
+    expect(filters).toEqual(expect.objectContaining({ actorScope: "agents", agentId: "agent-1" }));
     // No "All agents" option means the agent filter is hidden on the per-agent tab.
     expect(container.textContent).not.toContain("All agents");
   });
@@ -196,7 +200,10 @@ describe("AuditFeed", () => {
     await clickButton("Export CSV");
     await flushReact();
 
-    expect(exportCsvMock).toHaveBeenCalledWith("company-1", expect.any(Object));
+    expect(exportCsvMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ actorScope: "all" }),
+    );
     expect(createUrl).toHaveBeenCalled();
     expect(revokeUrl).not.toHaveBeenCalled();
     const deferredRevoke = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)?.[0];
