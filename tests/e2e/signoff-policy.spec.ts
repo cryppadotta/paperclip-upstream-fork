@@ -57,11 +57,54 @@ async function createAgentRequest(token: string): Promise<APIRequestContext> {
 }
 
 /** Invoke a heartbeat run for an agent, returning the run ID. */
-async function invokeHeartbeat(board: APIRequestContext, agentId: string): Promise<string> {
-  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`);
+async function invokeHeartbeat(
+  board: APIRequestContext,
+  agentId: string,
+  issueId: string,
+): Promise<string> {
+  const res = await board.post(`${BASE_URL}/api/agents/${agentId}/heartbeat/invoke`, {
+    data: {
+      reason: "issue_assigned",
+      payload: { issueId, taskId: issueId, taskKey: issueId },
+    },
+  });
   expect(res.ok()).toBe(true);
   const run = await res.json();
-  return run.id;
+  if (typeof run.id === "string" && run.id.length > 0) return run.id;
+
+  // A stage transition can already be replacing the previous executor's run
+  // with the participant's queued run. The legacy endpoint then returns
+  // { status: "skipped" }; wait for the retained lock to identify a run that
+  // actually belongs to this participant and source issue.
+  const deadline = Date.now() + 3_000;
+  do {
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    if (issueRunLock.assigneeAgentId !== agentId) {
+      // Negative authorization cases intentionally invoke a non-participant.
+      // Preserve the server rejection instead of waiting for a run that must
+      // never be assigned to that agent.
+      return issueRunLock.executionRunId ?? issueRunLock.checkoutRunId ?? "";
+    }
+    const candidates = [...new Set([
+      issueRunLock.executionRunId,
+      issueRunLock.checkoutRunId,
+    ].filter((candidate): candidate is string => Boolean(candidate)))];
+    for (const candidate of candidates) {
+      const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${candidate}`);
+      if (!runRes.ok()) continue;
+      const candidateRun = await runRes.json();
+      const context = candidateRun.contextSnapshot ?? {};
+      if (
+        candidateRun.agentId === agentId &&
+        (context.issueId === issueId || context.taskId === issueId)
+      ) {
+        return candidate;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } while (Date.now() < deadline);
+
+  throw new Error(`No issue-bound heartbeat run became available for agent ${agentId}`);
 }
 
 async function getIssueRunLockState(board: APIRequestContext, issueId: string): Promise<IssueRunLockState> {
@@ -126,7 +169,7 @@ async function agentPatch(
     maxBackoffMs = 500,
   }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
+  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
   const patchWith = (patchRunId: string) =>
     agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
       headers: { "X-Paperclip-Run-Id": patchRunId },
@@ -154,7 +197,7 @@ async function agentCheckoutAndPatch(
   expectedStatuses: string[],
   patchData: Record<string, unknown>,
 ) {
-  const runId = await invokeHeartbeat(board, agent.agentId);
+  const runId = await invokeHeartbeat(board, agent.agentId, issueId);
   const directPatchRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
     headers: { "X-Paperclip-Run-Id": runId },
     data: patchData,
