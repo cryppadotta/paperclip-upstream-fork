@@ -1,6 +1,8 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { isUuidLike } from "@paperclipai/shared";
+import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
@@ -18,6 +20,22 @@ export type CrossIssueInfluenceDecision = {
   cap: number;
   enforceAt: string;
 };
+
+export function crossIssueInfluenceRunContextError() {
+  return forbidden(
+    "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+    { code: "cross_issue_influence_run_context_required" },
+  );
+}
+
+function readRunSourceIssueId(contextSnapshot: unknown) {
+  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+  const context = contextSnapshot as Record<string, unknown>;
+  for (const candidate of [context.issueId, context.taskId]) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return null;
+}
 
 export function evaluateCrossIssueInfluenceLimit(input: {
   priorCount: number;
@@ -50,19 +68,15 @@ export async function observeCrossIssueInfluence(
     runId: string;
     agentId: string;
     responsibleUserId?: string | null;
-    sourceIssueId: string;
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
     now?: Date;
   },
 ): Promise<CrossIssueInfluenceDecision | null> {
-  if (
-    input.sourceIssueId === input.targetIssueId ||
-    (input.targetIssueIdentifier && input.sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
-  ) {
-    return null;
-  }
+  // API-key callers control the run header. Reject malformed UUIDs before the
+  // database can turn an untrusted identifier into a PostgreSQL cast error.
+  if (!isUuidLike(input.runId)) throw crossIssueInfluenceRunContextError();
 
   return db.transaction(async (tx) => {
     const run = await tx
@@ -71,6 +85,7 @@ export async function observeCrossIssueInfluence(
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
       .where(and(
@@ -80,7 +95,22 @@ export async function observeCrossIssueInfluence(
       ))
       .for("update")
       .then((rows) => rows[0] ?? null);
-    if (!run) return null;
+    if (
+      !run ||
+      run.companyId !== input.companyId ||
+      run.agentId !== input.agentId
+    ) {
+      throw crossIssueInfluenceRunContextError();
+    }
+
+    const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (
+      sourceIssueId === input.targetIssueId ||
+      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+    ) {
+      return null;
+    }
 
     const priorCount = await tx
       .select({ count: count() })
@@ -107,7 +137,7 @@ export async function observeCrossIssueInfluence(
       entityId: input.targetIssueId,
       details: {
         kind: input.kind,
-        sourceIssueId: input.sourceIssueId,
+        sourceIssueId,
         targetIssueId: input.targetIssueId,
         targetIssueIdentifier: input.targetIssueIdentifier ?? null,
         count: decision.count,
@@ -123,7 +153,7 @@ export async function observeCrossIssueInfluence(
       companyId: input.companyId,
       runId: input.runId,
       agentId: input.agentId,
-      sourceIssueId: input.sourceIssueId,
+      sourceIssueId,
       targetIssueId: input.targetIssueId,
       kind: input.kind,
       count: decision.count,

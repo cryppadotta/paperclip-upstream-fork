@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "../errors.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -134,6 +135,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
   syncIssueSafely: vi.fn(async () => undefined),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
 
 function registerRouteMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -172,6 +174,16 @@ function registerRouteMocks() {
 
   vi.doMock("../services/activity-log.js", () => ({
     logActivity: mockLogActivity,
+  }));
+
+  vi.doMock("../services/cross-issue-influence-limit.js", () => ({
+    observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
+    crossIssueInfluenceLimitError: vi.fn(),
+    crossIssueInfluenceRunContextError: () => new HttpError(
+      403,
+      "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+      { code: "cross_issue_influence_run_context_required" },
+    ),
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -368,6 +380,7 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/cross-issue-influence-limit.js");
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/documents.js");
     vi.doUnmock("../services/external-objects.js");
@@ -511,6 +524,8 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockLogActivity.mockClear();
+    mockObserveCrossIssueInfluence.mockReset();
+    mockObserveCrossIssueInfluence.mockResolvedValue(null);
     mockDocumentService.upsertIssueDocument.mockReset();
     mockWorkProductService.createForIssue.mockReset();
     mockExternalObjectService.getIssueSummaries.mockClear();

@@ -111,7 +111,9 @@ export interface IssueRewakeCandidateInput {
  */
 export function isThrottleCandidateIssueRewake(input: IssueRewakeCandidateInput): boolean {
   if (input.forceFreshSession) return false;
-  if (input.hasExplicitResume) return false;
+  // Explicit resume is an operator privilege, not an actor-class escape hatch.
+  // Agent-authored resume comments remain subject to the normal rewake throttle.
+  if (input.hasExplicitResume && input.requestedByActorType !== "agent") return false;
   if (input.wakeCommentId) return input.requestedByActorType === "agent";
   if (input.reason === null) return true;
   return THROTTLED_ISSUE_REWAKE_REASONS.has(input.reason);

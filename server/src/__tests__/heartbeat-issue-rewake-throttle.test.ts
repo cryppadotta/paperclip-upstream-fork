@@ -158,6 +158,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     status?: string;
     finishedSecondsAgo: number;
     startedSecondsAgo?: number;
+    sessionIdAfter?: string;
   }) {
     const runId = randomUUID();
     const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
@@ -174,6 +175,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       createdAt: startedAt,
       startedAt,
       finishedAt,
+      sessionIdAfter: input.sessionIdAfter,
       contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
     });
     return runId;
@@ -317,6 +319,38 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       requestedByActorId: randomUUID(),
     });
     expect(admittedAfterHumanInput).not.toBeNull();
+  });
+
+  it("keeps agent-authored explicit resume comments inside the no-progress cooldown", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    const resumeFromRunId = await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      finishedSecondsAgo: 40,
+      sessionIdAfter: randomUUID(),
+    });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+
+    const commentId = randomUUID();
+    const resumeWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_reopened_via_comment",
+      payload: { issueId, commentId, resumeFromRunId, resumeIntent: true },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_reopened_via_comment",
+        wakeCommentId: commentId,
+        resumeIntent: true,
+      },
+      requestedByActorType: "agent",
+      requestedByActorId: randomUUID(),
+    });
+
+    expect(resumeWake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
   });
 
   it("does not throttle the wake that follows a failed run", async () => {

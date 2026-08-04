@@ -54,9 +54,19 @@ describe("isThrottleCandidateIssueRewake", () => {
     })).toBe(false);
   });
 
-  it("never throttles explicit escalation wakes", () => {
+  it("never throttles trusted explicit escalation wakes", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, forceFreshSession: true })).toBe(false);
     expect(isThrottleCandidateIssueRewake({ ...base, hasExplicitResume: true })).toBe(false);
+  });
+
+  it("keeps agent-authored explicit resume comments throttle-eligible", () => {
+    expect(isThrottleCandidateIssueRewake({
+      ...base,
+      reason: "issue_reopened_via_comment",
+      wakeCommentId: "comment-1",
+      requestedByActorType: "agent",
+      hasExplicitResume: true,
+    })).toBe(true);
   });
 
   it("passes event-shaped wake reasons through", () => {

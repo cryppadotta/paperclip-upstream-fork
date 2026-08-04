@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpError } from "../errors.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -85,6 +86,7 @@ const mockExternalObjectService = vi.hoisted(() => ({
 }));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn());
 const mockCrossIssueInfluenceLimitError = vi.hoisted(() => vi.fn());
+const mockCrossIssueInfluenceRunContextError = vi.hoisted(() => vi.fn());
 
 vi.mock("@paperclipai/shared/telemetry", () => ({
   trackAgentTaskCompleted: vi.fn(),
@@ -174,6 +176,7 @@ vi.mock("../services/external-objects.js", () => ({
 vi.mock("../services/cross-issue-influence-limit.js", () => ({
   observeCrossIssueInfluence: mockObserveCrossIssueInfluence,
   crossIssueInfluenceLimitError: mockCrossIssueInfluenceLimitError,
+  crossIssueInfluenceRunContextError: mockCrossIssueInfluenceRunContextError,
 }));
 
 function createApp() {
@@ -275,6 +278,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockExternalObjectService.syncIssueSafely.mockReset();
     mockObserveCrossIssueInfluence.mockReset();
     mockCrossIssueInfluenceLimitError.mockReset();
+    mockCrossIssueInfluenceRunContextError.mockReset();
     mockTxInsertValues.mockReset();
     mockTxInsert.mockReset();
     mockDbSelect.mockReset();
@@ -311,6 +315,11 @@ describe.sequential("issue comment reopen routes", () => {
       error: `Cross-issue influence cap exceeded: this run is limited to ${decision.cap} cross-issue comments or updates`,
       details: { code: "cross_issue_influence_cap_exceeded", count: decision.count, cap: decision.cap },
     }));
+    mockCrossIssueInfluenceRunContextError.mockImplementation(() => new HttpError(
+      403,
+      "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+      { code: "cross_issue_influence_run_context_required" },
+    ));
     mockLogActivity.mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
@@ -1795,7 +1804,6 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({
         runId: "run-1",
         agentId: agentA,
-        sourceIssueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         targetIssueId: "11111111-1111-4111-8111-111111111111",
         kind,
       }),
@@ -1803,6 +1811,54 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["comment", (app: express.Express) => request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "cross-issue write" })],
+    ["update", (app: express.Express) => request(app)
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ title: "cross-issue write" })],
+  ] as const)("rejects cross-issue %s writes without a run header", async (_kind, sendRequest) => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const actor = { ...agentActor("44444444-4444-4444-8444-444444444444"), runId: undefined };
+    const res = await sendRequest(await installActor(createApp(), actor));
+
+    expect(res.status).toBe(403);
+    expect(res.body.details).toEqual({ code: "cross_issue_influence_run_context_required" });
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it.each(["invalid", "wrong agent", "wrong company"])(
+    "rejects comment and PATCH writes with a %s run",
+    async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      mockObserveCrossIssueInfluence.mockRejectedValue(new HttpError(
+        403,
+        "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+        { code: "cross_issue_influence_run_context_required" },
+      ));
+      const actor = agentActor("44444444-4444-4444-8444-444444444444");
+
+      const commentRes = await request(await installActor(createApp(), actor))
+        .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+        .send({ body: "cross-issue write" });
+      const updateRes = await request(await installActor(createApp(), actor))
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ title: "cross-issue write" });
+
+      for (const res of [commentRes, updateRes]) {
+        expect(res.status).toBe(403);
+        expect(res.body.details).toEqual({ code: "cross_issue_influence_run_context_required" });
+      }
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects explicit resume intent under an active pause hold", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));

@@ -203,6 +203,7 @@ import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 import {
   crossIssueInfluenceLimitError,
+  crossIssueInfluenceRunContextError,
   observeCrossIssueInfluence,
   type CrossIssueInfluenceKind,
 } from "../services/cross-issue-influence-limit.js";
@@ -2722,28 +2723,16 @@ export function issueRoutes(
     issue: { id: string; identifier?: string | null; companyId: string },
     kind: CrossIssueInfluenceKind,
   ) {
-    if (
-      req.actor.type !== "agent" ||
-      !req.actor.agentId ||
-      !req.actor.runId
-    ) {
-      return true;
-    }
+    if (req.actor.type !== "agent") return true;
+    if (!req.actor.agentId || !req.actor.runId) throw crossIssueInfluenceRunContextError();
 
-    // API-key actors may supply a run header, so never trust the header alone:
-    // bind it back to the persisted run's company and agent before counting.
-    const run = await heartbeat.getRun(req.actor.runId);
-    if (!run || run.companyId !== issue.companyId || run.agentId !== req.actor.agentId) return true;
-    const context = readObject(run.contextSnapshot);
-    const sourceIssueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
-    if (!sourceIssueId) return true;
-
+    // The counter transaction locks and validates the persisted run before it
+    // derives the source issue. Never trust the API-key run header by itself.
     const decision = await observeCrossIssueInfluence(db, {
       companyId: issue.companyId,
       runId: req.actor.runId,
       agentId: req.actor.agentId,
-      responsibleUserId: req.actor.onBehalfOfUserId ?? run.responsibleUserId ?? null,
-      sourceIssueId,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
       kind,
