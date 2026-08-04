@@ -338,8 +338,10 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             {isCloud
               ? currentName ? <StackIcon displayName={currentName} /> : null
               : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
-            {/* The header only has room for ~78px of name beside the search and
-                collapse controls, so a truncated name stays hover-recoverable. */}
+            {/* The header has room for ~110px of name beside the collapse
+                control (~142px on mobile, which hides it) — search moved to
+                the nav to buy that width. A name that still
+                truncates stays hover-recoverable via title. */}
             <span
               className={cn(
                 "min-w-0 truncate text-sm font-bold text-foreground",
