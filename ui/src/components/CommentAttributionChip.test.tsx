@@ -26,7 +26,7 @@ describe("CommentAttributionChip", () => {
   });
 
   it("renders nothing without a responsible user", () => {
-    const empty = renderToStaticMarkup(<TooltipProvider />);
+    const empty = render(null);
     expect(render(<CommentAttributionChip agentName="Fable" userName={null} />)).toBe(empty);
     expect(render(<CommentAttributionChip agentName="Fable" userName="   " />)).toBe(empty);
     expect(render(<CommentAttributionChip userName={undefined} />)).toBe(empty);
