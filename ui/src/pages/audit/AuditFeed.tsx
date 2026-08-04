@@ -300,6 +300,9 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   );
 
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
+  const canUseAdvancedControls = lockedAgentId
+    ? true
+    : feed.data?.pages[0]?.accessTier === "full";
 
   const clearFilters = () => {
     setAgent(ALL);
@@ -355,13 +358,14 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
           <div>
             <h1 className="text-lg font-semibold text-foreground">Audit</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Everything your agents did, newest first — each line is one recorded action, with the
-              person responsible for it. Click through to the task or run for the full context.
+              Everything your company did, newest first — each line is one recorded action. Full
+              audit access also shows responsible-person and run attribution.
             </p>
           </div>
         </div>
       ) : null}
 
+      {canUseAdvancedControls ? (
       <div className="flex flex-wrap items-center gap-2">
         {!lockedAgentId ? (
           <Select value={agent} onValueChange={setAgent}>
@@ -447,6 +451,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
           {exporting ? "Exporting…" : "Export CSV"}
         </Button>
       </div>
+      ) : null}
 
       {feed.isLoading ? (
         <Card>

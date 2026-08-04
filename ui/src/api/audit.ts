@@ -40,6 +40,8 @@ export interface AuditActionRecord {
 export interface AuditActionsResponse {
   items: AuditActionRecord[];
   nextCursor: string | null;
+  /** Controls whether attribution filters and CSV export are available. */
+  accessTier: "basic" | "full";
 }
 
 /** Server-side filters for the audit feed. All optional. */

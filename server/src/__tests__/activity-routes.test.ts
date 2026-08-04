@@ -160,6 +160,7 @@ describe.sequential("activity routes", () => {
       responsibleUserId: null,
       details: null,
     });
+    expect(res.body.accessTier).toBe("basic");
   });
 
   it("rejects attribution filters for a basic all-actors reader", async () => {
@@ -202,6 +203,7 @@ describe.sequential("activity routes", () => {
       responsibleUserId: "user-2",
       details: { attribution: true },
     });
+    expect(res.body.accessTier).toBe("full");
   });
 
   it("limits company activity lists by default", async () => {

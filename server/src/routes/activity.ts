@@ -255,7 +255,8 @@ export function activityRoutes(db: Db) {
       throw badRequest("Invalid agent action audit query", parsedQuery.error.issues);
     }
     if (parsedQuery.data.actorScope === "agents") {
-      res.json(await agentAudit.list({ companyId, ...parsedQuery.data }));
+      const result = await agentAudit.list({ companyId, ...parsedQuery.data });
+      res.json({ ...result, accessTier: "full" });
       return;
     }
 
@@ -264,7 +265,10 @@ export function activityRoutes(db: Db) {
       throw forbidden("Audit filters require permission: audit:view_agent_actions");
     }
     const result = await agentAudit.list({ companyId, ...parsedQuery.data });
-    res.json(canViewAttribution ? result : stripAuditAttribution(result));
+    res.json({
+      ...(canViewAttribution ? result : stripAuditAttribution(result)),
+      accessTier: canViewAttribution ? "full" : "basic",
+    });
   });
 
   router.get("/companies/:companyId/audit/agent-actions.csv", async (req, res) => {

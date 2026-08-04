@@ -206,6 +206,7 @@ describePostgres("agent action audit routes", () => {
         .get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all&limit=2${cursorQuery}`);
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       items.push(...response.body.items);
+      expect(response.body.accessTier).toBe("basic");
       cursor = response.body.nextCursor;
     } while (cursor);
 
@@ -288,6 +289,8 @@ describePostgres("agent action audit routes", () => {
     const allResponse = await request(app)
       .get(`/api/companies/${company.id}/audit/agent-actions?actorScope=all`);
     expect(allResponse.status, JSON.stringify(allResponse.body)).toBe(200);
+    expect(defaultResponse.body.accessTier).toBe("full");
+    expect(allResponse.body.accessTier).toBe("full");
     expect(allResponse.body.items).toHaveLength(6);
     expect(allResponse.body.items.find((item: { id: string }) => item.id === actorOnlyRows[0]!.id)).toMatchObject({
       responsibleUserId: "sensitive-responsible-user",

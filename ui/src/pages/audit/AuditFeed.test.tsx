@@ -91,7 +91,7 @@ describe("AuditFeed", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null });
+    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "full" });
     listAgentsMock.mockResolvedValue([{ id: "agent-1", name: "Fable", icon: null }]);
     listUserDirectoryMock.mockResolvedValue({
       users: [{ principalId: "user-1", status: "active", user: { id: "user-1", name: "Dotta", email: null, image: null } }],
@@ -155,6 +155,16 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("Recorded by Paperclip");
   });
 
+  it("hides attribution filters and export for a basic all-actors reader", async () => {
+    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
+    await render();
+
+    expect(container.textContent).toContain("commented on");
+    expect(container.textContent).not.toContain("All agents");
+    expect(container.textContent).not.toContain("All responsible users");
+    expect(container.textContent).not.toContain("Export CSV");
+  });
+
   it("hides the agent filter and pins the query when lockedAgentId is set", async () => {
     await render({ lockedAgentId: "agent-1" });
 
@@ -175,9 +185,9 @@ describe("AuditFeed", () => {
   it("loads more when a cursor is returned", async () => {
     listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
       if (filters.cursor === "cursor-2") {
-        return Promise.resolve({ items: [record({ id: "evt-2", entity: { issue: { id: "i2", identifier: "PAP-2", title: "Second" }, comment: null, document: null } })], nextCursor: null });
+        return Promise.resolve({ items: [record({ id: "evt-2", entity: { issue: { id: "i2", identifier: "PAP-2", title: "Second" }, comment: null, document: null } })], nextCursor: null, accessTier: "full" });
       }
-      return Promise.resolve({ items: [record()], nextCursor: "cursor-2" });
+      return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
     });
     await render();
 
