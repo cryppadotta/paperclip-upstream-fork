@@ -206,6 +206,49 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("Export CSV");
   });
 
+  it("drops cached privileged pages when pagination observes an access downgrade", async () => {
+    let permissionRevoked = false;
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
+      if (filters.cursor === "cursor-2") {
+        return Promise.resolve({
+          items: [record({
+            id: "evt-2",
+            agentId: null,
+            runId: null,
+            responsibleUserId: null,
+            details: null,
+          })],
+          nextCursor: null,
+          accessTier: "basic",
+        });
+      }
+      if (permissionRevoked) {
+        return Promise.resolve({
+          items: [record({ agentId: null, runId: null, responsibleUserId: null, details: null })],
+          nextCursor: null,
+          accessTier: "basic",
+        });
+      }
+      return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
+    });
+    await render();
+
+    expect(container.textContent).toContain("on behalf of Dotta");
+    expect(container.textContent).toContain("Export CSV");
+    permissionRevoked = true;
+    await clickButton("Load more");
+    await flushReact();
+
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "all", cursor: undefined }),
+    );
+    expect(container.textContent).toContain("commented on");
+    expect(container.textContent).not.toContain("on behalf of Dotta");
+    expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("All agents");
+    expect(container.textContent).not.toContain("Export CSV");
+  });
+
   it("hides the agent filter and pins the query when lockedAgentId is set", async () => {
     await render({ lockedAgentId: "agent-1" });
 

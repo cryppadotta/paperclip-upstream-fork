@@ -300,12 +300,18 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   );
 
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
-  const accessTier = feed.data?.pages[0]?.accessTier;
+  const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
+  const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
+  // Access may be revoked between cursor requests. Treat the least-privileged
+  // page as authoritative until every cached page has been fetched again.
+  const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
+  const hasMixedAccessTiers = hasBasicPage && hasFullPage;
   const canUseAdvancedControls = lockedAgentId
     ? true
     : accessTier === "full";
   const recoveringFromAccessDowngrade = Boolean(
-    !lockedAgentId && permissionDenied && hasActiveFilters,
+    !lockedAgentId
+      && ((permissionDenied && hasActiveFilters) || hasMixedAccessTiers),
   );
 
   useEffect(() => {
@@ -317,7 +323,10 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       setDateFrom("");
       setDateTo("");
     }
-  }, [accessTier, lockedAgentId, recoveringFromAccessDowngrade]);
+    if (hasMixedAccessTiers) {
+      void feed.refetch();
+    }
+  }, [accessTier, feed, hasMixedAccessTiers, lockedAgentId, recoveringFromAccessDowngrade]);
 
   const clearFilters = () => {
     setAgent(ALL);
