@@ -803,7 +803,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("allows non-mentioned peer agents to post comments on visible issues", async () => {
+  it("keeps visible peer comments agent-class even when authorType tries to smuggle user wake privilege", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read" || input.action === "issue:comment",
       action: input.action,
@@ -813,7 +813,7 @@ describe("agent issue mutation checkout ownership", () => {
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/comments`)
-      .send({ body: "I was not mentioned." });
+      .send({ body: "I was not mentioned.", authorType: "user" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
@@ -822,6 +822,14 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({
+        reason: "issue_commented",
+        requestedByActorType: "agent",
+        requestedByActorId: peerAgentId,
+      }),
+    ));
   });
 
   it("keeps default-open peer comments on closed issues inert", async () => {

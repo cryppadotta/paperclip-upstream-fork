@@ -245,7 +245,7 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(admittedWake).not.toBeNull();
   });
 
-  it("does not throttle comment-driven wakes even during a no-progress streak", async () => {
+  it("does not throttle system comment-driven wakes even during a no-progress streak", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
@@ -261,6 +261,62 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       requestedByActorId: "test",
     });
     expect(commentWake).not.toBeNull();
+  });
+
+  it("keeps agent comments throttled without hiding genuinely new human input", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
+    await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 10 });
+
+    const agentCommentId = randomUUID();
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "agent",
+      actorId: randomUUID(),
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+    });
+    const throttledAgentCommentWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: agentCommentId },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_commented",
+        wakeCommentId: agentCommentId,
+      },
+      requestedByActorType: "agent",
+      requestedByActorId: randomUUID(),
+    });
+    expect(throttledAgentCommentWake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: "board-user",
+      action: "issue.comment_added",
+      entityType: "issue",
+      entityId: issueId,
+    });
+    const nextAgentCommentId = randomUUID();
+    const admittedAfterHumanInput = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId, commentId: nextAgentCommentId },
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_commented",
+        wakeCommentId: nextAgentCommentId,
+      },
+      requestedByActorType: "agent",
+      requestedByActorId: randomUUID(),
+    });
+    expect(admittedAfterHumanInput).not.toBeNull();
   });
 
   it("does not throttle the wake that follows a failed run", async () => {

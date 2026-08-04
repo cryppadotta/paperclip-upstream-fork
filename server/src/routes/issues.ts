@@ -201,6 +201,11 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import {
+  crossIssueInfluenceLimitError,
+  observeCrossIssueInfluence,
+  type CrossIssueInfluenceKind,
+} from "../services/cross-issue-influence-limit.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
@@ -1781,7 +1786,7 @@ function shouldHumanCommentResumeInProgressScheduledRetry(input: {
 }
 
 function isExplicitResumeCapableStatus(status: string | null | undefined) {
-  return status === "done" || status === "blocked" || status === "todo" || status === "in_progress";
+  return status === "done" || status === "cancelled" || status === "blocked" || status === "todo" || status === "in_progress";
 }
 
 // Log-class comment from the assignee agent on a terminal (done/cancelled)
@@ -2672,6 +2677,44 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>,
   ) {
     return resolveActorSourceTrustForIssue({ db, issue, actor });
+  }
+
+  async function assertCrossIssueInfluenceWithinRunCap(
+    req: Request,
+    res: Response,
+    issue: { id: string; identifier?: string | null; companyId: string },
+    kind: CrossIssueInfluenceKind,
+  ) {
+    if (
+      req.actor.type !== "agent" ||
+      !req.actor.agentId ||
+      !req.actor.runId
+    ) {
+      return true;
+    }
+
+    // API-key actors may supply a run header, so never trust the header alone:
+    // bind it back to the persisted run's company and agent before counting.
+    const run = await heartbeat.getRun(req.actor.runId);
+    if (!run || run.companyId !== issue.companyId || run.agentId !== req.actor.agentId) return true;
+    const context = readObject(run.contextSnapshot);
+    const sourceIssueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    if (!sourceIssueId) return true;
+
+    const decision = await observeCrossIssueInfluence(db, {
+      companyId: issue.companyId,
+      runId: req.actor.runId,
+      agentId: req.actor.agentId,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? run.responsibleUserId ?? null,
+      sourceIssueId,
+      targetIssueId: issue.id,
+      targetIssueIdentifier: issue.identifier ?? null,
+      kind,
+    });
+    if (!decision || decision.allowed) return true;
+
+    res.status(429).json(crossIssueInfluenceLimitError(decision));
+    return false;
   }
 
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
@@ -4249,11 +4292,15 @@ export function issueRoutes(
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
-    issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    issue: Parameters<typeof decideIssueAccess>[1],
+    options: { resumeIntent?: boolean } = {},
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
-    if (issue.status === "cancelled") {
+    // Structured resume intent is the sole comment surface that may revive a
+    // cancelled issue. Bare status transitions and `reopen` keep using the
+    // dedicated restore-flow guard.
+    if (issue.status === "cancelled" && options.resumeIntent !== true) {
       res.status(409).json({
         error: "Cancelled issues must be restored through the dedicated restore flow",
         details: {
@@ -4318,6 +4365,8 @@ export function issueRoutes(
     if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
       return true;
     }
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (isDefaultOpenIssueWriteDecision(boundaryDecision)) return true;
 
     res.status(403).json({
       error: "Agent cannot request follow-up for another agent's issue",
@@ -7881,7 +7930,10 @@ export function issueRoutes(
     ) {
       return;
     }
-    if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
+    if (
+      resumeRequested === true &&
+      !(await assertExplicitResumeIntentAllowed(req, res, existing, { resumeIntent: true }))
+    ) return;
     const agentStatusTransitionRequiresResumeAuthority =
       req.actor.type === "agent" &&
       typeof updateFields.status === "string" &&
@@ -7977,6 +8029,7 @@ export function issueRoutes(
       respondClosedIssueExecutionWorkspace(res, closedExecutionWorkspace);
       return;
     }
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, existing, "update"))) return;
 
     if (interruptRequested) {
       if (!commentBody) {
@@ -10177,9 +10230,12 @@ export function issueRoutes(
       issue.assigneeAgentId !== req.actor.agentId &&
       !crossIssueCommentOnlyGrant
     ) {
-      if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+      if (!(await assertAgentIssueMutationAllowed(req, res, issue, { allowVisibleIssueWrite: true }))) return;
     }
-    if (effectiveResumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
+    if (
+      effectiveResumeRequested === true &&
+      !(await assertExplicitResumeIntentAllowed(req, res, issue, { resumeIntent: true }))
+    ) return;
     if (effectiveResumeRequested !== true && effectiveReopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, issue))) return;
     }
@@ -10225,6 +10281,7 @@ export function issueRoutes(
       res.status(409).json({ error: "Issue follow-up blocked by unresolved blockers" });
       return;
     }
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "comment"))) return;
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
