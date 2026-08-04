@@ -1390,17 +1390,14 @@ function RequestConfirmationResolution({
   }
 
   if (interaction.status === "cancelled" && outcome === "withdrawn") {
+    // Withdrawn is a neutral administrative retraction (P4 design review): the
+    // card-level withdrawn footer carries the "Withdrawn by …" attribution and
+    // reason, so this body only anchors the target chip — no rose/red styling
+    // and no duplicated reason text.
     return (
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
-          <span className="font-medium">Withdrawn</span>
-          <RequestConfirmationTargetChip interaction={interaction} target={target} />
-        </div>
-        {interaction.result?.reason ? (
-          <div className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
-            <MarkdownBody>{interaction.result.reason}</MarkdownBody>
-          </div>
-        ) : null}
+      <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+        <span className="font-medium">Withdrawn</span>
+        <RequestConfirmationTargetChip interaction={interaction} target={target} />
       </div>
     );
   }
