@@ -1545,6 +1545,25 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["done", "todo", 403, "Agent cannot request follow-up for another agent's issue"],
+    ["cancelled", "todo", 409, "Cancelled issues must be restored through the dedicated restore flow"],
+    ["blocked", "done", 403, "Agent cannot request follow-up for another agent's issue"],
+  ])(
+    "rejects peer agent direct status transitions from %s to %s",
+    async (status, nextStatus, expectedStatus, expectedError) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: nextStatus });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(expectedStatus);
+      expect(res.body.error).toBe(expectedError);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

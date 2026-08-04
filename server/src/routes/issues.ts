@@ -7882,7 +7882,12 @@ export function issueRoutes(
       return;
     }
     if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
-    if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
+    const agentStatusTransitionRequiresResumeAuthority =
+      req.actor.type === "agent" &&
+      typeof updateFields.status === "string" &&
+      updateFields.status !== existing.status &&
+      (isBlocked || (isClosed && !isClosedIssueStatus(updateFields.status)));
+    if (resumeRequested !== true && req.actor.type === "agent" && reopenRequested === true) {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
     await assertIssueEnvironmentSelection(existing.companyId, updateFields.executionWorkspaceSettings?.environmentId);
@@ -7908,6 +7913,13 @@ export function issueRoutes(
         activeRecoveryActionBeforeUpdate,
         { source: "issue_update" },
       ))
+    ) {
+      return;
+    }
+    if (
+      resumeRequested !== true &&
+      agentStatusTransitionRequiresResumeAuthority &&
+      !(await assertExplicitResumeIntentAllowed(req, res, existing))
     ) {
       return;
     }
