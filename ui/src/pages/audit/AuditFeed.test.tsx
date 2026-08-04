@@ -327,6 +327,19 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("Export CSV");
   });
 
+  it("labels a stripped agent row as an agent, not the system", async () => {
+    // The basic tier nulls `agentId` but keeps `actorType: "agent"`.
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({ agentId: null, runId: null, responsibleUserId: null, details: null })],
+      nextCursor: null,
+      accessTier: "basic",
+    });
+    await render({ mode: "all", onModeChange: vi.fn() });
+
+    expect(container.textContent).toContain("Agent");
+    expect(container.textContent).not.toContain("System");
+  });
+
   it("hides the mode toggle from a basic all-actors reader", async () => {
     listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
     await render({ mode: "all", onModeChange: vi.fn() });

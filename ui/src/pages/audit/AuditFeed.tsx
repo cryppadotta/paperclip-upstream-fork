@@ -122,7 +122,17 @@ function AuditActor({
       />
     );
   }
-  const label = record.actorType === "plugin" ? "Plugin" : "System";
+  // Fall back to the actor *type*, never a blanket "System". The basic tier
+  // strips `agentId` but keeps `actorType`, so every agent action would
+  // otherwise be mislabeled as the system on the shared all-activity feed.
+  const label =
+    record.actorType === "plugin"
+      ? "Plugin"
+      : record.actorType === "agent"
+        ? "Agent"
+        : record.actorType === "user"
+          ? "User"
+          : "System";
   return <Identity name={label} size="sm" className="font-medium text-foreground" />;
 }
 
@@ -458,7 +468,8 @@ export function AuditFeed({
             </Select>
           ) : null}
           <Select value={responsibleUser} onValueChange={setResponsibleUser}>
-            <SelectTrigger className="w-44">
+            {/* Wide enough for "All responsible users" — w-44 truncated it. */}
+            <SelectTrigger className="w-52">
               <SelectValue placeholder="Responsible user" />
             </SelectTrigger>
             <SelectContent>
