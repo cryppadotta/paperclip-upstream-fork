@@ -85,6 +85,33 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
     });
   });
 
+  it("does not wait for scheduler idle before a selective hot-restart drain", async () => {
+    const waitForHeartbeatSchedulerIdle = vi.fn(() => new Promise<void>(() => undefined));
+
+    const result = await coordinateHeartbeatSchedulerShutdown({
+      signal: "SIGTERM",
+      prepareHotRestartShutdown: vi.fn(async () => ({
+        mode: "acp_drain_required" as const,
+        skipDrain: false,
+        skipSchedulerIdleWait: true,
+        drainRunIds: ["acp-run"],
+      })),
+      waitForHeartbeatSchedulerIdle,
+    });
+
+    expect(waitForHeartbeatSchedulerIdle).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      hotRestart: {
+        mode: "acp_drain_required",
+        skipDrain: false,
+        skipSchedulerIdleWait: true,
+        drainRunIds: ["acp-run"],
+      },
+      preparationError: null,
+      waitedForSchedulerIdle: false,
+    });
+  });
+
   it("preserves the scheduler idle wait for normal graceful shutdown", async () => {
     let releaseScheduler!: () => void;
     const schedulerIdle = new Promise<void>((resolve) => {

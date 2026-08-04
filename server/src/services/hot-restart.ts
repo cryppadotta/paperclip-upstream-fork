@@ -36,6 +36,7 @@ export type HotRestartIntent = {
   previousServerVersion: string | null;
   drainRequired: boolean;
   drainReason?: "requested" | "active_acp_run" | null;
+  drainRunIds?: string[];
   requestedByRunId: string | null;
   preflightActiveRunIds: string[];
   shutdownSnapshot?: {
@@ -419,6 +420,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
     drainReason: asDrainReason(value.drainReason),
+    drainRunIds: asStringArray(value.drainRunIds),
     requestedByRunId: asString(value.requestedByRunId),
     preflightActiveRunIds: asStringArray(value.preflightActiveRunIds),
   };
@@ -537,13 +539,18 @@ export async function writeHotRestartShutdownSnapshot(input: {
   signal: "SIGINT" | "SIGTERM";
   activeRuns: HotRestartIntentRun[];
   drainReason?: "active_acp_run";
+  drainRunIds?: string[];
   capturedAt?: Date;
   homeDir?: string;
 }) {
   const updated: HotRestartIntent = {
     ...input.intent,
     ...(input.drainReason
-      ? { drainRequired: true, drainReason: input.drainReason }
+      ? {
+        drainRequired: true,
+        drainReason: input.drainReason,
+        drainRunIds: asStringArray(input.drainRunIds),
+      }
       : {}),
     shutdownSnapshot: {
       capturedAt: (input.capturedAt ?? new Date()).toISOString(),

@@ -10050,6 +10050,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         signal,
         activeRuns: snapshotRuns,
         drainReason: "active_acp_run",
+        drainRunIds: activeServerStdioRunIds,
         capturedAt: now,
       });
 
@@ -10067,8 +10068,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return {
         mode: "acp_drain_required" as const,
         skipDrain: false as const,
+        skipSchedulerIdleWait: true as const,
         activeRunIds: snapshotRuns.map((run) => run.runId),
         activeAcpRunIds: activeServerStdioRunIds,
+        drainRunIds: activeServerStdioRunIds,
         drainReason: "active_acp_run" as const,
       };
     }
@@ -10224,7 +10227,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      if (intent.drainRequired) {
+      const hasSelectiveAcpDrain = intent.drainReason === "active_acp_run"
+        && (intent.drainRunIds?.length ?? 0) > 0;
+      if (
+        intent.drainRequired
+        && (!hasSelectiveAcpDrain || intent.drainRunIds?.includes(candidate.runId))
+      ) {
         classify(candidate, "skipped", "drain_required", patch);
         continue;
       }
@@ -10339,7 +10347,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+  async function drainRunningRunsForShutdown(
+    signal: "SIGINT" | "SIGTERM",
+    now = new Date(),
+    runIds: readonly string[] | null = null,
+  ) {
+    const selectedRunIds = runIds ? [...new Set(runIds)] : null;
+    if (selectedRunIds?.length === 0) {
+      return { interrupted: 0, interruptedRunIds: [], retryRunIds: [] };
+    }
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -10347,7 +10363,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-      .where(eq(heartbeatRuns.status, "running"));
+      .where(
+        selectedRunIds
+          ? and(
+            eq(heartbeatRuns.status, "running"),
+            inArray(heartbeatRuns.id, selectedRunIds),
+          )
+          : eq(heartbeatRuns.status, "running"),
+      );
 
     const interruptedRunIds: string[] = [];
     const retryRunIds: string[] = [];

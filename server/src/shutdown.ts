@@ -1,5 +1,6 @@
 type HotRestartShutdownPreparation = {
   skipDrain: boolean;
+  skipSchedulerIdleWait?: boolean;
 };
 
 const COORDINATED_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM"] as const;
@@ -69,7 +70,7 @@ export async function coordinateHeartbeatSchedulerShutdown<
     }
   }
 
-  if (hotRestart?.skipDrain) {
+  if (hotRestart?.skipDrain || hotRestart?.skipSchedulerIdleWait) {
     return {
       hotRestart,
       preparationError,

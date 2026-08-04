@@ -909,8 +909,15 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
-  let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
-  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
+  let drainHeartbeatRunsForShutdown: ((
+    signal: "SIGINT" | "SIGTERM",
+    runIds?: readonly string[] | null,
+  ) => Promise<unknown>) | null = null;
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
+    skipDrain: boolean;
+    skipSchedulerIdleWait?: boolean;
+    drainRunIds?: string[];
+  }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -955,7 +962,9 @@ export async function startServer(): Promise<StartedServer> {
     const retentionExecutor = decisionRetentionService(db as any, {
       notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
     });
-    drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    drainHeartbeatRunsForShutdown = (signal, runIds) => (
+      heartbeat.drainRunningRunsForShutdown(signal, new Date(), runIds)
+    );
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
@@ -1392,6 +1401,7 @@ export async function startServer(): Promise<StartedServer> {
         waitForHeartbeatSchedulerIdle,
       });
       const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+      const selectiveDrainRunIds = heartbeatShutdown.hotRestart?.drainRunIds ?? null;
       if (skipHeartbeatDrain) {
         logger.info(
           { signal, hotRestart: heartbeatShutdown.hotRestart },
@@ -1412,7 +1422,7 @@ export async function startServer(): Promise<StartedServer> {
 
       if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
         try {
-          const drain = await drainHeartbeatRunsForShutdown(signal);
+          const drain = await drainHeartbeatRunsForShutdown(signal, selectiveDrainRunIds);
           logger.info({ signal, drain }, "graceful heartbeat run drain complete");
         } catch (err) {
           logger.error({ err, signal }, "graceful heartbeat run drain failed");
