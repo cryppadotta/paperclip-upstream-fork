@@ -1104,6 +1104,8 @@ describe("sandbox callback bridge", () => {
       { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/accept" },
       { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/reject" },
       { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/respond" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/verdicts" },
+      { method: "POST", path: "/api/issues/issue-1/interactions/inter-1/withdraw" },
       { method: "POST", path: "/api/companies/co-1/issues" },
       { method: "GET", path: "/api/approvals/ap-1" },
       { method: "GET", path: "/api/approvals/ap-1/issues" },
