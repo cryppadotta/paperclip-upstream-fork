@@ -425,6 +425,35 @@ describe("SidebarCompanyMenu", () => {
     });
   });
 
+  // The trigger sits in a fixed 240px sidebar header beside two shrink-0
+  // controls, so a long name may only truncate — never widen the row and push
+  // the chevron, search, and collapse controls out of the panel. Truncation
+  // needs `min-w-0` on EVERY flex link of the chain (a flex item's default
+  // `min-width:auto` floors it at its content width), which is invisible to
+  // behavioural assertions, so the class chain itself is the contract.
+  it("lets a long workspace name truncate instead of widening the trigger", async () => {
+    const { root } = renderMenu();
+    await flushReact();
+
+    const trigger = container.querySelector('button[aria-label="Open Acme Labs company switcher"]');
+    expect(trigger).not.toBeNull();
+    expect(trigger?.className).toContain("min-w-0");
+
+    const labelRow = trigger?.firstElementChild;
+    expect(labelRow?.className).toContain("min-w-0");
+
+    const label = labelRow?.lastElementChild;
+    expect(label?.textContent).toBe("Acme Labs");
+    expect(label?.className).toContain("min-w-0");
+    expect(label?.className).toContain("truncate");
+    // A truncated name stays recoverable on hover.
+    expect(label?.getAttribute("title")).toBe("Acme Labs");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   describe("in Paperclip Cloud", () => {
     it("switches organizations instead of companies", async () => {
       const { root } = renderMenu({ cloud: true });

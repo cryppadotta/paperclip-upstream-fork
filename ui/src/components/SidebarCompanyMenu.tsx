@@ -88,14 +88,16 @@ function CloudStackItem({
       className={cn("min-w-0 gap-2 py-2", isSelected && "bg-accent text-accent-foreground")}
     >
       <StackIcon displayName={stack.displayName} />
-      <span className="min-w-0 flex-1 truncate">{stack.displayName}</span>
+      <span className="min-w-0 flex-1 truncate" title={stack.displayName}>
+        {stack.displayName}
+      </span>
       {/* Company badges are 3-4 character issue prefixes, but stack slugs are
           user-chosen and can be long enough to truncate the name to a single
           letter — the name is the primary identifier, so the badge yields. */}
       <span className={cn(WORKSPACE_BADGE_CLASS, "max-w-24 truncate")} title={stack.stackSlug}>
         {stack.stackSlug}
       </span>
-      {isSelected ? <Check className="size-4 text-muted-foreground" /> : null}
+      {isSelected ? <Check className="size-4 shrink-0 text-muted-foreground" /> : null}
     </DropdownMenuItem>
   );
 }
@@ -320,7 +322,12 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
           // the Button's default size adds `has-[>svg]:px-3`, so with the chevron
           // svg present (expanded) it was already 12px but without it (rail) it fell
           // back to 8px — a 4px horizontal jump on collapse (PAP-10676).
-          className="h-9 flex-1 justify-start gap-2 px-3 text-left"
+          // `min-w-0` on every link of the flex chain (button → label row → label)
+          // is what lets the name truncate: a flex item's default `min-width:auto`
+          // floors it at its content width, so without it a long name widens the
+          // trigger past the sidebar and pushes the chevron out of bounds. Company
+          // names were short in practice; cloud stack names are user-chosen.
+          className="h-9 min-w-0 flex-1 justify-start gap-2 px-3 text-left"
           aria-label={
             currentName
               ? `Open ${currentName} ${switcherNoun} switcher`
@@ -331,7 +338,15 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
             {isCloud
               ? currentName ? <StackIcon displayName={currentName} /> : null
               : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
-            <span className={cn("truncate text-sm font-bold text-foreground", rail && SIDEBAR_RAIL_HIDDEN_LABEL)}>
+            {/* The header only has room for ~78px of name beside the search and
+                collapse controls, so a truncated name stays hover-recoverable. */}
+            <span
+              className={cn(
+                "min-w-0 truncate text-sm font-bold text-foreground",
+                rail && SIDEBAR_RAIL_HIDDEN_LABEL,
+              )}
+              title={currentName ?? undefined}
+            >
               {currentName ?? (isCloud ? "Select organization" : "Select company")}
             </span>
           </span>
