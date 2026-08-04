@@ -116,6 +116,7 @@ describe("AuditFeed", () => {
       );
     });
     await flushReact();
+    return client;
   }
 
   function clickButton(text: string) {
@@ -162,6 +163,46 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("commented on");
     expect(container.textContent).not.toContain("All agents");
     expect(container.textContent).not.toContain("All responsible users");
+    expect(container.textContent).not.toContain("Export CSV");
+  });
+
+  it("clears privileged filters and recovers the basic feed after an access downgrade", async () => {
+    let permissionRevoked = false;
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { from?: string }) => {
+      if (permissionRevoked && filters.from) {
+        return Promise.reject(
+          new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
+        );
+      }
+      return Promise.resolve({
+        items: [record()],
+        nextCursor: null,
+        accessTier: permissionRevoked ? "basic" : "full",
+      });
+    });
+    await render();
+
+    const fromDate = container.querySelector<HTMLInputElement>('input[aria-label="From date"]');
+    expect(fromDate).toBeTruthy();
+    const setInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    expect(setInputValue).toBeTruthy();
+    await act(async () => {
+      permissionRevoked = true;
+      setInputValue!.call(fromDate, "2026-08-01");
+      fromDate!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)).toBe(true);
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "all", from: undefined }),
+    );
+    expect(container.textContent).toContain("commented on");
+    expect(container.textContent).not.toContain("Paperclip Enterprise view");
+    expect(container.textContent).not.toContain("All agents");
     expect(container.textContent).not.toContain("Export CSV");
   });
 
