@@ -3860,41 +3860,6 @@ export function issueRoutes(
     return true;
   }
 
-  async function assertIssueThreadInteractionWithdrawalAllowed(
-    req: Request,
-    res: Response,
-    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
-    interaction: { createdByAgentId?: string | null },
-  ) {
-    if (req.actor.type !== "agent") {
-      assertBoard(req);
-      return true;
-    }
-    const actorAgentId = req.actor.agentId;
-    if (!actorAgentId || !requireAgentRunId(req, res)) return false;
-
-    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
-    if (watchdogScope.kind !== "none") {
-      res.status(403).json({ error: "Task-watchdog runs cannot withdraw issue-thread interactions" });
-      return false;
-    }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
-    if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
-      return false;
-    }
-    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
-
-    const isCreator = interaction.createdByAgentId === actorAgentId;
-    const isAssignee = issue.assigneeAgentId === actorAgentId;
-    if (!isCreator && !isAssignee) {
-      res.status(403).json({ error: "Only the interaction creator, current issue assignee, or a board user may withdraw it" });
-      return false;
-    }
-    if (isAssignee) return assertAgentIssueMutationAllowed(req, res, issue);
-    return true;
-  }
-
   async function assertTaskWatchdogCreateIssueAllowed(
     req: Request,
     res: Response,

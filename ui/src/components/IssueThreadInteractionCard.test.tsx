@@ -265,8 +265,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Expired when issue closed");
-    expect(host.textContent).toContain("The issue was closed before this confirmation was resolved.");
+    expect(host.textContent).toContain("Expired · issue closed");
+    expect(host.textContent).toContain("This confirmation expired automatically when the issue reached a terminal state.");
     expect(host.textContent).not.toContain("Expired by target change");
   });
 
@@ -305,8 +305,8 @@ describe("IssueThreadInteractionCard", () => {
       },
     });
 
-    expect(host.textContent).toContain("Questions expired when issue closed");
-    expect(host.textContent).toContain("The issue was closed before these questions were answered.");
+    expect(host.textContent).toContain("Questions expired when the issue closed");
+    expect(host.textContent).toContain("This question request expired automatically when the issue reached a terminal state.");
     expect(host.textContent).not.toContain("expired by comment");
   });
 
