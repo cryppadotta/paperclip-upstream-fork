@@ -131,6 +131,18 @@ describe("AuditFeed", () => {
     return client;
   }
 
+  /** Poll until `text` renders, for states that settle behind query retry backoff. */
+  async function waitForText(text: string, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (container.textContent?.includes(text)) return;
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      });
+    }
+    expect(container.textContent, `waiting for "${text}"`).toContain(text);
+  }
+
   function clickButton(text: string) {
     const btn = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
     expect(btn, `button "${text}"`).toBeTruthy();
@@ -272,6 +284,43 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("All agents");
     expect(container.textContent).not.toContain("Export CSV");
   });
+
+  it("surfaces the retry UI when the access-downgrade recovery refetch fails", async () => {
+    // The downgrade recovery refetch can itself fail. React Query keeps the
+    // cached mixed-tier pages on failure, so without a guard the feed sits on
+    // "Refreshing audit access…" forever with no way out.
+    let downgraded = false;
+    let calls = 0;
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
+      calls += 1;
+      if (filters.cursor === "cursor-2") {
+        downgraded = true;
+        return Promise.resolve({
+          items: [record({ id: "evt-2", agentId: null, runId: null, responsibleUserId: null, details: null })],
+          nextCursor: null,
+          accessTier: "basic",
+        });
+      }
+      if (downgraded) return Promise.reject(new Error("Network down"));
+      return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
+    });
+    await render();
+    await clickButton("Load more");
+    // The feed retries twice with backoff (~3s) before the query settles as
+    // errored, and it stays "fetching" throughout — so wait for the settled
+    // state rather than a fixed number of microtask flushes. The explicit test
+    // timeout below keeps that wait inside the budget on slower CI runners.
+    await waitForText("Try again", 20_000);
+
+    expect(container.textContent).not.toContain("Refreshing audit access…");
+    expect(container.textContent).toContain("Network down");
+    expect(container.textContent).toContain("Try again");
+
+    // And the recovery must not loop: no further refetches once it has failed.
+    const settledCalls = calls;
+    await flushReact();
+    expect(calls).toBe(settledCalls);
+  }, 30_000);
 
   it("hides the agent filter and pins the query when lockedAgentId is set", async () => {
     await render({ lockedAgentId: "agent-1" });

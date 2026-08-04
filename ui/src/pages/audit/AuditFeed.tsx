@@ -272,6 +272,7 @@ export function AuditFeed({
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
   const [exporting, setExporting] = useState(false);
+  const [downgradeRecoveryAttempted, setDowngradeRecoveryAttempted] = useState(false);
 
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -348,8 +349,16 @@ export function AuditFeed({
   const canUseAdvancedControls = lockedAgentId
     ? true
     : accessTier === "full";
+  // A failed recovery refetch leaves the mixed pages in the cache, so
+  // `hasMixedAccessTiers` stays true forever. Stop calling that "recovering"
+  // once the attempt has settled with an error, or the banner below would hide
+  // the error state and its "Try again" button for good.
+  const downgradeRecoveryFailed = Boolean(
+    hasMixedAccessTiers && downgradeRecoveryAttempted && feed.error && !feed.isFetching,
+  );
   const recoveringFromAccessDowngrade = Boolean(
     !lockedAgentId
+      && !downgradeRecoveryFailed
       && ((permissionDenied && hasActiveFilters) || hasMixedAccessTiers),
   );
   // A reader without `audit:view_agent_actions` can still land on the
@@ -380,10 +389,20 @@ export function AuditFeed({
       setDateFrom("");
       setDateTo("");
     }
-    if (hasMixedAccessTiers) {
-      void feed.refetch();
+  }, [accessTier, hasMixedAccessTiers, lockedAgentId, recoveringFromAccessDowngrade]);
+
+  // Recover from a mid-pagination downgrade with exactly one refetch. `feed`
+  // gets a new identity on every render, so an unguarded refetch here re-fires
+  // on each render and hammers the endpoint while the tiers stay mixed.
+  useEffect(() => {
+    if (!hasMixedAccessTiers) {
+      if (downgradeRecoveryAttempted) setDowngradeRecoveryAttempted(false);
+      return;
     }
-  }, [accessTier, feed, hasMixedAccessTiers, lockedAgentId, recoveringFromAccessDowngrade]);
+    if (downgradeRecoveryAttempted) return;
+    setDowngradeRecoveryAttempted(true);
+    void feed.refetch();
+  }, [downgradeRecoveryAttempted, feed, hasMixedAccessTiers]);
 
   const clearFilters = () => {
     setAgent(ALL);

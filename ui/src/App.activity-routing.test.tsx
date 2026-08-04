@@ -75,11 +75,25 @@ const PAP_COMPANY = {
   issuePrefix: "PAP",
   status: "active",
 };
+const ACME_COMPANY = {
+  id: "company-2",
+  name: "Acme",
+  issuePrefix: "ACME",
+  status: "active",
+};
+
+// Mutable so a test can put the *selected* company out of step with the company
+// in the URL — that mismatch is what catches a redirect that re-resolves the
+// company from context instead of keeping the one the deep link named.
+let companyState = {
+  companies: [PAP_COMPANY] as Array<typeof PAP_COMPANY>,
+  selected: PAP_COMPANY as typeof PAP_COMPANY | null,
+};
 vi.mock("./context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [PAP_COMPANY],
-    selectedCompanyId: PAP_COMPANY.id,
-    selectedCompany: PAP_COMPANY,
+    companies: companyState.companies,
+    selectedCompanyId: companyState.selected?.id ?? null,
+    selectedCompany: companyState.selected,
     loading: false,
   }),
   CompanyProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
@@ -111,6 +125,7 @@ describe("App Activity routing (PAP-16302)", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    companyState = { companies: [PAP_COMPANY], selected: PAP_COMPANY };
   });
 
   afterEach(() => {
@@ -129,6 +144,21 @@ describe("App Activity routing (PAP-16302)", () => {
   it("redirects /:company/audit to Activity with the agent-actions mode preset", async () => {
     const root = renderAppAt(container, "/PAP/audit");
     await waitForRoute(container, "ACTIVITY_PAGE@/PAP/activity?mode=agents");
+    flushSync(() => root.unmount());
+  });
+
+  it("keeps the company from the URL when /:company/audit is not the selected company", async () => {
+    // A shared /ACME/audit link opened by someone whose selected company is PAP
+    // must still show ACME's activity. The redirect target is written absolute
+    // (`/activity?mode=agents`) and relies on `@/lib/router`'s prefix-aware
+    // <Navigate>, which resolves the company from the route param ahead of the
+    // selected company. Importing <Navigate> from `react-router-dom` instead —
+    // the import most files use — would send this deep link to the *viewer's*
+    // company, so pin the behaviour here.
+    companyState = { companies: [PAP_COMPANY, ACME_COMPANY], selected: PAP_COMPANY };
+    const root = renderAppAt(container, "/ACME/audit");
+    await waitForRoute(container, "ACTIVITY_PAGE@/ACME/activity?mode=agents");
+    expect(container.textContent).not.toContain("ACTIVITY_PAGE@/PAP/activity");
     flushSync(() => root.unmount());
   });
 
