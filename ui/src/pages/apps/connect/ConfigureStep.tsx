@@ -315,8 +315,8 @@ export function ConfigureStep({
         <div className="space-y-2">
           <p className="text-sm font-medium text-foreground">API keys</p>
           {apiKeys.map((row, i) => (
-            <div key={i} className="grid items-end gap-2 sm:grid-cols-[1fr_140px_160px_auto]">
-              <div className="space-y-1">
+            <div key={i} className="grid items-end gap-2 sm:grid-cols-12">
+              <div className="space-y-1 sm:col-span-5">
                 {i === 0 && <span className="text-xs text-muted-foreground">Key</span>}
                 <Input
                   type="password"
@@ -328,7 +328,7 @@ export function ConfigureStep({
                   }
                 />
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1 sm:col-span-3">
                 {i === 0 && <span className="text-xs text-muted-foreground">Scope (optional)</span>}
                 <Input
                   value={row.scope}
@@ -338,7 +338,7 @@ export function ConfigureStep({
                   }
                 />
               </div>
-              <div className="space-y-1">
+              <div className="space-y-1 sm:col-span-3">
                 {i === 0 && <span className="text-xs text-muted-foreground">Expires (optional)</span>}
                 <Input
                   type="date"
@@ -352,6 +352,7 @@ export function ConfigureStep({
                 type="button"
                 variant="ghost"
                 size="icon"
+                className="sm:col-span-1"
                 disabled={apiKeys.length === 1}
                 onClick={() => setApiKeys((prev) => prev.filter((_, j) => j !== i))}
               >
