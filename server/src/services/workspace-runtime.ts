@@ -3239,6 +3239,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   cleanupCommand?: string | null;
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
+  assertSafeToRemove?: (() => Promise<void>) | null;
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -3324,6 +3325,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
         try {
+          await input.assertSafeToRemove?.();
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
             args: ["worktree", "remove", "--force", workspacePath],
@@ -3378,6 +3380,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     if (containsProjectWorkspace) {
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
+      await input.assertSafeToRemove?.();
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
       if (input.recorder) {
         await input.recorder.recordOperation({

@@ -70,6 +70,7 @@ export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
 export type ExecutionWorkspaceServiceOptions = {
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
+  beforeTerminalWorkspaceCleanup?: (workspace: ExecutionWorkspaceRow) => Promise<void>;
 };
 
 function parseGitHubRepository(repoUrl: string | null) {
@@ -1187,7 +1188,34 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       sourceIssueTerminal,
       subtreeTerminal,
       workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
+      workspaceHeadSha,
     };
+  }
+
+  async function assertTerminalCleanupGitStateUnchanged(
+    workspace: ExecutionWorkspaceRow,
+    expectedHeadSha: string | null,
+  ) {
+    if (workspace.providerType !== "git_worktree") return;
+    const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
+    if (!workspacePath || !expectedHeadSha) {
+      throw new Error("Refusing terminal workspace cleanup because the expected git HEAD is unknown");
+    }
+
+    const [current, currentHeadSha, currentBranchName] = await Promise.all([
+      inspectGitCloseReadiness(toExecutionWorkspace(workspace)),
+      readGitStdout(["rev-parse", "HEAD"], workspacePath).catch(() => null),
+      readGitStdout(["symbolic-ref", "--quiet", "--short", "HEAD"], workspacePath).catch(() => null),
+    ]);
+    if (
+      !current.git?.repoRoot
+      || current.git.hasDirtyTrackedFiles
+      || current.git.hasUntrackedFiles
+      || currentHeadSha !== expectedHeadSha
+      || (workspace.branchName && currentBranchName !== workspace.branchName)
+    ) {
+      throw new Error("Refusing terminal workspace cleanup because the git worktree changed after delivery was verified");
+    }
   }
 
   async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
@@ -1228,7 +1256,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return active.length > 0;
   }
 
-  async function cleanupTerminalWorkspace(workspace: ExecutionWorkspaceRow) {
+  async function cleanupTerminalWorkspace(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
     const [{ cleanupExecutionWorkspaceArtifacts, stopRuntimeServicesForExecutionWorkspace }, { workspaceOperationService }] = await Promise.all([
       import("./workspace-runtime.js"),
       import("./workspace-operations.js"),
@@ -1275,6 +1303,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         companyId: workspace.companyId,
         executionWorkspaceId: workspace.id,
       }),
+      assertSafeToRemove: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
     });
     const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
     if (!cleanup.cleaned || cleanup.warnings.length > 0) {
@@ -2098,7 +2127,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
 
         try {
-          const cleanup = await cleanupTerminalWorkspace(archived);
+          await opts.beforeTerminalWorkspaceCleanup?.(archived);
+          const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha);
           if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;
         } catch (error) {

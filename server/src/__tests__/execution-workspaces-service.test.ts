@@ -591,6 +591,29 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace?.status).toBe("active");
   });
 
+  it("refuses cleanup when the worktree changes after delivery assessment", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const racingService = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (_companyId, reference) =>
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      beforeTerminalWorkspaceCleanup: async () => {
+        await fs.writeFile(path.join(seeded.worktreePath, "late-work.txt"), "not delivered\n", "utf8");
+      },
+    });
+
+    const sweep = await racingService.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 0, cleanupFailed: 1 });
+    expect(workspace?.status).toBe("cleanup_failed");
+    expect(workspace?.cleanupReason).toContain("git worktree changed after delivery was verified");
+    await expect(fs.readFile(path.join(seeded.worktreePath, "late-work.txt"), "utf8"))
+      .resolves.toBe("not delivered\n");
+  });
+
   it("does not treat a descendant PR on the shared workspace as parent delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
     const descendantIssueId = randomUUID();
