@@ -303,6 +303,7 @@ export const toolsApi = {
       .then((res) => ({ apps: normalizeGalleryApps(res) })),
   connectApp: (companyId: string, input: {
     galleryKey?: string;
+    methodKey?: string;
     link?: string;
     name?: string;
     credentialValues?: Record<string, string>;

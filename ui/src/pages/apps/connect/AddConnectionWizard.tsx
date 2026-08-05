@@ -68,12 +68,8 @@ function buildConnectValues(
 ): { credentialValues?: Record<string, string>; configValues: Record<string, unknown> } {
   const credentialValues: Record<string, string> = {};
   const configValues: Record<string, unknown> = {
-    // Forward-compatible selection metadata — carried in configValues because the
-    // connect schema does not (yet) model method/ownership; the server ignores
-    // unknown keys. Wave-1 apps are single-method so this is inert for them today.
     connectionUid: submit.uidSuffix || undefined,
     ownership: submit.ownership,
-    methodKey: method.key,
     variantKey: submit.variantKey ?? undefined,
     ...(submit.discoveryServerUrl ? { discoveryServerUrl: submit.discoveryServerUrl } : {}),
   };
@@ -173,6 +169,7 @@ export function AddConnectionWizard() {
       const values = buildConnectValues(method, submit);
       return toolsApi.connectApp(selectedCompanyId!, {
         galleryKey: chosen.slug,
+        methodKey: method.key,
         name: submit.name || undefined,
         credentialValues: values.credentialValues,
         configValues: values.configValues,
@@ -333,7 +330,6 @@ export function AddConnectionWizard() {
             <AuthorizeStep
               appName={chosen?.name ?? "the provider"}
               startUrl={connectResult?.auth?.startUrl ?? null}
-              onContinue={() => setPhase("actions")}
             />
           </WizardStep>
         )}
@@ -516,18 +512,16 @@ function AppRow({ app, onSelect }: { app: AppDefinition; onSelect: (app: AppDefi
 function AuthorizeStep({
   appName,
   startUrl,
-  onContinue,
 }: {
   appName: string;
   startUrl: string | null;
-  onContinue: () => void;
 }) {
   return (
     <div className="space-y-4">
       <InlineBanner tone="info" title={`Sign in to ${appName}`}>
         You’ll be redirected to {appName} to authorize access, then returned here to finish setup.
       </InlineBanner>
-      <div className="flex items-center gap-3">
+      <div>
         <Button
           type="button"
           disabled={!startUrl}
@@ -537,9 +531,6 @@ function AuthorizeStep({
         >
           <ShieldCheck className="mr-1.5 h-4 w-4" /> Sign in to {appName}
           <ExternalLink className="ml-1.5 h-3.5 w-3.5" />
-        </Button>
-        <Button type="button" variant="ghost" onClick={onContinue}>
-          I’ve authorized — continue
         </Button>
       </div>
     </div>

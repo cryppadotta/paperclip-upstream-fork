@@ -107,7 +107,7 @@ import type {
   UpdateToolProfileWithEntries,
   UnbindToolProfileBinding,
 } from "@paperclipai/shared";
-import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
+import { CLASS3_STATIC_LEASE_ALLOWLIST, credentialConfigPath, DEFAULT_OWNERSHIP_AVAILABILITY, getAvailableConnectionMethod, getConnectableAppDefinition, isToolConnectionAttentionHealth, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { mcpHttpRequestHeaders, parseMcpHttpResponseBody } from "./mcp-http.js";
@@ -426,14 +426,19 @@ export function googleSheetsRobotEmailFromEnv(
   return { available: false, reason: "Google Sheets is not available on this instance yet." };
 }
 
-function connectionMethodFor(app: AppDefinition) {
-  const method = getAvailableConnectionMethod(app);
+function connectionMethodFor(app: AppDefinition, methodKey?: string) {
+  const method = methodKey
+    ? app.methods.find((candidate) => candidate.key === methodKey) ?? null
+    : getAvailableConnectionMethod(app);
   if (!method) throw unprocessable("This app does not have an available connection method");
+  const availability = app.ownershipAvailability ?? DEFAULT_OWNERSHIP_AVAILABILITY;
+  if (!method.ownershipModes.some((ownership) => availability[ownership] !== false)) {
+    throw unprocessable("The selected connection method is not available on this instance");
+  }
   return method;
 }
 
-function credentialFieldsFor(app: AppDefinition) {
-  const method = connectionMethodFor(app);
+function credentialFieldsFor(app: AppDefinition, method = connectionMethodFor(app)) {
   return (method.credentialFields ?? []).map((field) => ({
     label: field.label,
     configPath: credentialConfigPath(field),
@@ -4157,14 +4162,30 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const name = input.name ?? existingApplication?.name ?? galleryEntry?.name ?? defaultLinkName(input.link ?? "");
-    const method = galleryEntry ? connectionMethodFor(galleryEntry) : null;
+    const method = galleryEntry ? connectionMethodFor(galleryEntry, input.methodKey) : null;
     const transport = method?.transport ?? "mcp_remote";
     const baseConfig = transport === "mcp_remote"
       ? { url: method?.defaults?.serverUrl ?? input.link ?? "" }
-      : { templateId: method?.defaults?.templateKey };
+      : transport === "local_stdio"
+        ? { templateId: method?.defaults?.templateKey }
+        : { serviceHost: method?.defaults?.serviceHost ?? "" };
     let config: Record<string, unknown> = galleryEntry
-      ? { ...baseConfig, sourceTemplateKey: galleryEntry.slug, quarantineNewEntries: true }
+      ? {
+          ...baseConfig,
+          sourceTemplateKey: galleryEntry.slug,
+          sourceMethodKey: method?.key,
+          quarantineNewEntries: true,
+        }
       : { ...baseConfig, quarantineNewEntries: true };
+    const suggestedDefaults = method
+      ? {
+          access: "all_agents",
+          askFirstRiskLevels: method.riskTier === "S1" ? [] : ["write", "destructive"],
+        }
+      : {
+          access: "all_agents",
+          askFirstRiskLevels: ["write", "destructive"],
+        };
     if (galleryEntry?.slug === GOOGLE_SHEETS_GALLERY_KEY) {
       const availability = googleSheetsRobotEmailFromEnv();
       if (!availability.available) {
@@ -4195,7 +4216,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let revivedConnectionPrevious: typeof toolConnections.$inferSelect | null = null;
 
     try {
-      const credentialFields = galleryEntry ? credentialFieldsFor(galleryEntry) : linkCredentialFields(credentialValues);
+      const credentialFields = galleryEntry && method
+        ? credentialFieldsFor(galleryEntry, method)
+        : linkCredentialFields(credentialValues);
       for (const field of credentialFields) {
         const value = credentialValues[field.configPath];
         if (!value && field.required !== false) {
@@ -4271,6 +4294,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         [connectionRow] = await db.update(toolConnections).set({
           name,
           transport,
+          authKind: method?.auth ?? "none",
           status: "draft",
           enabled: false,
           config,
@@ -4288,7 +4312,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           name,
           uid: connectionUid(applicationRow.applicationKey ?? applicationRow.name, name, connectionId),
           connectionKind: "managed",
-          authKind: galleryEntry ? connectionMethodFor(galleryEntry).auth : "none",
+          authKind: method?.auth ?? "none",
           transport,
           status: "draft",
           enabled: false,
@@ -4303,15 +4327,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       await syncCredentialBindings(connectionRow);
       await ensureRuntimeSlot(connectionRow);
 
-      if (galleryEntry && connectionMethodFor(galleryEntry).auth === "oauth") {
+      if (galleryEntry && method?.auth === "oauth") {
         return {
           connectionId: connectionRow.id,
           application: toApplication(applicationRow),
           connection: toConnection(connectionRow),
           catalog: [],
           actions: { readOnly: [], canMakeChanges: [] },
-          suggestedDefaults: recommendedDefaultsForApp(galleryEntry),
+          suggestedDefaults,
           auth: { kind: "oauth", startUrl: null },
+        };
+      }
+
+      if (galleryEntry && method?.transport === "rest_api") {
+        return {
+          connectionId: connectionRow.id,
+          application: toApplication(applicationRow),
+          connection: toConnection(connectionRow),
+          catalog: [],
+          actions: { readOnly: [], canMakeChanges: [] },
+          suggestedDefaults,
+          auth: null,
         };
       }
 
@@ -4345,10 +4381,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         connection: refresh.connection,
         catalog: refresh.catalog,
         actions: groupedActions(refresh.catalog),
-        suggestedDefaults: galleryEntry ? recommendedDefaultsForApp(galleryEntry) : {
-          access: "all_agents",
-          askFirstRiskLevels: ["write", "destructive"],
-        },
+        suggestedDefaults,
       };
     } catch (error) {
       if (connectionRow && revivedConnectionPrevious) {
@@ -4494,6 +4527,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   ): Promise<FinishToolAppResult> {
     const connection = await getConnectionRow(connectionId, companyId);
     if (connection.status === "archived") throw conflict("Archived app connections cannot be finished");
+    if (
+      connection.authKind === "oauth" &&
+      !connection.credentialSecretRefs.some((ref) => ref.configPath === "oauth.access_token")
+    ) {
+      throw conflict("Complete OAuth authorization before finishing this app connection");
+    }
     const enabledIds = [...new Set([...input.enabledCatalogEntryIds, ...input.askFirstCatalogEntryIds])];
     const enabledRows = await assertCatalogEntriesForConnection(companyId, connection.id, enabledIds);
     const askFirstRows = await assertCatalogEntriesForConnection(companyId, connection.id, input.askFirstCatalogEntryIds);

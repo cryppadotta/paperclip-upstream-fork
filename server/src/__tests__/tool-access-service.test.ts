@@ -4726,6 +4726,69 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("honors the selected gallery method and stores its credentials", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+
+    const connected = await service.connectGalleryApp(
+      company.id,
+      {
+        galleryKey: "notion",
+        methodKey: "api-key",
+        name: "Notion REST",
+        credentialValues: { "credentials.apiKey": "secret_notion" },
+      },
+      { actorType: "user", actorId: "board" },
+    );
+
+    expect(connected.auth).toBeNull();
+    expect(connected.connection).toMatchObject({
+      transport: "rest_api",
+      authKind: "api_key",
+      status: "draft",
+      enabled: false,
+      config: expect.objectContaining({
+        serviceHost: "api.notion.com",
+        sourceTemplateKey: "notion",
+        sourceMethodKey: "api-key",
+      }),
+      credentialSecretRefs: [
+        expect.objectContaining({
+          configPath: "credentials.apiKey",
+          label: "Integration token",
+        }),
+      ],
+    });
+
+    await expect(
+      service.connectGalleryApp(company.id, {
+        galleryKey: "notion",
+        methodKey: "missing-method",
+        name: "Invalid Notion",
+      }),
+    ).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("refuses to finish an OAuth app before callback credentials exist", async () => {
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      name: "Unfinished Slack",
+    });
+
+    await expect(
+      service.finishGalleryAppConnection(company.id, connected.connectionId, {
+        enabledCatalogEntryIds: [],
+        askFirstCatalogEntryIds: [],
+        access: "all_agents",
+      }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Complete OAuth authorization before finishing this app connection",
+    });
+  });
+
   it("rolls back gallery app finish when a later write fails after clearing profile state", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);

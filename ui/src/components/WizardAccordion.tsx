@@ -57,7 +57,7 @@ export function WizardStep({ index, title, state, summary, onReopen, children }:
         <span
           className={cn(
             "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
-            isComplete && "bg-emerald-600 text-white",
+            isComplete && "bg-(--status-task-done) text-primary-foreground",
             isActive && "bg-primary text-primary-foreground",
             isUpcoming && "border border-border text-muted-foreground",
           )}
