@@ -15,7 +15,9 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
+  issueReferenceMentions,
   issueRecoveryActions,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
@@ -27,15 +29,28 @@ import {
 } from "./helpers/embedded-postgres.js";
 import {
   executionWorkspaceService,
+  deriveExecutionWorkspaceDeliveryState,
   mergeExecutionWorkspaceConfig,
   readExecutionWorkspaceConfig,
 } from "../services/execution-workspaces.ts";
+import { issueService } from "../services/issues.ts";
 import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
 
 const execFileAsync = promisify(execFile);
+
+describe("execution workspace delivery state", () => {
+  it.each([
+    [{ sourceIssueTerminal: true, mergedPullRequest: true, pullRequestStateUnknown: false, isMergedIntoBase: false }, "merged_via_pr"],
+    [{ sourceIssueTerminal: false, mergedPullRequest: false, pullRequestStateUnknown: false, isMergedIntoBase: true }, "merged_by_ancestry"],
+    [{ sourceIssueTerminal: true, mergedPullRequest: false, pullRequestStateUnknown: false, isMergedIntoBase: false }, "unmerged"],
+    [{ sourceIssueTerminal: true, mergedPullRequest: false, pullRequestStateUnknown: true, isMergedIntoBase: false }, "unknown"],
+  ] as const)("derives %s as %s", (input, expected) => {
+    expect(deriveExecutionWorkspaceDeliveryState(input)).toBe(expected);
+  });
+});
 
 describe("execution workspace config helpers", () => {
   it("reads typed config from persisted metadata", () => {
@@ -235,6 +250,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await db.delete(workspaceRuntimeServices);
     await db.delete(activityLog);
     await db.delete(issueRecoveryActions);
+    await db.delete(issueWorkProducts);
+    await db.delete(issueReferenceMentions);
     await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -253,6 +270,219 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   afterAll(async () => {
     await tempDb?.cleanup();
   });
+
+  async function seedTerminalWorkspace(options: {
+    mergedPr?: boolean;
+    activeRun?: boolean;
+    childStatus?: "done" | "todo";
+  } = {}) {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const issuePrefix = `P${companyId.slice(0, 8).toUpperCase()}`;
+    const identifier = `${issuePrefix}-1`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Terminal workspaces",
+      status: "in_progress",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: identifier,
+      status: "active",
+      providerType: "local_fs",
+      branchName: identifier,
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      projectId,
+      identifier,
+      title: "Delivered source issue",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId })
+      .where(eq(executionWorkspaces.id, executionWorkspaceId));
+    if (options.childStatus) {
+      await db.insert(issues).values({
+        id: randomUUID(),
+        companyId,
+        projectId,
+        parentId: sourceIssueId,
+        title: "Descendant",
+        status: options.childStatus,
+        priority: "medium",
+      });
+    }
+    if (options.mergedPr) {
+      await db.insert(issueWorkProducts).values({
+        companyId,
+        issueId: sourceIssueId,
+        executionWorkspaceId,
+        type: "pull_request",
+        provider: "github",
+        title: "Delivered PR",
+        url: "https://github.com/paperclipai/paperclip/pull/10623",
+        status: "merged",
+      });
+    }
+    if (options.activeRun) {
+      const agentId = randomUUID();
+      const runId = randomUUID();
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        status: "running",
+      });
+      await db.update(issues).set({ checkoutRunId: runId }).where(eq(issues.id, sourceIssueId));
+    }
+    return { companyId, projectId, executionWorkspaceId, sourceIssueId, identifier };
+  }
+
+  it("reports a cross-issue squash delivery as merged_via_pr and suppresses the ancestry warning", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-delivery-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+    await runGit(repoRoot, ["branch", "PAP-16015-delivery"]);
+    await runGit(repoRoot, ["worktree", "add", worktreePath, "PAP-16015-delivery"]);
+    await fs.writeFile(path.join(worktreePath, "delivered.txt"), "delivered\n", "utf8");
+    await runGit(worktreePath, ["add", "delivered.txt"]);
+    await runGit(worktreePath, ["commit", "-m", "Delivered change"]);
+
+    const seeded = await seedTerminalWorkspace();
+    await db.update(executionWorkspaces).set({
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      providerType: "git_worktree",
+      baseRef: "main",
+      branchName: "PAP-16015-delivery",
+    }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+    const prIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: prIssueId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      title: `Create PR for ${seeded.identifier}`,
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(issueReferenceMentions).values({
+      companyId: seeded.companyId,
+      sourceIssueId: prIssueId,
+      targetIssueId: seeded.sourceIssueId,
+      sourceKind: "title",
+      sourceRecordId: null,
+      documentKey: null,
+      matchedText: seeded.identifier,
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId: seeded.companyId,
+      issueId: prIssueId,
+      type: "pull_request",
+      provider: "github",
+      title: "Cross-branch delivery",
+      url: "https://github.com/paperclipai/paperclip/pull/10623",
+      status: "merged",
+    });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+
+    expect(readiness?.deliveryState).toBe("merged_via_pr");
+    expect(readiness?.git?.isMergedIntoBase).toBe(false);
+    expect(readiness?.warnings).not.toContain(
+      "This workspace is 1 commit ahead of main and is not merged.",
+    );
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const archived = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId))
+      .then((rows) => rows[0]);
+
+    expect(sweep.archived).toBe(1);
+    expect(archived).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
+  }, 20_000);
+
+  it("reaps only fully-terminal delivered workspaces without active checkout runs", async () => {
+    const eligible = await seedTerminalWorkspace({ mergedPr: true, childStatus: "done" });
+    const activeRun = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
+    const openDescendant = await seedTerminalWorkspace({ mergedPr: true, childStatus: "todo" });
+    const undelivered = await seedTerminalWorkspace();
+
+    const result = await svc.sweepTerminalWorkspaces();
+    const rows = await db
+      .select({ id: executionWorkspaces.id, status: executionWorkspaces.status, cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt, cleanupReason: executionWorkspaces.cleanupReason })
+      .from(executionWorkspaces)
+      .where(inArray(executionWorkspaces.id, [
+        eligible.executionWorkspaceId,
+        activeRun.executionWorkspaceId,
+        openDescendant.executionWorkspaceId,
+        undelivered.executionWorkspaceId,
+      ]));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+
+    expect(result).toMatchObject({ archived: 1, skippedActiveRun: 1, skippedNonTerminalTree: 1, skippedUndelivered: 1 });
+    expect(byId.get(eligible.executionWorkspaceId)).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+    expect(byId.get(eligible.executionWorkspaceId)?.cleanupEligibleAt).toBeInstanceOf(Date);
+    expect(byId.get(activeRun.executionWorkspaceId)?.status).toBe("active");
+    expect(byId.get(openDescendant.executionWorkspaceId)?.status).toBe("active");
+    expect(byId.get(undelivered.executionWorkspaceId)?.status).toBe("active");
+
+    const second = await svc.sweepTerminalWorkspaces();
+    expect(second.archived).toBe(0);
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, eligible.executionWorkspaceId)))[0]?.status).toBe("archived");
+
+    await issueService(db).update(eligible.sourceIssueId, {
+      status: "todo",
+      actorUserId: "local-board",
+    });
+    const reopenedWorkspace = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, eligible.executionWorkspaceId))
+      .then((rows) => rows[0]);
+    const reopenActivities = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, eligible.executionWorkspaceId));
+    expect(reopenedWorkspace?.status).toBe("archived");
+    expect(reopenActivities).toContainEqual({ action: "execution_workspace.source_issue_reopened" });
+  }, 20_000);
 
   it("allows archiving shared workspace sessions with warnings even when issues are still open", async () => {
     const companyId = randomUUID();
@@ -315,6 +545,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(readiness).toMatchObject({
       workspaceId: executionWorkspaceId,
+      deliveryState: "unknown",
       state: "ready_with_warnings",
       isSharedWorkspace: true,
       isProjectPrimaryWorkspace: true,
@@ -2882,6 +3113,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(readiness).toMatchObject({
       workspaceId: executionWorkspaceId,
+      deliveryState: "unmerged",
       state: "ready_with_warnings",
       isSharedWorkspace: false,
       isProjectPrimaryWorkspace: false,

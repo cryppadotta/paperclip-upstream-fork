@@ -50,6 +50,7 @@ import {
   decisionService,
   decisionRetentionService,
   externalObjectService,
+  executionWorkspaceService,
   heartbeatService,
   issueThreadInteractionService,
   issueService,
@@ -972,6 +973,7 @@ export async function startServer(): Promise<StartedServer> {
     const mergedPullRequestConfirmations = issueThreadInteractionService(db as any, {
       wakeup: heartbeat.wakeup,
     });
+    const terminalWorkspaces = executionWorkspaceService(db as any);
     const scheduleMergedPullRequestConfirmationSweep = () => {
       if (heartbeatSchedulerStopped) return;
       trackHeartbeatSchedulerWork(mergedPullRequestConfirmations
@@ -983,6 +985,19 @@ export async function startServer(): Promise<StartedServer> {
         })
         .catch((err) => {
           logger.error({ err }, "merged pull-request confirmation sweep failed");
+        }));
+    };
+    const scheduleTerminalWorkspaceSweep = () => {
+      if (heartbeatSchedulerStopped) return;
+      trackHeartbeatSchedulerWork(terminalWorkspaces
+        .sweepTerminalWorkspaces()
+        .then((result) => {
+          if (result.archived > 0 || result.cleanupFailed > 0) {
+            logger.info(result, "terminal issue workspace reaper changed workspace state");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "terminal issue workspace reaper failed");
         }));
     };
     const tools = toolAccessService(db as any, {
@@ -1172,6 +1187,7 @@ export async function startServer(): Promise<StartedServer> {
 
         if (heartbeatSchedulerStopped) return;
         scheduleMergedPullRequestConfirmationSweep();
+        scheduleTerminalWorkspaceSweep();
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines

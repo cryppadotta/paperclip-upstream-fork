@@ -5028,6 +5028,7 @@ export function issueRoutes(
       strategyType: workspace.strategyType,
       name: workspace.name,
       status: workspace.status,
+      deliveryState: workspace.deliveryState,
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
       baseRef: workspace.baseRef,
