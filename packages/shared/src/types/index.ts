@@ -1,3 +1,4 @@
+export { decisionEffectTargetIssueIds } from "./decision.js";
 export type {
   Company,
   InteractionResolverGovernance,
@@ -127,6 +128,8 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AssignmentAuthorizationPolicy,
+  type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 export type {

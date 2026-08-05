@@ -20,6 +20,8 @@ export {
   type DecisionSpecInput,
 } from "./validators/decision.js";
 
+export { decisionEffectTargetIssueIds } from "./types/decision.js";
+
 export type {
   DecisionEffectStaleness,
   DecisionOptionStyle,
@@ -221,6 +223,8 @@ export {
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AssignmentAuthorizationPolicy,
+  type ProtectedAgentAuthorizationPolicy,
   type TrustAuthorizationPolicy,
   type SourceTrustArtifactKind,
   type SourceTrustDisposition,
@@ -1529,6 +1533,8 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  assignmentAuthorizationPolicySchema,
+  protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
   type PatchInstanceExperimentalSettings,
   type PatchInstanceSettings,

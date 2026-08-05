@@ -646,6 +646,15 @@ The approved term set is:
 
 When multiple constraint families are present, assignment must satisfy all of them. Denials return `403` with a generic scope explanation and do not disclose details about hidden or unrelated resources.
 
+A protected-agent hard block is represented canonically as
+`authorizationPolicy.protectedAgent.blockAssignment: true`. It denies assignment
+even when the caller has a broad or scoped assignment grant. A company
+administrator must remove the block before assignment can be retried; no pending
+approval is created. The legacy fields `protectedAgent.requiresApproval` and
+`assignmentPolicy.protectedAgentRequiresApproval` remain fail-closed compatibility
+aliases for the same hard block, but API denial copy must describe the block and
+administrator remediation rather than promising a nonexistent approval step.
+
 ## 9.9 Task Watchdog Authority Contract
 
 A task watchdog is a scoped execution capacity for a configured watchdog agent on one watched issue subtree. It is not a separate principal, does not inherit board auth, and does not expand the selected agent's company boundary. The server must enforce the watchdog contract from persisted watchdog configuration and run context; custom instructions and prompt text can narrow the mandate but cannot expand it.

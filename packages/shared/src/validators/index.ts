@@ -313,6 +313,8 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  assignmentAuthorizationPolicySchema,
+  protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
   sourceTrustArtifactKindSchema,
   sourceTrustMetadataSchema,
