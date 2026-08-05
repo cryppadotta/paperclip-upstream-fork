@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "../PropertiesPanel";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { issueStatusText } from "@/lib/status-colors";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { Link } from "@/lib/router";
 import { deriveOriginatingActor, type Issue, type IssueLabel } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -98,7 +99,7 @@ function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: Compone
   useEffect(() => () => clearTimeout(timerRef.current), []);
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setCopied(true);
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), 1500);

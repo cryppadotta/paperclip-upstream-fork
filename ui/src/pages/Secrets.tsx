@@ -3886,7 +3886,7 @@ function AwsProviderVaultDiscoveryError({
   const detailsText = JSON.stringify(safeDetails, null, 2);
 
   const copyDetails = () => {
-    void navigator.clipboard?.writeText(detailsText);
+    void copyTextToClipboard(detailsText).catch(() => {});
   };
 
   return (
@@ -4035,7 +4035,7 @@ function SecretCreateError({
                 type="button"
                 variant="ghost"
                 size="sm"
-                onClick={() => void navigator.clipboard?.writeText(detailsText)}
+                onClick={() => void copyTextToClipboard(detailsText).catch(() => {})}
               >
                 Copy
               </Button>

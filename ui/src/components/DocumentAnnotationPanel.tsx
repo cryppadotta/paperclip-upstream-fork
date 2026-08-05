@@ -26,6 +26,7 @@ import { cn, relativeTime } from "@/lib/utils";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
@@ -780,11 +781,11 @@ function truncate(value: string, limit: number) {
 }
 
 async function copyAnnotationLink(documentKey: string, threadId: string) {
-  if (typeof window === "undefined" || !navigator.clipboard) return;
+  if (typeof window === "undefined") return;
   const { pathname } = window.location;
   const hash = `#document-${encodeURIComponent(documentKey)}&thread=${encodeURIComponent(threadId)}`;
   try {
-    await navigator.clipboard.writeText(`${window.location.origin}${pathname}${hash}`);
+    await copyTextToClipboard(`${window.location.origin}${pathname}${hash}`);
   } catch {
     /* swallow */
   }
