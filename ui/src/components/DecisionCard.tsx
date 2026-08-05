@@ -312,6 +312,7 @@ export function DecisionCard({
   };
 
   const dimmed = decision.status === "expired" || decision.status === "cancelled";
+  const expiredReason = (decision.metadata as { expiredReason?: string } | null)?.expiredReason;
 
   // The issues this decision acts on. The origin issue is only where the agent
   // was running when it proposed the decision — the queue links there, but the
@@ -320,7 +321,9 @@ export function DecisionCard({
   const targetRefs = useMemo(() => {
     const ids = new Set<string>();
     for (const option of decision.options) {
-      for (const effect of option.effects) ids.add(effect.targetIssueId);
+      for (const effect of option.effects) {
+        for (const id of referencedTargetIds(effect)) ids.add(id);
+      }
     }
     if (originIssue?.id) ids.delete(originIssue.id);
     return [...ids].map((id) => ({ id, ref: resolveIssue(id) }));
@@ -357,7 +360,7 @@ export function DecisionCard({
         {originIssue && (
           <>
             {" "}while running{" "}
-            <a href={originIssue.href} className="font-medium text-sky-700 hover:underline dark:text-sky-300">
+            <a href={originIssue.href} className="font-medium text-primary underline-offset-2 hover:underline">
               {issueLabel(originIssue, originIssue.id)}
             </a>
           </>
@@ -369,7 +372,7 @@ export function DecisionCard({
               <span key={id}>
                 {index > 0 && ", "}
                 {ref ? (
-                  <a href={ref.href} className="font-medium text-sky-700 hover:underline dark:text-sky-300">
+                  <a href={ref.href} className="font-medium text-primary underline-offset-2 hover:underline">
                     {issueLabel(ref, id)}
                   </a>
                 ) : (
@@ -589,9 +592,11 @@ export function DecisionCard({
                 <Clock className="h-4 w-4" aria-hidden /> The decision window closed
               </div>
               <p className="mt-1">
-                {((decision.metadata as { expiredReason?: string } | null)?.expiredReason === "target_gone")
+                {expiredReason === "target_gone"
                   ? "A target issue was cancelled before this was decided."
-                  : "No response before the expiry deadline."}
+                  : expiredReason === "target_completed"
+                    ? "All target issues were completed before this was decided."
+                    : "No response before the expiry deadline."}
                 {decision.continuationPolicy === "wake_origin_agent" && " The proposer was re-woken."}
               </p>
             </div>
