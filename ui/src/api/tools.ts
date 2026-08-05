@@ -311,6 +311,10 @@ export const toolsApi = {
     applicationId?: string;
   }) =>
     api.post<ConnectToolAppResult>(`/companies/${companyId}/tools/apps/connect`, input),
+  getAppSetup: (companyId: string, connectionId: string) =>
+    api.get<ConnectToolAppResult>(
+      `/companies/${companyId}/tools/apps/${connectionId}/setup`,
+    ),
   startOAuth: (connectionId: string) =>
     api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, {}),
   finishApp: (companyId: string, connectionId: string, input: {

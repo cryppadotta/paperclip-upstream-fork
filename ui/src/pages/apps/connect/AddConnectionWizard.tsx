@@ -124,6 +124,9 @@ function CatalogConnectionWizard() {
   const { pushToast } = useToast();
 
   const preselectedKey = routeParams.appKey ?? searchParams.get("appKey") ?? undefined;
+  const resumedConnectionId = searchParams.get("oauth") === "connected"
+    ? searchParams.get("connectionId")
+    : null;
 
   useEffect(() => {
     setBreadcrumbs([
@@ -152,13 +155,53 @@ function CatalogConnectionWizard() {
   const [agentIds, setAgentIds] = useState<Set<string>>(new Set());
   const [installAll, setInstallAll] = useState(false);
 
+  const resumeQuery = useQuery({
+    queryKey: ["tools", "app-setup", selectedCompanyId, resumedConnectionId],
+    queryFn: () => toolsApi.getAppSetup(selectedCompanyId!, resumedConnectionId!),
+    enabled: Boolean(selectedCompanyId && resumedConnectionId),
+  });
+
+  useEffect(() => {
+    const result = resumeQuery.data;
+    if (!result || apps.length === 0) return;
+    const sourceTemplateKey = typeof result.connection.config?.sourceTemplateKey === "string"
+      ? result.connection.config.sourceTemplateKey
+      : preselectedKey;
+    const app = apps.find((candidate) => candidate.slug === sourceTemplateKey);
+    if (!app) return;
+    const sourceMethodKey = typeof result.connection.config?.sourceMethodKey === "string"
+      ? result.connection.config.sourceMethodKey
+      : null;
+    const resumedMethod = app.methods.find((candidate) => candidate.key === sourceMethodKey)
+      ?? (app.methods.length === 1 ? app.methods[0] : null);
+    if (!resumedMethod) return;
+
+    setChosen(app);
+    setMethod(resumedMethod);
+    setConnectResult(result);
+    const defaults: Record<string, boolean> = {};
+    for (const action of result.actions.readOnly) defaults[action.catalogEntryId] = true;
+    for (const action of result.actions.canMakeChanges) defaults[action.catalogEntryId] = false;
+    setEnabled(defaults);
+    setPhase("actions");
+  }, [apps, preselectedKey, resumeQuery.data]);
+
+  useEffect(() => {
+    if (!resumeQuery.error) return;
+    pushToast({
+      title: "Couldn’t resume setup",
+      body: resumeQuery.error instanceof Error ? resumeQuery.error.message : "Open the connection and try again.",
+      tone: "error",
+    });
+  }, [pushToast, resumeQuery.error]);
+
   // Preselect an app from the route/query (Browse tile → wizard).
   useEffect(() => {
-    if (!preselectedKey || chosen || apps.length === 0) return;
+    if (resumedConnectionId || !preselectedKey || chosen || apps.length === 0) return;
     const match = apps.find((a) => a.slug === preselectedKey);
     if (match) selectApp(match);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preselectedKey, apps.length]);
+  }, [preselectedKey, resumedConnectionId, apps.length]);
 
   function selectApp(app: AppDefinition) {
     setChosen(app);

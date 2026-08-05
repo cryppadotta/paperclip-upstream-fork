@@ -3146,8 +3146,19 @@ describeEmbeddedPostgres("tool access service", () => {
 
     expect(redirectCallbackRes.status).toBe(303);
     expect(redirectCallbackRes.headers.location).toBe(
-      `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/setup?oauth=connected`,
+      `/${company.issuePrefix}/apps/connect/slack?oauth=connected&connectionId=${redirectConnectRes.body.connectionId}`,
     );
+    const resumedSetupRes = await request(app)
+      .get(`/api/companies/${company.id}/tools/apps/${redirectConnectRes.body.connectionId}/setup`)
+      .expect(200);
+    expect(resumedSetupRes.body).toMatchObject({
+      connectionId: redirectConnectRes.body.connectionId,
+      auth: null,
+      actions: {
+        readOnly: [expect.objectContaining({ toolName: "search_messages" })],
+        canMakeChanges: [expect.objectContaining({ toolName: "send_message" })],
+      },
+    });
     expect(fetchMock).toHaveBeenCalledTimes(6);
     await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
     await expect(db.select().from(companySecretBindings)).resolves.toHaveLength(6);

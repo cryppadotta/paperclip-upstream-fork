@@ -10,6 +10,7 @@ import { AddConnectionWizard } from "./AddConnectionWizard";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
+const getAppSetupMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
@@ -26,6 +27,8 @@ vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
+    getAppSetup: (companyId: string, connectionId: string) =>
+      getAppSetupMock(companyId, connectionId),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
@@ -218,6 +221,37 @@ describe("AddConnectionWizard — grammar orchestrator", () => {
 
     await act(async () => click(signIn));
     expect(assignMock).toHaveBeenCalledWith("https://slack.com/oauth/authorize?x=1");
+  });
+
+  it("resumes the OAuth wizard at Actions after the provider callback", async () => {
+    mockParams.appKey = "slack";
+    mockSearch.value = "oauth=connected&connectionId=conn-2";
+    getAppSetupMock.mockResolvedValue({
+      connectionId: "conn-2",
+      application: { id: "app-2", name: SLACK.name },
+      connection: {
+        config: {
+          sourceTemplateKey: "slack",
+          sourceMethodKey: SLACK.methods[0]?.key,
+        },
+      },
+      catalog: [],
+      actions: {
+        readOnly: [
+          { catalogEntryId: "a1", toolName: "search_messages", title: "Search messages", description: "", riskLevel: "read" },
+        ],
+        canMakeChanges: [],
+      },
+      suggestedDefaults: {},
+      auth: null,
+    });
+
+    await render();
+
+    expect(getAppSetupMock).toHaveBeenCalledWith("company-1", "conn-2");
+    expect(container.textContent).toContain("Choose actions");
+    expect(container.textContent).toContain("Search messages");
+    expect(container.textContent).not.toContain(`Authorize ${SLACK.name}`);
   });
 
   it("finishes: enables an action, keeps default all-agents access, and calls finishApp", async () => {

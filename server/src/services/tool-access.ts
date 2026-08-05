@@ -4402,6 +4402,47 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
   }
 
+  async function getGalleryAppSetup(
+    companyId: string,
+    connectionId: string,
+  ): Promise<ConnectToolAppResult> {
+    const connection = await getConnectionRow(connectionId, companyId);
+    const [application] = await db
+      .select()
+      .from(toolApplications)
+      .where(and(
+        eq(toolApplications.id, connection.applicationId),
+        eq(toolApplications.companyId, companyId),
+      ))
+      .limit(1);
+    if (!application) throw notFound("App not found");
+
+    const catalog = (await db
+      .select()
+      .from(toolCatalogEntries)
+      .where(and(
+        eq(toolCatalogEntries.companyId, companyId),
+        eq(toolCatalogEntries.connectionId, connection.id),
+      )))
+      .map(toCatalogEntry);
+    const sourceTemplateKey = typeof connection.config.sourceTemplateKey === "string"
+      ? connection.config.sourceTemplateKey
+      : null;
+    const galleryEntry = sourceTemplateKey ? getConnectableAppDefinition(sourceTemplateKey) : null;
+
+    return {
+      connectionId: connection.id,
+      application: toApplication(application),
+      connection: toConnection(connection),
+      catalog,
+      actions: groupedActions(catalog),
+      suggestedDefaults: galleryEntry
+        ? recommendedDefaultsForApp(galleryEntry)
+        : { access: "all_agents", askFirstRiskLevels: ["write", "destructive"] },
+      auth: null,
+    };
+  }
+
   async function assertCatalogEntriesForConnection(
     companyId: string,
     connectionId: string,
@@ -4888,7 +4929,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
 
   async function peekOAuthState(state: string) {
     const [row] = await db
-      .select({ companyId: toolOauthStates.companyId })
+      .select({
+        companyId: toolOauthStates.companyId,
+        returnTo: toolOauthStates.returnTo,
+      })
       .from(toolOauthStates)
       .where(eq(toolOauthStates.state, state))
       .limit(1);
@@ -5286,6 +5330,8 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     },
 
     connectGalleryApp,
+
+    getGalleryAppSetup,
 
     finishGalleryAppConnection,
 
