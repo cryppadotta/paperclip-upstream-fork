@@ -334,14 +334,19 @@ export function AuditFeed({
     retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
   });
 
-  const items = useMemo(
-    () => feed.data?.pages.flatMap((page) => page.items) ?? [],
-    [feed.data],
-  );
-
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
   const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
   const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
+
+  // Once the server answers at the basic tier the caller has lost the permission
+  // that produced the privileged attribution on the pages already in the cache.
+  // Drop those pages rather than rendering revoked "on behalf of" attribution
+  // next to stripped rows — the recovery refetch below may never clear them.
+  const items = useMemo(() => {
+    const pages = feed.data?.pages ?? [];
+    const visible = hasBasicPage ? pages.filter((page) => page.accessTier !== "full") : pages;
+    return visible.flatMap((page) => page.items);
+  }, [feed.data, hasBasicPage]);
   // Access may be revoked between cursor requests. Treat the least-privileged
   // page as authoritative until every cached page has been fetched again.
   const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
@@ -354,7 +359,9 @@ export function AuditFeed({
   // them, so `hasMixedAccessTiers` would stay true forever. Only call the feed
   // "recovering" while that attempt is outstanding; once it has settled, fall
   // through to normal rendering. Otherwise the banner permanently hides the
-  // error state and its "Try again" button, with no way off the page.
+  // error state and its "Try again" button, with no way off the page. Falling
+  // through is safe because `items` already excludes the privileged pages, so
+  // an unrecovered cache renders as a plain basic-tier feed.
   const downgradeRecoveryExhausted = Boolean(
     hasMixedAccessTiers && downgradeRecoveryAttempted && !feed.isFetching,
   );

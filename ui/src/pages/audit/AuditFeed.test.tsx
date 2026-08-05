@@ -344,6 +344,10 @@ describe("AuditFeed", () => {
     expect(container.textContent).toContain("commented on");
     // Least-privileged page wins, so the privileged chrome stays hidden.
     expect(container.textContent).not.toContain("Export CSV");
+    // And the cached full-tier page must not render revoked attribution beside
+    // the stripped rows just because the recovery has run out of attempts.
+    expect(container.textContent).not.toContain("on behalf of Dotta");
+    expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).toBeFalsy();
 
     const settledCalls = listAgentActionsMock.mock.calls.length;
     await flushReact();
