@@ -4784,6 +4784,18 @@ export function issueRoutes(
       });
       return "handled";
     }
+    // Keep the watchdog grant self-contained: callers must not be able to
+    // bypass explicit restore intent if this helper is reused or reordered.
+    if (req.body.resume !== true) {
+      res.status(409).json({
+        error: "Cancelled issues require explicit resume intent before task-watchdog restoration",
+        details: {
+          issueId: issue.id,
+          securityPrinciples: ["Least Privilege", "Secure Defaults", "Complete Mediation"],
+        },
+      });
+      return "handled";
+    }
 
     const scopeResult = await taskWatchdogScopeAllowsIssueMutation(db, scope, issue, { allowWatchdogIssue: false });
     if (scopeResult.kind === "invalid") {

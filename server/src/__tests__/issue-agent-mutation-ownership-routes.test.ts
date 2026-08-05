@@ -1978,6 +1978,23 @@ describe("agent issue mutation checkout ownership", () => {
       );
     });
 
+    it("requires explicit resume intent before a watchdog can restore a cancelled watched issue", async () => {
+      denyBaseBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status: "cancelled", assigneeAgentId: ownerAgentId }));
+
+      const app = await createApp(watchdogActor(), createWatchdogDb());
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({
+          status: "in_review",
+          comment: "Attempting to restore the cancelled watched leaf without explicit intent.",
+        });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error).toContain("dedicated restore flow");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
     it("rejects stale watchdog source mutations when revalidation finds a live path", async () => {
       denyBaseBoundary();
       mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }));
