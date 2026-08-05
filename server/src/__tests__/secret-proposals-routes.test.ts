@@ -20,6 +20,7 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
+import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
@@ -418,10 +419,17 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     await db.update(companySecretProposals).set({ expiresAt: new Date(Date.now() - 1_000) });
 
     const proposals = createSecretProposalsService(db);
-    await expect(proposals.sweepExpired(new Date(), 2)).resolves.toBe(2);
+    let injectedCollision = false;
+    await expect(proposals.sweepExpired(new Date(), 2, async (companyId, proposalId) => {
+      if (!injectedCollision) {
+        injectedCollision = true;
+        throw conflict("Proposal is no longer pending");
+      }
+      return proposals.transition(companyId, proposalId, "expired", { reason: "Pending proposal expired" });
+    })).resolves.toBe(1);
     expect((await db.select().from(companySecretProposals)).filter((proposal) => proposal.status === "pending"))
-      .toHaveLength(1);
-    await expect(proposals.sweepExpired(new Date(), 2)).resolves.toBe(1);
+      .toHaveLength(2);
+    await expect(proposals.sweepExpired(new Date(), 2)).resolves.toBe(2);
   });
 
   it("denies direct and cascade approval after a proposal expires", async () => {

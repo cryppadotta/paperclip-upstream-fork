@@ -1,7 +1,7 @@
 import { and, count, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companySecretProposals, companySecrets, heartbeatRuns, issues } from "@paperclipai/db";
-import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
@@ -590,16 +590,28 @@ export function createSecretProposalsService(db: Db) {
     });
   }
 
-  async function sweepExpired(now = new Date(), limit = DEFAULT_EXPIRY_SWEEP_LIMIT) {
+  async function sweepExpired(
+    now = new Date(),
+    limit = DEFAULT_EXPIRY_SWEEP_LIMIT,
+    expireProposal: (companyId: string, proposalId: string) => Promise<unknown> =
+      (companyId, proposalId) => transition(companyId, proposalId, "expired", { reason: "Pending proposal expired" }),
+  ) {
     const expired = await db.select({ id: companySecretProposals.id, companyId: companySecretProposals.companyId })
       .from(companySecretProposals)
       .where(and(eq(companySecretProposals.status, "pending"), lte(companySecretProposals.expiresAt, now)))
       .orderBy(companySecretProposals.expiresAt)
       .limit(limit);
+    let expiredCount = 0;
     for (const proposal of expired) {
-      await transition(proposal.companyId, proposal.id, "expired", { reason: "Pending proposal expired" });
+      try {
+        await expireProposal(proposal.companyId, proposal.id);
+        expiredCount += 1;
+      } catch (error) {
+        if (error instanceof HttpError && error.status === 409) continue;
+        throw error;
+      }
     }
-    return expired.length;
+    return expiredCount;
   }
 
   return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired };
