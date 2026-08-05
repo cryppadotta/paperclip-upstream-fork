@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -3220,43 +3221,102 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
 
 export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
   const branchRef = await runGit(["symbolic-ref", "--quiet", "HEAD"], worktreePath).catch(() => null);
-  const rawLockPaths = await Promise.all([
-    runGit(["rev-parse", "--git-path", "index.lock"], worktreePath),
-    runGit(["rev-parse", "--git-path", "HEAD.lock"], worktreePath),
+  const rawLocks = await Promise.all([
+    runGit(["rev-parse", "--git-path", "index.lock"], worktreePath)
+      .then((lockPath) => ({ kind: "index" as const, lockPath })),
+    runGit(["rev-parse", "--git-path", "HEAD.lock"], worktreePath)
+      .then((lockPath) => ({ kind: "head" as const, lockPath })),
     ...(branchRef
-      ? [runGit(["rev-parse", "--git-path", `${branchRef}.lock`], worktreePath)]
+      ? [runGit(["rev-parse", "--git-path", `${branchRef}.lock`], worktreePath)
+          .then((lockPath) => ({ kind: "branch" as const, lockPath }))]
       : []),
   ]);
-  const lockPaths = [...new Set(rawLockPaths.map((rawLockPath) =>
-    path.isAbsolute(rawLockPath)
-      ? rawLockPath
-      : path.resolve(worktreePath, rawLockPath)
-  ))];
-  const lockHandles: Array<{ handle: fs.FileHandle; lockPath: string }> = [];
+  const locks = [...new Map(rawLocks.map(({ kind, lockPath }) => {
+    const resolvedLockPath = path.isAbsolute(lockPath)
+      ? lockPath
+      : path.resolve(worktreePath, lockPath);
+    return [resolvedLockPath, { kind, lockPath: resolvedLockPath }];
+  })).values()];
+  const lockHandles: Array<{
+    handle: fs.FileHandle;
+    kind: "index" | "head" | "branch";
+    lockPath: string;
+  }> = [];
+
+  async function releaseLocks(kind?: "branch") {
+    for (let index = lockHandles.length - 1; index >= 0; index -= 1) {
+      const lock = lockHandles[index];
+      if (!lock || (kind && lock.kind !== kind)) continue;
+      lockHandles.splice(index, 1);
+      await lock.handle.close().catch(() => {});
+      await fs.rm(lock.lockPath, { force: true }).catch(() => {});
+    }
+  }
+
   try {
-    for (const lockPath of lockPaths) {
-      lockHandles.push({ handle: await fs.open(lockPath, "wx", 0o600), lockPath });
+    for (const lock of locks) {
+      lockHandles.push({
+        ...lock,
+        handle: await fs.open(lock.lockPath, "wx", 0o600),
+      });
     }
   } catch (error) {
-    for (const { handle, lockPath } of lockHandles.reverse()) {
-      await handle.close().catch(() => {});
-      await fs.rm(lockPath, { force: true }).catch(() => {});
-    }
+    await releaseLocks();
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error("git worktree cleanup lock is already held");
     }
     throw error;
   }
 
-  let released = false;
-  return async () => {
-    if (released) return;
-    released = true;
-    for (const { handle, lockPath } of lockHandles.reverse()) {
-      await handle.close().catch(() => {});
-      await fs.rm(lockPath, { force: true }).catch(() => {});
-    }
+  return {
+    // Branch deletion must acquire this native ref lock itself. Callers release
+    // only that lock after the guarded worktree removal, while retaining the
+    // index and HEAD locks until the whole cleanup transaction finishes.
+    releaseBranchRefLock: () => releaseLocks("branch"),
+    release: () => releaseLocks(),
   };
+}
+
+async function deleteGitBranchAtVerifiedTip(input: {
+  repoRoot: string;
+  branchName: string;
+  expectedHeadSha: string;
+  recorder?: WorkspaceOperationRecorder | null;
+  metadata: Record<string, unknown>;
+}) {
+  const commonDirRaw = await runGit(["rev-parse", "--git-common-dir"], input.repoRoot);
+  const commonDir = path.isAbsolute(commonDirRaw)
+    ? commonDirRaw
+    : path.resolve(input.repoRoot, commonDirRaw);
+  const detachedGitDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-branch-delete-"));
+  const detachedWorktree = `${detachedGitDir}-worktree`;
+
+  try {
+    // `git branch -d` refuses branches checked out by another worktree and its
+    // ref transaction fails if the tip changes concurrently. A detached HEAD
+    // at the delivered SHA additionally lets squash/cross-branch deliveries
+    // delete only the exact branch history that was verified before cleanup.
+    await Promise.all([
+      fs.writeFile(path.join(detachedGitDir, "HEAD"), `${input.expectedHeadSha}\n`, "utf8"),
+      fs.writeFile(path.join(detachedGitDir, "commondir"), `${commonDir}\n`, "utf8"),
+    ]);
+    await recordGitOperation(input.recorder, {
+      phase: "worktree_cleanup",
+      args: [
+        `--git-dir=${detachedGitDir}`,
+        `--work-tree=${detachedWorktree}`,
+        "branch",
+        "-d",
+        input.branchName,
+      ],
+      cwd: input.repoRoot,
+      metadata: input.metadata,
+      successMessage: `Deleted branch ${input.branchName}\n`,
+      failureLabel: `git branch -d ${input.branchName}`,
+    });
+  } finally {
+    await fs.rm(detachedGitDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 export async function cleanupExecutionWorkspaceArtifacts(input: {
@@ -3281,6 +3341,8 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
   assertSafeToCleanup?: (() => Promise<void>) | null;
+  beforeBranchDelete?: (() => Promise<void>) | null;
+  expectedBranchHeadSha?: string | null;
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
 }) {
@@ -3402,19 +3464,31 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root to delete branch "${input.workspace.branchName}".`);
       } else {
         try {
-          await recordGitOperation(input.recorder, {
-            phase: "worktree_cleanup",
-            args: ["branch", "-d", input.workspace.branchName],
-            cwd: repoRoot,
-            metadata: {
-              workspaceId: input.workspace.id,
-              workspacePath,
+          await input.beforeBranchDelete?.();
+          const metadata = {
+            workspaceId: input.workspace.id,
+            workspacePath,
+            branchName: input.workspace.branchName,
+            cleanupAction: "branch_delete",
+          };
+          if (input.expectedBranchHeadSha) {
+            await deleteGitBranchAtVerifiedTip({
+              repoRoot,
               branchName: input.workspace.branchName,
-              cleanupAction: "branch_delete",
-            },
-            successMessage: `Deleted branch ${input.workspace.branchName}\n`,
-            failureLabel: `git branch -d ${input.workspace.branchName}`,
-          });
+              expectedHeadSha: input.expectedBranchHeadSha,
+              recorder: input.recorder,
+              metadata,
+            });
+          } else {
+            await recordGitOperation(input.recorder, {
+              phase: "worktree_cleanup",
+              args: ["branch", "-d", input.workspace.branchName],
+              cwd: repoRoot,
+              metadata,
+              successMessage: `Deleted branch ${input.workspace.branchName}\n`,
+              failureLabel: `git branch -d ${input.workspace.branchName}`,
+            });
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           warnings.push(`Skipped deleting branch "${input.workspace.branchName}": ${message}`);

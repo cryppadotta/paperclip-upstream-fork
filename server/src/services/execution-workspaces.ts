@@ -1287,7 +1287,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     ]);
     const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
 
-    const releaseCleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
+    const cleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
       ? await acquireGitWorktreeCleanupLock(workspace.providerRef ?? workspace.cwd!)
       : null;
     try {
@@ -1309,9 +1309,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           executionWorkspaceId: workspace.id,
         }),
         assertSafeToCleanup: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
+        beforeBranchDelete: () => cleanupLock?.releaseBranchRefLock() ?? Promise.resolve(),
+        expectedBranchHeadSha: expectedHeadSha,
         // Git index, HEAD, and branch-ref locks prevent a clean HEAD change
-        // from crossing final validation, while non-forced removal rejects
-        // late dirty writes.
+        // from crossing final validation. The branch lock is released only
+        // after non-forced worktree removal, then deletion is anchored to the
+        // verified HEAD so a raced ref update fails closed.
         runCleanupCommands: false,
         forceWorktreeRemoval: false,
       });
@@ -1337,7 +1340,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
       return cleanup;
     } finally {
-      await releaseCleanupLock?.();
+      await cleanupLock?.release();
     }
   }
 
