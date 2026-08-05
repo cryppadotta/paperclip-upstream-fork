@@ -100,15 +100,16 @@ AutoGen GraphFlow
 agent verification loops
 
 Sources and Further Readings
-The Anatomy of an Agent Harness - Learn how agent harnesses transform AI models into autonomous work engines. Explore core components: filesystems, sandboxes, and memory
-Agents SDK | OpenAI API - Learn how the OpenAI Agents SDK fits together and which docs to read next
-LangChain and LangGraph Agent Frameworks Reach v1.0 Milestones - LangChain 1.0 and LangGraph 1.0 are here. Build production-ready AI agents faster with standardized tools, middleware customization, and durable state
-GraphFlow (Workflows) - AutoGen - In this section you'll learn how to create an multi-agent workflow using , or simply "flow" for short. It uses structured execution and precisely controls how agents interact to accomplish a task. We'll first show you how to create and run a flow
-The Art of Loop Engineering - Agents automate real-world work, but reliable performance requires more than a good model, it requires a carefully designed harness built for specific tasks. This post explores the core agent loop, how stacking and extending loops builds more effective agents, and how to instrument each level with LangChain primitives
-Introducing AutoGen Studio from Microsoft Research - AutoGen Studio, built on Microsoft's flexible open-source AutoGen framework for orchestrating AI agents, provides a user-friendly interface that enables developers to rapidly build, test, customize, & share multi-agent AI solutions, with little or no coding
-How to Build a Custom Agent Harness - Effective agents are built with harnesses that are tightly coupled with the task at hand. The easiest way to build a custom harness is with LangChain's create_agent plus middleware. This guide covers the core agent loop and how you can customize it for your agent's use case
-A practical guide to building agents - A comprehensive guide to designing, orchestrating, and deploying AI agents-covering use cases, model selection, tool design, guardrails, and multi-agent patterns
-Building Effective AI Agents - Practical advice and guidance guidance for building production-ready single and multi-agent systems from Anthropic and our customers
+Archive note: the text export omitted link destinations. Stable source URLs were added during archival.
+The Anatomy of an Agent Harness - https://www.langchain.com/blog/the-anatomy-of-an-agent-harness - Learn how agent harnesses transform AI models into autonomous work engines. Explore core components: filesystems, sandboxes, and memory
+Agents SDK | OpenAI API - https://openai.github.io/openai-agents-python/ - Learn how the OpenAI Agents SDK fits together and which docs to read next
+LangChain and LangGraph Agent Frameworks Reach v1.0 Milestones - https://www.langchain.com/blog/langchain-langgraph-1dot0 - LangChain 1.0 and LangGraph 1.0 are here. Build production-ready AI agents faster with standardized tools, middleware customization, and durable state
+GraphFlow (Workflows) - AutoGen - https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/graph-flow.html - In this section you'll learn how to create an multi-agent workflow using , or simply "flow" for short. It uses structured execution and precisely controls how agents interact to accomplish a task. We'll first show you how to create and run a flow
+The Art of Loop Engineering - https://www.langchain.com/blog/the-art-of-loop-engineering - Agents automate real-world work, but reliable performance requires more than a good model, it requires a carefully designed harness built for specific tasks. This post explores the core agent loop, how stacking and extending loops builds more effective agents, and how to instrument each level with LangChain primitives
+Introducing AutoGen Studio from Microsoft Research - https://www.microsoft.com/en-us/research/blog/introducing-autogen-studio-a-low-code-interface-for-building-multi-agent-workflows/ - AutoGen Studio, built on Microsoft's flexible open-source AutoGen framework for orchestrating AI agents, provides a user-friendly interface that enables developers to rapidly build, test, customize, & share multi-agent AI solutions, with little or no coding
+How to Build a Custom Agent Harness - https://www.langchain.com/blog/how-to-build-a-custom-agent-harness - Effective agents are built with harnesses that are tightly coupled with the task at hand. The easiest way to build a custom harness is with LangChain's create_agent plus middleware. This guide covers the core agent loop and how you can customize it for your agent's use case
+A practical guide to building agents - https://openai.com/business/guides-and-resources/a-practical-guide-to-building-ai-agents/ - A comprehensive guide to designing, orchestrating, and deploying AI agents-covering use cases, model selection, tool design, guardrails, and multi-agent patterns
+Building Effective AI Agents - https://www.anthropic.com/engineering/building-effective-agents - Practical advice and guidance guidance for building production-ready single and multi-agent systems from Anthropic and our customers
 
 Save this so you don't lose it
 Follow @beamnxw for more technical posts :)
