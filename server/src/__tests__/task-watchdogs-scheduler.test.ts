@@ -520,6 +520,51 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(escalationComments.some((comment) => comment.body.includes("Attempts: 3/3"))).toBe(true);
   });
 
+  it("claims exhausted restoration escalation once across concurrent reconciliation", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-RESTORE-ATOMIC",
+      status: "done",
+      responsibleUserId: "board-user",
+    });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const attempts = [1, 2, 3].map((attempt) => ({
+      attempt,
+      fingerprint: watchdog!.lastObservedFingerprint!,
+      runId: randomUUID(),
+      mutations: [{ type: "add_comment", issueId: sourceId }],
+      completedAt: new Date(Date.now() + attempt).toISOString(),
+    }));
+    await db.update(issueWatchdogs).set({
+      restorationFingerprint: watchdog!.lastObservedFingerprint,
+      restorationVerificationPending: true,
+      restorationAttemptCount: 3,
+      restorationAttempts: attempts,
+    }).where(eq(issueWatchdogs.id, watchdog!.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, watchdog!.watchdogIssueId!));
+
+    await Promise.all([
+      service.reconcileTaskWatchdogs({ companyId }),
+      service.reconcileTaskWatchdogs({ companyId }),
+    ]);
+
+    const escalationComments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, watchdog!.watchdogIssueId!));
+    expect(escalationComments.filter((comment) => comment.body.includes("Attempts: 3/3"))).toHaveLength(1);
+    const escalationActivity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.task_watchdog_restoration_escalated"));
+    expect(escalationActivity).toHaveLength(1);
+  });
+
   it("re-fires and escalates failed restoration on an intermediate node with unchanged leaves", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, {

@@ -1492,31 +1492,77 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       if (watchdog.restorationEscalatedAt) {
         return { state: "restoration_escalated" as const, classification, watchdogIssueId: watchdog.watchdogIssueId };
       }
-      if (watchdog.watchdogIssueId) {
-        const attemptHistory = watchdog.restorationAttempts
-          .map((attempt) => `- Attempt ${attempt.attempt}: run \`${attempt.runId ?? "unknown"}\` at ${attempt.completedAt}`)
-          .join("\n");
-        await db.update(issues).set({ status: "in_review", assigneeAgentId: null, assigneeUserId: sourceIssue.responsibleUserId ?? sourceIssue.createdByUserId ?? watchdog.createdByUserId, updatedAt: new Date() }).where(eq(issues.id, watchdog.watchdogIssueId));
-        await issuesSvc.addComment(watchdog.watchdogIssueId, `Task watchdog restoration attempts exhausted; human review is required.\n\nStopped fingerprint: \`${classification.stopFingerprint}\`\nAttempts: ${watchdog.restorationAttemptCount}/${TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS}\n\nAttempt history:\n${attemptHistory}`, { runId: opts.runId ?? null }, { authorType: "system" });
-      }
-      const escalatedAt = new Date();
-      await db.update(issueWatchdogs).set({ restorationEscalatedAt: escalatedAt, updatedAt: escalatedAt }).where(eq(issueWatchdogs.id, watchdog.id));
-      await logActivity(db, {
-        companyId: watchdog.companyId,
-        actorType: "system",
-        actorId: "system",
-        agentId: watchdog.watchdogAgentId,
-        runId: opts.runId ?? null,
-        action: "issue.task_watchdog_restoration_escalated",
-        entityType: "issue",
-        entityId: watchdog.issueId,
-        details: {
-          watchdogId: watchdog.id,
-          watchdogIssueId: watchdog.watchdogIssueId,
-          stopFingerprint: classification.stopFingerprint,
-          attempts: watchdog.restorationAttempts,
-        },
+      const escalation = await db.transaction(async (tx) => {
+        const transactionDb = tx as unknown as Db;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${watchdog.id}, 0))`);
+        await tx.execute(sql`select id from issue_watchdogs where id = ${watchdog.id} for update`);
+        const current = await tx
+          .select()
+          .from(issueWatchdogs)
+          .where(and(
+            eq(issueWatchdogs.id, watchdog.id),
+            eq(issueWatchdogs.status, "active"),
+          ))
+          .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+        if (!current) return "stale" as const;
+        if (current.restorationEscalatedAt) return "already_escalated" as const;
+        if (
+          current.restorationFingerprint !== classification.stopFingerprint ||
+          current.restorationAttemptCount < TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS
+        ) {
+          return "stale" as const;
+        }
+
+        const escalatedAt = new Date();
+        if (current.watchdogIssueId) {
+          const attemptHistory = current.restorationAttempts
+            .map((attempt) => `- Attempt ${attempt.attempt}: run \`${attempt.runId ?? "unknown"}\` at ${attempt.completedAt}`)
+            .join("\n");
+          await tx
+            .update(issues)
+            .set({
+              status: "in_review",
+              assigneeAgentId: null,
+              assigneeUserId: sourceIssue.responsibleUserId ?? sourceIssue.createdByUserId ?? current.createdByUserId,
+              updatedAt: escalatedAt,
+            })
+            .where(and(
+              eq(issues.companyId, current.companyId),
+              eq(issues.id, current.watchdogIssueId),
+            ));
+          await issueService(transactionDb).addComment(
+            current.watchdogIssueId,
+            `Task watchdog restoration attempts exhausted; human review is required.\n\nStopped fingerprint: \`${classification.stopFingerprint}\`\nAttempts: ${current.restorationAttemptCount}/${TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS}\n\nAttempt history:\n${attemptHistory}`,
+            { runId: opts.runId ?? null },
+            { authorType: "system" },
+            tx,
+          );
+        }
+        await tx
+          .update(issueWatchdogs)
+          .set({ restorationEscalatedAt: escalatedAt, updatedAt: escalatedAt })
+          .where(eq(issueWatchdogs.id, current.id));
+        await logActivity(transactionDb, {
+          companyId: current.companyId,
+          actorType: "system",
+          actorId: "system",
+          agentId: current.watchdogAgentId,
+          runId: opts.runId ?? null,
+          action: "issue.task_watchdog_restoration_escalated",
+          entityType: "issue",
+          entityId: current.issueId,
+          details: {
+            watchdogId: current.id,
+            watchdogIssueId: current.watchdogIssueId,
+            stopFingerprint: classification.stopFingerprint,
+            attempts: current.restorationAttempts,
+          },
+        });
+        return "escalated" as const;
       });
+      if (escalation === "stale") {
+        return { state: "skipped" as const, reason: "restoration_state_changed", classification };
+      }
       return { state: "restoration_escalated" as const, classification, watchdogIssueId: watchdog.watchdogIssueId };
     }
 
@@ -1697,7 +1743,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     }
     const stopFingerprint = scope.stopFingerprint;
 
-    return db.transaction(async (tx) => {
+    const batchResult = await db.transaction(async (tx) => {
       const transactionDb = tx as unknown as Db;
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${scope.watchdogId}, 0))`);
       await tx.execute(sql`select id from issue_watchdogs where id = ${scope.watchdogId} for update`);
@@ -1733,13 +1779,25 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       if (!revalidated.allowed) throw conflict(revalidated.reason);
 
       const results: Array<Record<string, unknown>> = [];
+      const resumeTargets: Array<{
+        issueId: string;
+        agentId: string;
+        commentId: string | null;
+        reopenedFrom: string;
+        resumeIntent: boolean;
+      }> = [];
       const txIssues = issueService(transactionDb);
       for (const mutation of input.mutations) {
         const target = await tx
-          .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId })
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            parentId: issues.parentId,
+            status: issues.status,
+          })
           .from(issues)
           .where(and(eq(issues.id, mutation.issueId), eq(issues.companyId, scope.companyId)))
-          .then((rows: Array<{ id: string; companyId: string; parentId: string | null }>) => rows[0] ?? null);
+          .then((rows) => rows[0] ?? null);
         if (!target) throw notFound("Issue not found");
         const allowed = await taskWatchdogScopeAllowsIssueMutation(transactionDb, scope, target, { allowWatchdogIssue: false });
         if (allowed.kind === "invalid") throw conflict(allowed.detail);
@@ -1754,22 +1812,57 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           );
           results.push({ type: mutation.type, issueId: mutation.issueId, commentId: comment.id });
         } else {
-          const { comment, reopen: _reopen, resume: _resume, ...update } = mutation.update;
+          const { comment, reopen, resume, ...requestedUpdate } = mutation.update;
+          const lifecycleIntent = resume === true ? "resume" : reopen === true ? "reopen" : null;
+          if (lifecycleIntent === "resume" && !comment?.trim()) {
+            throw conflict("Task-watchdog resume mutations require an audit comment.");
+          }
+          if (lifecycleIntent === "reopen" && target.status === "cancelled") {
+            throw conflict("Cancelled issues require explicit resume intent, not reopen intent.");
+          }
+          if (lifecycleIntent && requestedUpdate.status !== undefined && requestedUpdate.status !== "todo") {
+            throw conflict("Task-watchdog reopen and resume mutations must move the issue to todo.");
+          }
+          const update = lifecycleIntent
+            ? { ...requestedUpdate, status: "todo" as const }
+            : requestedUpdate;
           const updated = await txIssues.update(mutation.issueId, {
             ...update,
             actorAgentId: actor.agentId,
           }, tx);
           if (!updated) throw notFound("Issue not found");
+          if (lifecycleIntent && target.status === "blocked") {
+            const readiness = await txIssues.getDependencyReadiness(mutation.issueId);
+            if (readiness.unresolvedBlockerCount > 0) {
+              throw conflict("Task-watchdog recovery cannot resume a blocked issue while unresolved blockers remain.");
+            }
+          }
+          let commentId: string | null = null;
           if (comment) {
-            await txIssues.addComment(
+            const addedComment = await txIssues.addComment(
               mutation.issueId,
               comment,
               { agentId: actor.agentId, runId: actor.runId },
               { authorType: "agent" },
               tx,
             );
+            commentId = addedComment.id;
           }
-          results.push({ type: mutation.type, issueId: mutation.issueId, status: updated.status });
+          if (lifecycleIntent && updated.status === "todo" && updated.assigneeAgentId) {
+            resumeTargets.push({
+              issueId: updated.id,
+              agentId: updated.assigneeAgentId,
+              commentId,
+              reopenedFrom: target.status,
+              resumeIntent: lifecycleIntent === "resume",
+            });
+          }
+          results.push({
+            type: mutation.type,
+            issueId: mutation.issueId,
+            status: updated.status,
+            ...(lifecycleIntent ? { lifecycleIntent } : {}),
+          });
         }
 
         await logActivity(transactionDb, {
@@ -1823,8 +1916,39 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         })
         .where(eq(issueWatchdogs.id, scope.watchdogId));
 
-      return { attempt, attemptLimit: TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS, results };
+      return { attempt, attemptLimit: TASK_WATCHDOG_MAX_RESTORATION_ATTEMPTS, results, resumeTargets };
     });
+
+    const { resumeTargets, ...result } = batchResult;
+    for (const target of resumeTargets) {
+      await deps.enqueueWakeup?.(target.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: target.commentId ? "issue_reopened_via_comment" : "issue_status_changed",
+        payload: {
+          issueId: target.issueId,
+          ...(target.commentId ? { commentId: target.commentId } : {}),
+          mutation: target.commentId ? "comment" : "update",
+          reopenedFrom: target.reopenedFrom,
+          ...(target.resumeIntent ? { resumeIntent: true, followUpRequested: true } : {}),
+        },
+        idempotencyKey: `task-watchdog-recovery:${scope.watchdogId}:${actor.runId}:${target.issueId}`,
+        requestedByActorType: "agent",
+        requestedByActorId: actor.agentId,
+        contextSnapshot: {
+          issueId: target.issueId,
+          taskId: target.issueId,
+          ...(target.commentId ? { commentId: target.commentId, wakeCommentId: target.commentId } : {}),
+          source: "task_watchdog.recovery_batch",
+          wakeReason: target.commentId ? "issue_reopened_via_comment" : "issue_status_changed",
+          reopenedFrom: target.reopenedFrom,
+          ...(target.resumeIntent
+            ? { resumeIntent: true, followUpRequested: true, resumeRequiresNormalModel: true }
+            : {}),
+        },
+      });
+    }
+    return result;
   }
 
   async function revalidateMutationScope(scope: {

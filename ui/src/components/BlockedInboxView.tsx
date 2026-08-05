@@ -37,7 +37,7 @@ function EscalationChip({ className }: { className?: string }) {
       variant="outline"
       data-testid="blocked-row-escalation-chip"
       className={cn(
-        "gap-1 border-red-500/50 bg-red-500/10 text-red-700 dark:border-red-500/45 dark:text-red-300",
+        "gap-1 border-destructive/40 bg-destructive/10 text-destructive",
         className,
       )}
     >

@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
  * reads as the place the chain died (P6 surface 1c). Kept as a shared const so the inbox row,
  * the detail breadcrumb, and the sub-tasks row stay in visual lockstep.
  */
-export const DEAD_END_ROW_TINT = "bg-red-500/10 border border-red-500/35";
+export const DEAD_END_ROW_TINT = "border border-destructive/30 bg-destructive/10";
 
 /**
  * The `× dead end` marker (P6 surfaces 1a/1b/1c). A red outline `Badge` naming the leaf where a
@@ -31,7 +31,7 @@ export function DeadEndBadge({
       title={title}
       className={cn(
         "max-w-full min-w-0 justify-start truncate font-medium",
-        "border-red-500/50 bg-red-500/10 text-red-700 dark:border-red-500/45 dark:text-red-300",
+        "border-destructive/40 bg-destructive/10 text-destructive",
         className,
       )}
     >

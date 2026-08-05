@@ -80,7 +80,7 @@ function DismissWithReason({
           variant="ghost"
           disabled={pending}
           data-testid="watchdog-escalation-dismiss-trigger"
-          className="text-red-700 hover:bg-red-500/10 hover:text-red-800 dark:text-red-300 dark:hover:text-red-200"
+          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
         >
           <X className="h-3.5 w-3.5" aria-hidden />
           Dismiss
@@ -95,7 +95,7 @@ function DismissWithReason({
         <div className="space-y-1">
           <div
             id="watchdog-dismiss-title"
-            className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300"
+            className="flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-destructive"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
             Dismiss this escalation
@@ -111,7 +111,7 @@ function DismissWithReason({
             className="text-(length:--text-micro) text-muted-foreground"
           >
             Reason{" "}
-            <span className="text-red-600 dark:text-red-400">(required — recorded in the audit log)</span>
+            <span className="text-destructive">(required — recorded in the audit log)</span>
           </Label>
           <Textarea
             id="watchdog-dismiss-reason"
@@ -145,10 +145,10 @@ function DismissWithReason({
 function MetaRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-(--gtc-10) gap-x-3 gap-y-0 py-1.5 text-xs sm:grid-cols-(--gtc-11)">
-      <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-red-900/70 dark:text-red-200/70">
+      <dt className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
         {label}
       </dt>
-      <dd className="min-w-0 break-words text-red-950 dark:text-red-100">{children}</dd>
+      <dd className="min-w-0 break-words text-foreground">{children}</dd>
     </div>
   );
 }
@@ -186,24 +186,23 @@ export function WatchdogEscalationCard({
       data-escalated="true"
       className={cn(
         "relative w-full overflow-hidden rounded-lg border text-sm shadow-(--shadow-extract-8)",
-        "border-red-300/70 bg-red-50/85 text-red-950",
-        "dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-100",
+        "border-destructive/30 bg-destructive/5 text-foreground",
         className,
       )}
     >
       <header className="flex flex-col gap-3 px-3 py-2.5 sm:flex-row sm:items-start sm:justify-between sm:px-4">
         <div className="flex items-start gap-3">
           <span
-            className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-red-100 text-red-800 dark:bg-red-500/20 dark:text-red-200"
+            className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-destructive/10 text-destructive"
             aria-hidden
           >
-            <OctagonAlert className="h-4 w-4 text-red-700 dark:text-red-300" />
+            <OctagonAlert className="h-4 w-4 text-destructive" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="font-semibold leading-tight text-red-900 dark:text-red-200">
+            <p className="font-semibold leading-tight text-destructive">
               Watchdog escalated to a human — automatic recovery is exhausted
             </p>
-            <p className="mt-1 text-sm leading-6 text-red-950/90 dark:text-red-100/90">
+            <p className="mt-1 text-sm leading-6 text-foreground/90">
               {view.attemptCount} of {view.maxAttempts} restoration attempts failed to move the tree
               forward. The platform has stopped re-firing to avoid a loop and is asking you to decide.
             </p>
@@ -246,8 +245,8 @@ export function WatchdogEscalationCard({
       <dl
         className={cn(
           "divide-y border-t bg-background/40 px-3 py-2 sm:px-4 dark:bg-background/20",
-          "border-red-300/60 dark:border-red-500/30",
-          "[&>*]:border-red-300/40 dark:[&>*]:border-red-500/20",
+          "border-destructive/25",
+          "[&>*]:border-destructive/20",
         )}
       >
         <MetaRow label="Watched task">
@@ -258,7 +257,7 @@ export function WatchdogEscalationCard({
             >
               {watchedLabel}
             </Link>
-            <span className="text-red-900/70 dark:text-red-200/70">— {issue.title}</span>
+            <span className="text-muted-foreground">— {issue.title}</span>
           </span>
         </MetaRow>
         {leaf ? (
@@ -279,11 +278,11 @@ export function WatchdogEscalationCard({
         {view.fingerprintShort ? (
           <MetaRow label="Fingerprint">
             <span className="inline-flex flex-wrap items-baseline gap-1.5">
-              <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-red-900 dark:bg-background/40 dark:text-red-100">
+              <code className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground dark:bg-background/40">
                 {view.fingerprintShort}
               </code>
               {view.fingerprintUnchangedAcrossAttempts ? (
-                <span className="text-(length:--text-micro) text-red-900/70 dark:text-red-200/70">
+                <span className="text-(length:--text-micro) text-muted-foreground">
                   (unchanged across all {view.attemptCount} attempts)
                 </span>
               ) : null}
@@ -293,8 +292,8 @@ export function WatchdogEscalationCard({
       </dl>
 
       {view.attempts.length > 0 ? (
-        <div className="border-t border-red-300/60 px-3 py-3 dark:border-red-500/30 sm:px-4">
-          <div className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-900/70 dark:text-red-200/70">
+        <div className="border-t border-destructive/25 px-3 py-3 sm:px-4">
+          <div className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
             Restoration attempts
           </div>
           <ol className="space-y-3" data-testid="watchdog-escalation-attempts">
@@ -304,7 +303,7 @@ export function WatchdogEscalationCard({
               return (
                 <li key={attempt.attempt} className="flex items-start gap-3">
                   <span
-                    className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-500/15 text-(length:--text-micro) font-semibold text-red-800 dark:bg-red-500/25 dark:text-red-200"
+                    className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-destructive/15 text-(length:--text-micro) font-semibold text-destructive"
                     aria-hidden
                   >
                     {attempt.attempt}
@@ -312,7 +311,7 @@ export function WatchdogEscalationCard({
                   <div className="min-w-0 flex-1 space-y-0.5">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                       {when ? (
-                        <span className="text-(length:--text-micro) text-red-900/70 dark:text-red-200/70">
+                        <span className="text-(length:--text-micro) text-muted-foreground">
                           {when}
                         </span>
                       ) : null}
@@ -323,14 +322,14 @@ export function WatchdogEscalationCard({
                               ? `/agents/${view.watchdogAgentId}/runs/${attempt.runId}`
                               : issueLink(issue)
                           }
-                          className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-red-900 underline-offset-2 hover:underline dark:bg-background/40 dark:text-red-100"
+                          className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground underline-offset-2 hover:underline dark:bg-background/40"
                         >
                           run {run}
                         </Link>
                       ) : null}
                     </div>
                     <p className="text-sm leading-5">{attempt.mutationSummary}</p>
-                    <p className="text-(length:--text-micro) leading-4 text-red-800/80 dark:text-red-300/80">
+                    <p className="text-(length:--text-micro) leading-4 text-destructive/80">
                       →{" "}
                       {attempt.fingerprintUnchanged
                         ? "no leaf changed — the stop fingerprint did not move"
@@ -344,15 +343,15 @@ export function WatchdogEscalationCard({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-red-300/60 px-3 py-2 text-(length:--text-micro) dark:border-red-500/30 sm:px-4">
+      <div className="flex flex-wrap items-center gap-2 border-t border-destructive/25 px-3 py-2 text-(length:--text-micro) sm:px-4">
         <Badge
           variant="outline"
-          className="border-red-500/50 bg-red-500/10 text-red-700 dark:border-red-500/45 dark:text-red-300"
+          className="border-destructive/40 bg-destructive/10 text-destructive"
         >
           <OctagonAlert className="h-3 w-3" aria-hidden />
           Escalated
         </Badge>
-        <span className="text-red-900/70 dark:text-red-200/70">
+        <span className="text-muted-foreground">
           Reopen re-opens the dead-end leaf to todo and wakes its assignee. Reassign routes it to a
           different owner. Dismiss suppresses re-fire on this fingerprint (confirm + reason).
         </span>

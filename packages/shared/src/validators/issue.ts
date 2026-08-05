@@ -699,7 +699,37 @@ export const taskWatchdogRecoveryBatchSchema = z.object({
       body: multilineTextSchema.pipe(z.string().min(1)),
     }).strict(),
   ])).min(1).max(3),
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  value.mutations.forEach((mutation, index) => {
+    if (mutation.type !== "update_issue") return;
+    const { update } = mutation;
+    if (update.reopen === true && update.resume === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mutations", index, "update", "resume"],
+        message: "A recovery mutation cannot request both reopen and resume",
+      });
+    }
+    if (update.resume === true && !update.comment?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mutations", index, "update", "comment"],
+        message: "A recovery resume requires a comment",
+      });
+    }
+    if (
+      (update.reopen === true || update.resume === true) &&
+      update.status !== undefined &&
+      update.status !== "todo"
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mutations", index, "update", "status"],
+        message: "A recovery reopen or resume must move the issue to todo",
+      });
+    }
+  });
+});
 
 export type TaskWatchdogRecoveryBatch = z.infer<typeof taskWatchdogRecoveryBatchSchema>;
 
