@@ -3218,6 +3218,30 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
   };
 }
 
+export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
+  const rawLockPath = await runGit(["rev-parse", "--git-path", "index.lock"], worktreePath);
+  const lockPath = path.isAbsolute(rawLockPath)
+    ? rawLockPath
+    : path.resolve(worktreePath, rawLockPath);
+  let lockHandle: fs.FileHandle;
+  try {
+    lockHandle = await fs.open(lockPath, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`git index lock exists at ${lockPath}`);
+    }
+    throw error;
+  }
+
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    await lockHandle.close().catch(() => {});
+    await fs.rm(lockPath, { force: true }).catch(() => {});
+  };
+}
+
 export async function cleanupExecutionWorkspaceArtifacts(input: {
   workspace: {
     id: string;
@@ -3240,7 +3264,8 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
   assertSafeToCleanup?: (() => Promise<void>) | null;
-  preserveWorkspaceArtifacts?: boolean;
+  runCleanupCommands?: boolean;
+  forceWorktreeRemoval?: boolean;
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -3255,17 +3280,8 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
   // Callers can require the workspace to match an assessed snapshot before
-  // cleanup begins. Preservation returns before any command or artifact
-  // teardown; destructive paths recheck immediately before removal below.
+  // cleanup begins. Destructive paths recheck immediately before removal.
   await input.assertSafeToCleanup?.();
-  if (input.preserveWorkspaceArtifacts) {
-    return {
-      cleanedPath: workspacePath,
-      cleaned: true,
-      artifactsPreserved: Boolean(workspacePath && await directoryExists(workspacePath)),
-      warnings,
-    };
-  }
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -3278,13 +3294,15 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
-  const cleanupCommands = [
-    input.cleanupCommand ?? null,
-    input.projectWorkspace?.cleanupCommand ?? null,
-    input.teardownCommand ?? null,
-  ]
-    .map((value) => asString(value, "").trim())
-    .filter(Boolean);
+  const cleanupCommands = input.runCleanupCommands === false
+    ? []
+    : [
+        input.cleanupCommand ?? null,
+        input.projectWorkspace?.cleanupCommand ?? null,
+        input.teardownCommand ?? null,
+      ]
+        .map((value) => asString(value, "").trim())
+        .filter(Boolean);
 
   for (const command of cleanupCommands) {
     try {
@@ -3341,7 +3359,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           await input.assertSafeToCleanup?.();
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
-            args: ["worktree", "remove", "--force", workspacePath],
+            args: [
+              "worktree",
+              "remove",
+              ...(input.forceWorktreeRemoval === false ? [] : ["--force"]),
+              workspacePath,
+            ],
             cwd: repoRoot,
             metadata: {
               workspaceId: input.workspace.id,
@@ -3421,7 +3444,6 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   return {
     cleanedPath: workspacePath,
     cleaned,
-    artifactsPreserved: false,
     warnings,
   };
 }

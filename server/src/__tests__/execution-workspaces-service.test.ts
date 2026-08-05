@@ -639,8 +639,30 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace?.status).toBe("archived");
-    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    await expect(fs.access(seeded.worktreePath)).rejects.toThrow();
     await expect(fs.access(cleanupMarker)).rejects.toThrow();
+  });
+
+  it("holds the Git index lock across terminal cleanup", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    let commitFailure = "";
+    const lockingService = executionWorkspaceService(db, {
+      resolvePullRequestDetails: async (_companyId, reference) =>
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+      beforeTerminalWorkspaceCleanup: async () => {
+        try {
+          await runGit(seeded.worktreePath, ["commit", "--allow-empty", "-m", "Late commit"]);
+        } catch (error) {
+          commitFailure = error instanceof Error ? error.message : String(error);
+        }
+      },
+    });
+
+    const sweep = await lockingService.sweepTerminalWorkspaces();
+
+    expect(commitFailure).toContain("index.lock");
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+    await expect(fs.access(seeded.worktreePath)).rejects.toThrow();
   });
 
   it("does not treat a descendant PR on the shared workspace as parent delivery evidence", async () => {

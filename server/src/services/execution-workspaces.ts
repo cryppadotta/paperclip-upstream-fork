@@ -1257,7 +1257,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function cleanupTerminalWorkspace(workspace: ExecutionWorkspaceRow, expectedHeadSha: string | null) {
-    const [{ cleanupExecutionWorkspaceArtifacts, stopRuntimeServicesForExecutionWorkspace }, { workspaceOperationService }] = await Promise.all([
+    const [
+      {
+        acquireGitWorktreeCleanupLock,
+        cleanupExecutionWorkspaceArtifacts,
+        stopRuntimeServicesForExecutionWorkspace,
+      },
+      { workspaceOperationService },
+    ] = await Promise.all([
       import("./workspace-runtime.js"),
       import("./workspace-operations.js"),
     ]);
@@ -1280,48 +1287,57 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     ]);
     const config = readExecutionWorkspaceConfig((workspace.metadata as Record<string, unknown> | null) ?? null);
 
-    await stopRuntimeServicesForExecutionWorkspace({
-      db,
-      executionWorkspaceId: workspace.id,
-      workspaceCwd: workspace.cwd,
-    });
-    if (workspace.mode === "shared_workspace") {
-      await db
-        .update(issues)
-        .set({ executionWorkspaceId: null, updatedAt: now() })
-        .where(and(
-          eq(issues.companyId, workspace.companyId),
-          eq(issues.executionWorkspaceId, workspace.id),
-        ));
-    }
-    const cleanup = await cleanupExecutionWorkspaceArtifacts({
-      workspace,
-      projectWorkspace,
-      cleanupCommand: config?.cleanupCommand ?? null,
-      teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
-      recorder: workspaceOperationService(db).createRecorder({
-        companyId: workspace.companyId,
+    const releaseCleanupLock = workspace.providerType === "git_worktree" && (workspace.providerRef ?? workspace.cwd)
+      ? await acquireGitWorktreeCleanupLock(workspace.providerRef ?? workspace.cwd!)
+      : null;
+    try {
+      await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      await opts.beforeTerminalWorkspaceCleanup?.(workspace);
+      await assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha);
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
         executionWorkspaceId: workspace.id,
-      }),
-      assertSafeToCleanup: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
-      // Archival is a lifecycle transition, not permission to destroy a
-      // checkout. Preserve the physical workspace so a late external writer
-      // cannot lose work in the irreducible interval between validation and
-      // filesystem removal. Explicit cleanup remains available separately.
-      preserveWorkspaceArtifacts: true,
-    });
-    const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
-    if (!cleanup.cleaned || cleanup.warnings.length > 0) {
-      await db
-        .update(executionWorkspaces)
-        .set({
-          ...(cleanup.cleaned ? {} : { status: "cleanup_failed" }),
-          cleanupReason,
-          updatedAt: now(),
-        })
-        .where(eq(executionWorkspaces.id, workspace.id));
+        workspaceCwd: workspace.cwd,
+      });
+      const cleanup = await cleanupExecutionWorkspaceArtifacts({
+        workspace,
+        projectWorkspace,
+        cleanupCommand: config?.cleanupCommand ?? null,
+        teardownCommand: config?.teardownCommand ?? projectPolicy?.workspaceStrategy?.teardownCommand ?? null,
+        recorder: workspaceOperationService(db).createRecorder({
+          companyId: workspace.companyId,
+          executionWorkspaceId: workspace.id,
+        }),
+        assertSafeToCleanup: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
+        // The Git index lock above prevents a commit from crossing final
+        // validation, while non-forced removal rejects late dirty writes.
+        runCleanupCommands: false,
+        forceWorktreeRemoval: false,
+      });
+      if (cleanup.cleaned && workspace.mode === "shared_workspace") {
+        await db
+          .update(issues)
+          .set({ executionWorkspaceId: null, updatedAt: now() })
+          .where(and(
+            eq(issues.companyId, workspace.companyId),
+            eq(issues.executionWorkspaceId, workspace.id),
+          ));
+      }
+      const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
+      if (!cleanup.cleaned || cleanup.warnings.length > 0) {
+        await db
+          .update(executionWorkspaces)
+          .set({
+            ...(cleanup.cleaned ? {} : { status: "cleanup_failed" }),
+            cleanupReason,
+            updatedAt: now(),
+          })
+          .where(eq(executionWorkspaces.id, workspace.id));
+      }
+      return cleanup;
+    } finally {
+      await releaseCleanupLock?.();
     }
-    return cleanup;
   }
 
   function buildListConditions(
@@ -2132,7 +2148,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         });
 
         try {
-          await opts.beforeTerminalWorkspaceCleanup?.(archived);
           const cleanup = await cleanupTerminalWorkspace(archived, assessment.workspaceHeadSha);
           if (!cleanup.cleaned) result.cleanupFailed += 1;
           else result.archived += 1;
