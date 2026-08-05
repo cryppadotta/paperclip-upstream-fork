@@ -434,9 +434,6 @@ export function createSecretProposalsService(db: Db) {
   }) {
     const proposal = await requirePending(companyId, proposalId);
     assertNotExpired(proposal);
-    if (proposal.kind === "binding" && proposal.secretProposalId && !input.cascade) {
-      throw conflict(`Binding proposal requires pending secret proposal ${proposal.secretProposalId}; retry with cascade=true`);
-    }
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await assertBindingSnapshotCurrent(proposal, txDb, true);
@@ -458,6 +455,9 @@ export function createSecretProposalsService(db: Db) {
           }
           secretId = dependency.createdSecretId;
         } else {
+          if (!input.cascade) {
+            throw conflict(`Binding proposal requires pending secret proposal ${dependency.id}; retry with cascade=true`);
+          }
           assertNotExpired(dependency);
           const created = await applySecretApproval(txDb, dependency, input);
           await markApproved(txDb, dependency, {

@@ -306,6 +306,54 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     ]);
   });
 
+  it("approves a binding without cascade after its secret proposal was approved separately", async () => {
+    const fixture = await seedRun();
+    const agentApp = createAgentApp(fixture);
+    const boardApp = createBoardApp(fixture);
+    const secretProposal = await request(agentApp)
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/sequential/token",
+        value: "sequential-secret",
+        justification: "Approve this first",
+      });
+    expect(secretProposal.status).toBe(201);
+
+    const bindingProposal = await request(agentApp)
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        secretProposalId: secretProposal.body.id,
+        configPath: "env.SEQUENTIAL_TOKEN",
+        justification: "Bind after separate approval",
+      });
+    expect(bindingProposal.status).toBe(201);
+
+    const approvedSecret = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${secretProposal.body.id}/approve`)
+      .send({});
+    expect(approvedSecret.status).toBe(200);
+    expect(approvedSecret.body).toMatchObject({ status: "approved", createdSecretId: expect.any(String) });
+
+    const approvedBinding = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${bindingProposal.body.id}/approve`)
+      .send({});
+    expect(approvedBinding.status).toBe(200);
+    expect(approvedBinding.body).toMatchObject({
+      status: "approved",
+      appliedBindingConfigPath: "env.SEQUENTIAL_TOKEN",
+    });
+    expect(await db.select().from(companySecrets)).toHaveLength(1);
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({
+        secretId: approvedSecret.body.createdSecretId,
+        targetId: fixture.agentId,
+        configPath: "env.SEQUENTIAL_TOKEN",
+      }),
+    ]);
+  });
+
   it("denies direct and cascade approval after a proposal expires", async () => {
     const fixture = await seedRun();
     const secretProposal = await request(createAgentApp(fixture))
