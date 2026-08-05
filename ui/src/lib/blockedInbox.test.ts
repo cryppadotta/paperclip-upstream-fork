@@ -317,7 +317,7 @@ describe("attention-tier grouping (P6 surface 1a)", () => {
 
   it("resolves the dead-end identifier from the leaf, sample, or blockerAttention", () => {
     const withLeaf = buildBlockedInboxRows([
-      makeIssue({ id: "leaf" }, makeAttention({ leafIssue: { id: "l", identifier: "PAP-99", title: "x", status: "blocked", assigneeAgentId: null, assigneeUserId: null } })),
+      makeIssue({ id: "leaf" }, makeAttention({ leafIssue: { id: "l", identifier: "PAP-99", title: "x", status: "blocked", priority: "high", assigneeAgentId: null, assigneeUserId: null } })),
     ])[0]!;
     expect(blockedRowDeadEndIdentifier(withLeaf)).toBe("PAP-99");
 

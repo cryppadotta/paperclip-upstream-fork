@@ -17,9 +17,26 @@ const leaf = {
   identifier: "PAP-15099",
   title: "SecurityEngineer re-review",
   status: "blocked" as const,
+  priority: "high" as const,
   assigneeAgentId: null,
   assigneeUserId: null,
 };
+
+function blockerAttention(
+  state: NonNullable<Issue["blockerAttention"]>["state"],
+  sampleBlockerIdentifier: string | null = null,
+): NonNullable<Issue["blockerAttention"]> {
+  return {
+    state,
+    reason: state === "needs_attention" ? "attention_required" : null,
+    unresolvedBlockerCount: state === "none" ? 0 : 1,
+    coveredBlockerCount: state === "covered" ? 1 : 0,
+    stalledBlockerCount: state === "stalled" ? 1 : 0,
+    attentionBlockerCount: state === "needs_attention" ? 1 : 0,
+    sampleBlockerIdentifier,
+    sampleStalledBlockerIdentifier: null,
+  };
+}
 
 function baseIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -28,7 +45,7 @@ function baseIssue(overrides: Partial<Issue> = {}): Issue {
     title: "P2: SecurityEngineer review — write-back auth gap",
     status: "blocked",
     ancestors: [{ id: "issue-15023", identifier: "PAP-15023", title: "Status-cards plan" }],
-    blockerAttention: { state: "needs_attention", sampleBlockerIdentifier: "PAP-15099" },
+    blockerAttention: blockerAttention("needs_attention", "PAP-15099"),
     blockedInboxAttention: {
       kind: "blocked",
       state: "needs_attention",
@@ -178,7 +195,7 @@ const blockedInboxIssues: Issue[] = [
     id: "issue-15145",
     identifier: "PAP-15145",
     title: "OIDC re-review — awaiting approval",
-    blockerAttention: { state: "covered", sampleBlockerIdentifier: null },
+    blockerAttention: blockerAttention("covered"),
     blockedInboxAttention: {
       kind: "blocked",
       state: "awaiting_decision",
@@ -200,7 +217,7 @@ const blockedInboxIssues: Issue[] = [
     id: "issue-15161",
     identifier: "PAP-15161",
     title: "P4: watchdog restoration verification",
-    blockerAttention: { state: "covered", sampleBlockerIdentifier: null },
+    blockerAttention: blockerAttention("covered"),
     blockedInboxAttention: {
       kind: "blocked",
       state: "recovery_open",
