@@ -3253,6 +3253,11 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
+  // Terminal cleanup callers use this guard to prove the workspace still
+  // matches the delivered snapshot before any command or instance teardown
+  // can remove newly-created work. The second guard below closes the window
+  // again immediately before the worktree itself is removed.
+  await input.assertSafeToRemove?.();
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {

@@ -593,6 +593,12 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
   it("refuses cleanup when the worktree changes after delivery assessment", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    await db.update(executionWorkspaces).set({
+      metadata: {
+        createdByRuntime: true,
+        config: { cleanupCommand: "rm -f late-work.txt" },
+      },
+    }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
