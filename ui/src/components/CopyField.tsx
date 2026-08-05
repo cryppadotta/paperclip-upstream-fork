@@ -1,6 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import { useCallback, useState } from "react";
 
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 
 export interface CopyFieldProps {
@@ -15,7 +16,7 @@ export interface CopyFieldProps {
 
 /**
  * Read-only value with an inline copy-to-clipboard button. Centralizes the
- * `navigator.clipboard.writeText` + "Copied ✓" affordance that feature surfaces
+ * shared clipboard fallback + "Copied ✓" affordance that feature surfaces
  * (gateways, redirect-URI callouts, UID display) were hand-rolling.
  */
 export function CopyField({ value, label = "Copy", mono = true, className }: CopyFieldProps) {
@@ -23,8 +24,7 @@ export function CopyField({ value, label = "Copy", mono = true, className }: Cop
 
   const onCopy = useCallback(async () => {
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
