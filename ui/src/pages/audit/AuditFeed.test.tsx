@@ -262,13 +262,15 @@ describe("AuditFeed", () => {
     );
 
     expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)).toBe(true);
-    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
-      expect.objectContaining({ actorScope: "all", from: undefined }),
-    );
-    expect(container.textContent).toContain("commented on");
-    expect(container.textContent).not.toContain("Paperclip Enterprise view");
-    expect(container.textContent).not.toContain("All agents");
-    expect(container.textContent).not.toContain("Export CSV");
+    await vi.waitFor(() => {
+      expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+        expect.objectContaining({ actorScope: "all", from: undefined }),
+      );
+      expect(container.textContent).toContain("commented on");
+      expect(container.textContent).not.toContain("Paperclip Enterprise view");
+      expect(container.textContent).not.toContain("All agents");
+      expect(container.textContent).not.toContain("Export CSV");
+    });
   });
 
   it("drops cached privileged pages when pagination observes an access downgrade", async () => {
