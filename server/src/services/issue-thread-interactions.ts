@@ -63,6 +63,7 @@ import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 import {
   createPullRequestMergeStateResolver,
   extractGitHubPullRequestReferences,
+  setBoundedPullRequestCacheEntry,
   type GitHubPullRequestReference,
   type PullRequestMergeState,
 } from "./github-pull-request-merge.js";
@@ -1503,7 +1504,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
 
       const refreshedStates = await resolvePullRequestStates([...uniqueReferences.values()]);
       for (const [key, state] of refreshedStates) {
-        pullRequestStateCache.set(key, { state, checkedAt });
+        setBoundedPullRequestCacheEntry(pullRequestStateCache, key, { state, checkedAt });
       }
 
       let accepted = 0;

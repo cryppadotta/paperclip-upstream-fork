@@ -46,6 +46,7 @@ import { logActivity } from "./activity-log.js";
 import {
   createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
+  setBoundedPullRequestCacheEntry,
   type GitHubPullRequestReference,
   type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
@@ -1149,7 +1150,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             details = cached.details;
           } else {
             details = await resolvePullRequestDetails(workspace.companyId, reference);
-            pullRequestStateCache.set(key, { details, checkedAtMs: now().getTime() });
+            setBoundedPullRequestCacheEntry(
+              pullRequestStateCache,
+              key,
+              { details, checkedAtMs: now().getTime() },
+            );
           }
           if (details.state === "merged" && details.headRef === workspace.branchName) {
             mergedPullRequest = true;

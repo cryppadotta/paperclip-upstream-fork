@@ -16,11 +16,26 @@ import {
   issueThreadInteractionService,
 } from "../services/issue-thread-interactions.js";
 import {
+  PULL_REQUEST_CACHE_MAX_ENTRIES,
+  setBoundedPullRequestCacheEntry,
+} from "../services/github-pull-request-merge.js";
+import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
 describe("merged pull-request confirmation extraction", () => {
+  it("bounds shared pull-request state caches", () => {
+    const cache = new Map<string, number>();
+    for (let index = 0; index <= PULL_REQUEST_CACHE_MAX_ENTRIES; index += 1) {
+      setBoundedPullRequestCacheEntry(cache, `pr-${index}`, index);
+    }
+
+    expect(cache.size).toBe(PULL_REQUEST_CACHE_MAX_ENTRIES);
+    expect(cache.has("pr-0")).toBe(false);
+    expect(cache.get(`pr-${PULL_REQUEST_CACHE_MAX_ENTRIES}`)).toBe(PULL_REQUEST_CACHE_MAX_ENTRIES);
+  });
+
   it("extracts and deduplicates full GitHub URLs and owner/repo#N shorthand", () => {
     expect(extractGitHubPullRequestReferences([
       "Merge https://github.com/PaperclipAI/paperclip/pull/39.",

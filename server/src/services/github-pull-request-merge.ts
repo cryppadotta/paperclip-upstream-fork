@@ -25,6 +25,22 @@ export type PullRequestMergeDetailsResolver = (
   reference: GitHubPullRequestReference,
 ) => Promise<PullRequestMergeDetails>;
 
+export const PULL_REQUEST_CACHE_MAX_ENTRIES = 1_000;
+
+export function setBoundedPullRequestCacheEntry<T>(
+  cache: Map<string, T>,
+  key: string,
+  value: T,
+) {
+  cache.delete(key);
+  while (cache.size >= PULL_REQUEST_CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+  cache.set(key, value);
+}
+
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
 const GITHUB_PULL_REQUEST_SHORTHAND_PATTERN = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9][0-9]*)\b/g;
 
