@@ -639,6 +639,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace?.status).toBe("archived");
+    await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
     await expect(fs.access(cleanupMarker)).rejects.toThrow();
   });
 

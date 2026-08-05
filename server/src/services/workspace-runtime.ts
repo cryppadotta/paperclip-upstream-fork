@@ -3239,9 +3239,8 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   cleanupCommand?: string | null;
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
-  assertSafeToRemove?: (() => Promise<void>) | null;
-  runCleanupCommands?: boolean;
-  forceWorktreeRemoval?: boolean;
+  assertSafeToCleanup?: (() => Promise<void>) | null;
+  preserveWorkspaceArtifacts?: boolean;
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -3255,11 +3254,18 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
-  // Terminal cleanup callers use this guard to prove the workspace still
-  // matches the delivered snapshot before any command or instance teardown
-  // can remove newly-created work. The second guard below closes the window
-  // again immediately before the worktree itself is removed.
-  await input.assertSafeToRemove?.();
+  // Callers can require the workspace to match an assessed snapshot before
+  // cleanup begins. Preservation returns before any command or artifact
+  // teardown; destructive paths recheck immediately before removal below.
+  await input.assertSafeToCleanup?.();
+  if (input.preserveWorkspaceArtifacts) {
+    return {
+      cleanedPath: workspacePath,
+      cleaned: true,
+      artifactsPreserved: Boolean(workspacePath && await directoryExists(workspacePath)),
+      warnings,
+    };
+  }
   let worktreeInstancePointer: WorktreeInstancePointer | null = null;
   let expectedWorktreeInstanceId: string | null = null;
   if (input.workspace.providerType === "git_worktree" && workspacePath) {
@@ -3272,15 +3278,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
-  const cleanupCommands = input.runCleanupCommands === false
-    ? []
-    : [
-        input.cleanupCommand ?? null,
-        input.projectWorkspace?.cleanupCommand ?? null,
-        input.teardownCommand ?? null,
-      ]
-        .map((value) => asString(value, "").trim())
-        .filter(Boolean);
+  const cleanupCommands = [
+    input.cleanupCommand ?? null,
+    input.projectWorkspace?.cleanupCommand ?? null,
+    input.teardownCommand ?? null,
+  ]
+    .map((value) => asString(value, "").trim())
+    .filter(Boolean);
 
   for (const command of cleanupCommands) {
     try {
@@ -3334,15 +3338,10 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
         warnings.push(`Could not resolve git repo root for "${workspacePath}".`);
       } else {
         try {
-          await input.assertSafeToRemove?.();
+          await input.assertSafeToCleanup?.();
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
-            args: [
-              "worktree",
-              "remove",
-              ...(input.forceWorktreeRemoval === false ? [] : ["--force"]),
-              workspacePath,
-            ],
+            args: ["worktree", "remove", "--force", workspacePath],
             cwd: repoRoot,
             metadata: {
               workspaceId: input.workspace.id,
@@ -3394,7 +3393,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     if (containsProjectWorkspace) {
       warnings.push(`Refusing to remove path "${workspacePath}" because it contains the project workspace.`);
     } else {
-      await input.assertSafeToRemove?.();
+      await input.assertSafeToCleanup?.();
       await fs.rm(resolvedWorkspacePath, { recursive: true, force: true });
       if (input.recorder) {
         await input.recorder.recordOperation({
@@ -3422,6 +3421,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   return {
     cleanedPath: workspacePath,
     cleaned,
+    artifactsPreserved: false,
     warnings,
   };
 }
