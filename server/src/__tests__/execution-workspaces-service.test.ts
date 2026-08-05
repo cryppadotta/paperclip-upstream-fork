@@ -438,6 +438,47 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
 
+  it("does not treat an unrelated issue branch mention as delivery evidence", async () => {
+    const seeded = await seedTerminalWorkspace();
+    const unrelatedIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: unrelatedIssueId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      title: `Investigate ${seeded.identifier} follow-up`,
+      status: "done",
+      priority: "medium",
+    });
+    await db.insert(issueWorkProducts).values({
+      companyId: seeded.companyId,
+      issueId: unrelatedIssueId,
+      type: "pull_request",
+      provider: "github",
+      title: "Unrelated merged PR",
+      url: "https://github.com/paperclipai/paperclip/pull/10624",
+      status: "merged",
+    });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({
+        status: executionWorkspaces.status,
+        cleanupEligibleAt: executionWorkspaces.cleanupEligibleAt,
+        cleanupReason: executionWorkspaces.cleanupReason,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(readiness?.deliveryState).toBe("unknown");
+    expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+    expect(workspace).toMatchObject({
+      status: "active",
+      cleanupEligibleAt: null,
+      cleanupReason: null,
+    });
+  });
+
   it("reaps only fully-terminal delivered workspaces without active checkout runs", async () => {
     const eligible = await seedTerminalWorkspace({ mergedPr: true, childStatus: "done" });
     const activeRun = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });

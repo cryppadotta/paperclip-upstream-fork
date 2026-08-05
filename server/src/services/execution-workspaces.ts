@@ -1072,7 +1072,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function listDeliveryPullRequestProducts(
-    workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId" | "branchName">,
+    workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">,
     issueTreeIds: string[],
   ) {
     if (!workspace.sourceIssueId) return [];
@@ -1087,17 +1087,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ...issueTreeIds,
       ...inboundReferences.map((row) => row.issueId),
     ])];
-    const branchPattern = workspace.branchName
-      ? `%${workspace.branchName.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`
-      : null;
     const referencesWorkspace = or(
-      ...(relatedIssueIds.length > 0 ? [inArray(issueWorkProducts.issueId, relatedIssueIds)] : []),
+      inArray(issueWorkProducts.issueId, relatedIssueIds),
       eq(issueWorkProducts.executionWorkspaceId, workspace.id),
-      ...(branchPattern
-        ? [sql<boolean>`(${issues.title} ILIKE ${branchPattern} ESCAPE '\\' OR coalesce(${issues.description}, '') ILIKE ${branchPattern} ESCAPE '\\')`]
-        : []),
     );
-    if (!referencesWorkspace) return [];
 
     return db
       .select({
@@ -1110,13 +1103,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         metadata: issueWorkProducts.metadata,
       })
       .from(issueWorkProducts)
-      .innerJoin(
-        issues,
-        and(
-          eq(issues.companyId, issueWorkProducts.companyId),
-          eq(issues.id, issueWorkProducts.issueId),
-        ),
-      )
       .where(and(
         eq(issueWorkProducts.companyId, workspace.companyId),
         eq(issueWorkProducts.type, "pull_request"),
