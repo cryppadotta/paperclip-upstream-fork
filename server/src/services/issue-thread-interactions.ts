@@ -103,7 +103,66 @@ export type IssueThreadInteractionServiceOptions = {
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
 const GITHUB_PULL_REQUEST_SHORTHAND_PATTERN = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9][0-9]*)\b/g;
 const MERGE_CONFIRMATION_INTENT_PATTERN = /^(?:please\s+)?(?:confirm(?:\s+that)?\s+.{0,80}\s+)?(?:merge|merged)\b|\bready\s+to\s+merge\b/i;
-const GOVERNED_CONFIRMATION_INTENT_PATTERN = /\b(?:deploy(?:ment)?|release|production|budget|spend|hiring?|secret|security\s+policy|access\s+grant)\b/i;
+const MERGE_CONFIRMATION_ALLOWED_WORDS = new Set([
+  "all",
+  "and",
+  "approved",
+  "are",
+  "both",
+  "checks",
+  "ci",
+  "confirm",
+  "github",
+  "green",
+  "is",
+  "it",
+  "link",
+  "linked",
+  "links",
+  "merge",
+  "merged",
+  "merging",
+  "passed",
+  "passing",
+  "please",
+  "pr",
+  "primary",
+  "prs",
+  "pull",
+  "ready",
+  "reference",
+  "references",
+  "request",
+  "requests",
+  "review",
+  "secondary",
+  "tests",
+  "that",
+  "the",
+  "these",
+  "this",
+  "to",
+  "url",
+]);
+
+function isMergeConfirmationOnlyText(value: string) {
+  GITHUB_PULL_REQUEST_URL_PATTERN.lastIndex = 0;
+  const withoutUrls = value.replace(GITHUB_PULL_REQUEST_URL_PATTERN, " pr_reference ");
+  GITHUB_PULL_REQUEST_SHORTHAND_PATTERN.lastIndex = 0;
+  const withoutReferences = withoutUrls.replace(
+    GITHUB_PULL_REQUEST_SHORTHAND_PATTERN,
+    (_match, prefix: string) => `${prefix} pr_reference `,
+  );
+  const normalized = withoutReferences
+    .replace(/\b(?:github-)?pr-[1-9][0-9]*\b/gi, " pr_reference ")
+    .replace(/[`*_\[\]{}()<>:;,.!?"'=+&|\\/-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return true;
+  return normalized
+    .split(/\s+/)
+    .every((word) => word === "pr_reference" || MERGE_CONFIRMATION_ALLOWED_WORDS.has(word));
+}
 
 function addPullRequestReference(
   references: Map<string, GitHubPullRequestReference>,
@@ -161,10 +220,13 @@ export function getMergeConfirmationPullRequestReferences(
     target?.label,
     target?.href,
   ];
-  const trustedText = trustedTextValues
-    .filter((value): value is string => typeof value === "string")
-    .join("\n");
-  if (GOVERNED_CONFIRMATION_INTENT_PATTERN.test(trustedText)) return [];
+  // System acceptance is intentionally fail-closed: after replacing recognized
+  // PR references, every trusted field must contain merge-only vocabulary. This
+  // prevents an otherwise valid merge prompt from smuggling an additional action
+  // that a governed-action denylist did not anticipate.
+  if (!trustedTextValues.every((value) => typeof value !== "string" || isMergeConfirmationOnlyText(value))) {
+    return [];
+  }
 
   return extractGitHubPullRequestReferences(trustedTextValues);
 }
