@@ -15,6 +15,14 @@ Required environment for live publish:
 
 Optional environment:
   PAPERCLIP_PAGE_DEFAULT_PREFIX, PAPERCLIP_PAGE_AWS_PROFILE
+  PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID, PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY,
+  PAPERCLIP_PAGE_AWS_SESSION_TOKEN
+
+Credential resolution for aws calls made by this helper:
+  1. PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID + PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY
+     (used only by this helper; ambient AWS_PROFILE/AWS_* identity is untouched)
+  2. PAPERCLIP_PAGE_AWS_PROFILE (passed as --profile)
+  3. Ambient AWS credential chain (env keys, profile, instance role)
 
 Options:
   --slug SLUG   Lowercase URL slug. Allowed: a-z, 0-9, hyphen.
@@ -125,9 +133,18 @@ join_prefix() {
 }
 
 aws_base_args=()
+aws_env_overrides=()
 
 aws_cli() {
-  aws "${aws_base_args[@]}" "$@"
+  if [[ ${#aws_env_overrides[@]} -gt 0 ]]; then
+    # Scope the page-uploader identity to this helper's aws calls only, and
+    # drop ambient profile/session state so the static key pair resolves
+    # deterministically instead of mixing with the surrounding identity.
+    env -u AWS_PROFILE -u AWS_SESSION_TOKEN "${aws_env_overrides[@]}" \
+      aws "${aws_base_args[@]}" "$@"
+  else
+    aws "${aws_base_args[@]}" "$@"
+  fi
 }
 
 object_exists() {
@@ -297,6 +314,15 @@ default_prefix="$(normalize_default_prefix "${PAPERCLIP_PAGE_DEFAULT_PREFIX:-}")
 [[ -n "$base_url" ]] || die "PAPERCLIP_PAGE_BASE_URL is required"
 base_url="$(normalize_base_url "$base_url")"
 
+page_access_key_id="${PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID:-}"
+page_secret_access_key="${PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY:-}"
+if [[ -n "$page_access_key_id" || -n "$page_secret_access_key" ]]; then
+  [[ -n "$page_access_key_id" && -n "$page_secret_access_key" ]] ||
+    die "PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID and PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY must be set together"
+  [[ -z "${PAPERCLIP_PAGE_AWS_PROFILE:-}" ]] ||
+    die "set PAPERCLIP_PAGE_AWS_PROFILE or the PAPERCLIP_PAGE_AWS_* key pair, not both"
+fi
+
 explicit_slug=0
 if [[ -n "$slug_arg" ]]; then
   explicit_slug=1
@@ -310,7 +336,15 @@ if [[ "$dry_run" == "0" ]]; then
   require_command curl
   [[ -n "$region" ]] || die "AWS_REGION is required for live publish"
   aws_base_args=(--region "$region")
-  if [[ -n "${PAPERCLIP_PAGE_AWS_PROFILE:-}" ]]; then
+  if [[ -n "$page_access_key_id" ]]; then
+    aws_env_overrides=(
+      AWS_ACCESS_KEY_ID="$page_access_key_id"
+      AWS_SECRET_ACCESS_KEY="$page_secret_access_key"
+    )
+    if [[ -n "${PAPERCLIP_PAGE_AWS_SESSION_TOKEN:-}" ]]; then
+      aws_env_overrides+=(AWS_SESSION_TOKEN="$PAPERCLIP_PAGE_AWS_SESSION_TOKEN")
+    fi
+  elif [[ -n "${PAPERCLIP_PAGE_AWS_PROFILE:-}" ]]; then
     aws_base_args+=(--profile "$PAPERCLIP_PAGE_AWS_PROFILE")
   fi
 fi
