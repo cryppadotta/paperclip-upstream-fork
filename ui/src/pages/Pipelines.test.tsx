@@ -209,8 +209,7 @@ describe("pipeline stage board presentation", () => {
       caseItem: { id: "attention", stageId: "work", fields: { openBlockers: 1 } },
       stage: { kind: "working", config: {} },
     })).toMatchObject({ key: "attention", label: "Needs attention", tone: "attention" });
-    expect(pipelineBoardStateChipClass("attention")).toContain("red");
-    expect(pipelineBoardStateChipClass("attention")).not.toContain("amber");
+    expect(pipelineBoardStateChipClass("attention")).toBe("pipeline-state-chip--attention");
   });
 
   it("enables the detail action strip per stage, terminal, active-work, and preflight state", () => {

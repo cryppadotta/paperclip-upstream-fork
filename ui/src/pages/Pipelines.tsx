@@ -1220,22 +1220,22 @@ export function groupCasesByBuiltFor(cases: BoardCase[]) {
 export function pipelineBoardStateChipClass(tone: ReturnType<typeof getPipelineBoardStateChip>["tone"]) {
   switch (tone) {
     case "active":
-      return "border-emerald-400/40 bg-emerald-50 text-emerald-700 dark:border-emerald-300/30 dark:bg-emerald-900/30 dark:text-emerald-300";
+      return "pipeline-state-chip--active";
     case "ready":
-      return "border-sky-400/40 bg-sky-50 text-sky-700 dark:border-sky-300/30 dark:bg-sky-900/25 dark:text-sky-300";
+      return "pipeline-state-chip--ready";
     case "review":
-      return "border-violet-400/40 bg-violet-50 text-violet-700 dark:border-violet-300/30 dark:bg-violet-900/25 dark:text-violet-300";
+      return "pipeline-state-chip--review";
     case "waiting":
-      return "border-orange-400/40 bg-orange-50 text-orange-700 dark:border-orange-300/30 dark:bg-orange-900/25 dark:text-orange-300";
+      return "pipeline-state-chip--waiting";
     case "attention":
-      return "border-red-400/40 bg-red-50 text-red-700 dark:border-red-300/30 dark:bg-red-900/25 dark:text-red-300";
+      return "pipeline-state-chip--attention";
     case "done":
-      return "border-green-400/40 bg-green-50 text-green-700 dark:border-green-300/30 dark:bg-green-900/25 dark:text-green-300";
+      return "pipeline-state-chip--done";
     case "muted":
-      return "border-border bg-muted text-muted-foreground";
+      return "pipeline-state-chip--muted";
     case "neutral":
     default:
-      return "border-border bg-background text-muted-foreground";
+      return "pipeline-state-chip--neutral";
   }
 }
 
@@ -1247,7 +1247,7 @@ function PipelineBoardStateChip({ caseItem }: { caseItem: BoardCase }) {
   });
   return (
     <span className={cn(
-      "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+      "pipeline-state-chip status-chip inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-(length:--text-micro) font-medium",
       pipelineBoardStateChipClass(chip.tone),
     )}>
       {chip.key === "running" ? (
@@ -1427,11 +1427,11 @@ function PipelineBoardColumn({
         ref={setNodeRef}
         className={cn(
           "min-h-(--sz-160px) flex-1 space-y-2 rounded-b-md px-2 py-2 transition-colors",
-          isBlockedDropTarget ? "bg-red-50 dark:bg-red-950/30" : isOver ? tone.bodyOver : tone.body,
+          isBlockedDropTarget ? "pipeline-drop-blocked-target" : isOver ? tone.bodyOver : tone.body,
         )}
       >
         {isBlockedDropTarget ? (
-          <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-(length:--text-micro) text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-200">
+          <p className="pipeline-drop-blocked-notice rounded border px-3 py-2 text-(length:--text-micro)">
             This move skips the normal flow
           </p>
         ) : null}

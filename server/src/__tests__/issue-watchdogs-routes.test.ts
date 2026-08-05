@@ -736,6 +736,44 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
         },
       },
     });
+    const toolActionInteractionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: toolActionInteractionId,
+      companyId,
+      issueId: watchedChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      title: "Plan approval with tool action",
+      createdByAgentId: workerAgentId,
+      payload: {
+        version: 1,
+        prompt: "Approve this plan and tool action?",
+        target: {
+          type: "issue_document",
+          issueId: watchedChildId,
+          documentId,
+          key: "plan",
+          revisionId,
+          revisionNumber: 1,
+        },
+        toolAction: {
+          version: 1,
+          actionRequestId: randomUUID(),
+          invocationId: randomUUID(),
+          toolName: "send_email",
+          toolDisplayName: "Send email",
+          connectionId: null,
+          applicationId: null,
+          appDisplayName: "Mail",
+          risk: "write",
+          previewMarkdown: "Send an email to the reviewed recipient.",
+          argumentsSummaryJson: '{"to":"recipient@example.com"}',
+          argumentsHash: "reviewed-arguments-hash",
+          expiresAt: "2026-08-06T16:00:00.000Z",
+        },
+      },
+    });
     const runId = await seedWatchdogRun({
       companyId,
       watchdogAgentId,
@@ -749,6 +787,13 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
       runId,
       source: "agent_jwt",
     });
+
+    const toolActionRes = await request(app)
+      .post(`/api/issues/${watchedChildId}/interactions/${toolActionInteractionId}/accept`)
+      .send({});
+
+    expect(toolActionRes.status, JSON.stringify(toolActionRes.body)).toBe(403);
+    expect(toolActionRes.body.error).toBe("Tool-action confirmations are always board-only");
 
     const res = await request(app)
       .post(`/api/issues/${watchedChildId}/interactions/${interactionId}/accept`)

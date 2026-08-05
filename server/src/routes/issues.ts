@@ -4126,6 +4126,13 @@ export function issueRoutes(
     const runId = requireAgentRunId(req, res);
     if (!actorAgentId || !runId) return false;
     if (watchdogPreflight === "watchdog") {
+      const payload = interaction.payload && typeof interaction.payload === "object"
+        ? interaction.payload as { toolAction?: unknown }
+        : null;
+      if (payload?.toolAction !== undefined) {
+        res.status(403).json({ error: "Tool-action confirmations are always board-only" });
+        return false;
+      }
       const target = interaction.kind === "request_confirmation"
         ? readAcceptedPlanConfirmationTarget(interaction.payload)
         : null;
