@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
@@ -87,24 +88,30 @@ export function createRunSecretRedactionRegistry(db: Db) {
 
   return {
     register: async (companyId: string, runId: string, value: string) => {
-      const prepared = await provider.createSecret({ value });
-      const entry: RegistryEntry = {
-        fingerprintSha256: prepared.fingerprintSha256 ?? prepared.valueSha256,
-        material: prepared.material,
-      };
-      const updated = await db.update(heartbeatRuns)
-        .set({
-          contextSnapshot: sql`jsonb_set(
-            coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb),
-            '{paperclipSecretRedactions}',
-            coalesce(${heartbeatRuns.contextSnapshot} -> ${REGISTRY_KEY}, '[]'::jsonb) || ${JSON.stringify([entry])}::jsonb,
-            true
-          )`,
-          updatedAt: new Date(),
-        })
-        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
-        .returning({ id: heartbeatRuns.id });
-      if (updated.length !== 1) throw new Error("Heartbeat run redaction registration failed");
+      const fingerprintSha256 = createHash("sha256").update(value).digest("hex");
+      await db.transaction(async (tx) => {
+        const row = await tx.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!row) throw new Error("Heartbeat run redaction registration failed");
+        if (registryEntries(row.contextSnapshot).some((entry) => entry.fingerprintSha256 === fingerprintSha256)) {
+          return;
+        }
+        const prepared = await provider.createSecret({ value });
+        const entry: RegistryEntry = { fingerprintSha256, material: prepared.material };
+        const contextSnapshot = asRecord(row.contextSnapshot) ?? {};
+        const currentEntries = Array.isArray(contextSnapshot[REGISTRY_KEY])
+          ? contextSnapshot[REGISTRY_KEY]
+          : [];
+        await tx.update(heartbeatRuns)
+          .set({
+            contextSnapshot: { ...contextSnapshot, [REGISTRY_KEY]: [...currentEntries, entry] },
+            updatedAt: new Date(),
+          })
+          .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+      });
     },
     redactForRun: async <T>(companyId: string, runId: string, value: T): Promise<T> =>
       redactRegisteredSecretValues(value, await valuesForRun(companyId, runId)),

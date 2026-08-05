@@ -232,6 +232,22 @@ describeEmbeddedPostgres("agent secret routes", () => {
       .rejects.toThrow("Heartbeat run redaction registration failed");
   });
 
+  it("deduplicates concurrent redaction registrations for the same run and value", async () => {
+    const fixture = await seedAgentRun();
+    const registry = createRunSecretRedactionRegistry(db);
+
+    await Promise.all([
+      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret"),
+      registry.register(fixture.companyId, fixture.heartbeatRunId, "duplicate-secret"),
+    ]);
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.heartbeatRunId));
+    expect(run.contextSnapshot).toMatchObject({
+      paperclipSecretRedactions: [expect.objectContaining({ fingerprintSha256: expect.any(String) })],
+    });
+    expect((run.contextSnapshot as { paperclipSecretRedactions: unknown[] }).paperclipSecretRedactions).toHaveLength(1);
+  });
+
   it("denies low-trust, task-bridge, and skill-test callers on both routes", async () => {
     const lowTrust = await seedAgentRun({
       trustPreset: LOW_TRUST_REVIEW_PRESET,

@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
@@ -34,6 +34,36 @@ import { createRunSecretRedactionRegistry } from "../services/run-secret-redacti
 type SecretRoutesDeps = {
   heartbeat?: IssueAssignmentWakeupDeps;
 };
+
+const DEFAULT_PROPOSAL_LIST_LIMIT = 100;
+const MAX_PROPOSAL_LIST_LIMIT = 200;
+
+function proposalListPage(query: Record<string, unknown>) {
+  const rawLimit = query.limit;
+  const rawOffset = query.offset;
+  if (rawLimit !== undefined && (typeof rawLimit !== "string" || !/^\d+$/.test(rawLimit))) {
+    throw unprocessable("limit must be a positive integer");
+  }
+  if (rawOffset !== undefined && (typeof rawOffset !== "string" || !/^\d+$/.test(rawOffset))) {
+    throw unprocessable("offset must be a non-negative integer");
+  }
+  const requestedLimit = rawLimit === undefined ? DEFAULT_PROPOSAL_LIST_LIMIT : Number.parseInt(rawLimit, 10);
+  if (requestedLimit < 1) throw unprocessable("limit must be a positive integer");
+  return {
+    limit: Math.min(requestedLimit, MAX_PROPOSAL_LIST_LIMIT),
+    offset: rawOffset === undefined ? 0 : Number.parseInt(rawOffset, 10),
+  };
+}
+
+function setProposalPaginationHeaders(
+  res: Response,
+  page: { limit: number; offset: number },
+  hasMore: boolean,
+) {
+  res.setHeader("X-Page-Limit", String(page.limit));
+  res.setHeader("X-Page-Offset", String(page.offset));
+  if (hasMore) res.setHeader("X-Next-Offset", String(page.offset + page.limit));
+}
 
 function hasSecretDefinitionAdminAccess(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
@@ -220,8 +250,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
 
   router.get("/agents/me/secret-proposals", async (req, res) => {
     const context = await proposalAgentContext(req);
-    const rows = await proposals.listForAgent(context.companyId, context.agentId);
-    res.json({ proposals: rows.map(agentProposalView) });
+    const page = proposalListPage(req.query);
+    const rows = await proposals.listForAgent(context.companyId, context.agentId, {
+      limit: page.limit + 1,
+      offset: page.offset,
+    });
+    const hasMore = rows.length > page.limit;
+    setProposalPaginationHeaders(res, page, hasMore);
+    res.json({
+      proposals: rows.slice(0, page.limit).map(agentProposalView),
+      nextOffset: hasMore ? page.offset + page.limit : null,
+    });
   });
 
   router.delete("/agents/me/secret-proposals/:id", async (req, res) => {
@@ -235,8 +274,14 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const status = typeof req.query.status === "string" ? req.query.status : null;
-    const rows = await proposals.listForBoard(companyId, status);
-    res.json(await Promise.all(rows.map((proposal) => boardProposalView(req, proposal))));
+    const page = proposalListPage(req.query);
+    const rows = await proposals.listForBoard(companyId, status, {
+      limit: page.limit + 1,
+      offset: page.offset,
+    });
+    const hasMore = rows.length > page.limit;
+    setProposalPaginationHeaders(res, page, hasMore);
+    res.json(await Promise.all(rows.slice(0, page.limit).map((proposal) => boardProposalView(req, proposal))));
   });
 
   router.post("/companies/:companyId/secret-proposals/:id/approve", async (req, res) => {

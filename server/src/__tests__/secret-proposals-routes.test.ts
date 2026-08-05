@@ -23,6 +23,8 @@ import {
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
+import { createSecretProposalsService } from "../services/secret-proposals.js";
+import { secretService } from "../services/secrets.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -352,6 +354,74 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         configPath: "env.SEQUENTIAL_TOKEN",
       }),
     ]);
+  });
+
+  it("serializes proposal quotas and exposes bounded list pagination", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/quota/source",
+      key: "QUOTA_SOURCE",
+      provider: "local_encrypted",
+      value: "quota-source-secret",
+    });
+    const agentApp = createAgentApp(fixture);
+
+    const responses = await Promise.all(Array.from({ length: 21 }, (_, index) =>
+      request(agentApp)
+        .post("/api/agents/me/secret-proposals")
+        .send({
+          kind: "binding",
+          secretId: liveSecret.id,
+          configPath: `env.QUOTA_${index}`,
+          justification: "Exercise the concurrent proposal cap",
+        })));
+    expect(responses.filter((response) => response.status === 201)).toHaveLength(20);
+    expect(responses.filter((response) => response.status === 422)).toHaveLength(1);
+    expect(await db.select().from(companySecretProposals)).toHaveLength(20);
+    expect(await db.select().from(activityLog)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: "secret.proposal.denied" }),
+    ]));
+
+    const firstPage = await request(agentApp).get("/api/agents/me/secret-proposals?limit=7&offset=0");
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.proposals).toHaveLength(7);
+    expect(firstPage.body.nextOffset).toBe(7);
+    expect(firstPage.headers["x-next-offset"]).toBe("7");
+
+    const lastBoardPage = await request(createBoardApp(fixture))
+      .get(`/api/companies/${fixture.companyId}/secret-proposals?status=pending&limit=7&offset=14`);
+    expect(lastBoardPage.status).toBe(200);
+    expect(lastBoardPage.body).toHaveLength(6);
+    expect(lastBoardPage.headers["x-next-offset"]).toBeUndefined();
+  });
+
+  it("bounds each expiry sweep batch", async () => {
+    const fixture = await seedRun();
+    const liveSecret = await secretService(db).create(fixture.companyId, {
+      name: "dev/sweep/source",
+      key: "SWEEP_SOURCE",
+      provider: "local_encrypted",
+      value: "sweep-source-secret",
+    });
+    const agentApp = createAgentApp(fixture);
+    for (let index = 0; index < 3; index += 1) {
+      const response = await request(agentApp)
+        .post("/api/agents/me/secret-proposals")
+        .send({
+          kind: "binding",
+          secretId: liveSecret.id,
+          configPath: `env.SWEEP_${index}`,
+          justification: "Exercise bounded expiry cleanup",
+        });
+      expect(response.status).toBe(201);
+    }
+    await db.update(companySecretProposals).set({ expiresAt: new Date(Date.now() - 1_000) });
+
+    const proposals = createSecretProposalsService(db);
+    await expect(proposals.sweepExpired(new Date(), 2)).resolves.toBe(2);
+    expect((await db.select().from(companySecretProposals)).filter((proposal) => proposal.status === "pending"))
+      .toHaveLength(1);
+    await expect(proposals.sweepExpired(new Date(), 2)).resolves.toBe(1);
   });
 
   it("denies direct and cascade approval after a proposal expires", async () => {
