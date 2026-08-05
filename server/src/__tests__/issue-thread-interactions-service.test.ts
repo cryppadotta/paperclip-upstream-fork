@@ -1867,7 +1867,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
-  it("returns agent-authored request confirmations to the creating agent when a board user accepts", async () => {
+  it("returns accepted agent confirmations from review without resetting active work", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -1944,6 +1944,90 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(updatedIssue).toMatchObject({
       id: issueId,
       status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+      })
+      .where(eq(issues.id, issueId));
+
+    const agentOwnedConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve the next step?",
+      },
+    }, {
+      agentId,
+    });
+
+    const resumed = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, agentOwnedConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(resumed.continuationIssue).toEqual({
+      id: issueId,
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      status: "todo",
+    });
+
+    const resumedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(resumedIssue).toMatchObject({
+      id: issueId,
+      status: "todo",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+    });
+
+    await db
+      .update(issues)
+      .set({ status: "in_progress" })
+      .where(eq(issues.id, issueId));
+
+    const activeConfirmation = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee_on_accept",
+      payload: {
+        version: 1,
+        prompt: "Approve while work is active?",
+      },
+    }, {
+      agentId,
+    });
+
+    const acceptedWhileActive = await interactionsSvc.acceptInteraction({
+      id: issueId,
+      companyId,
+      goalId,
+      projectId: null,
+    }, activeConfirmation.id, {}, {
+      userId: "local-board",
+    });
+
+    expect(acceptedWhileActive.continuationIssue).toBeNull();
+    const activeIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
+    expect(activeIssue).toMatchObject({
+      id: issueId,
+      status: "in_progress",
       assigneeAgentId: agentId,
       assigneeUserId: null,
     });

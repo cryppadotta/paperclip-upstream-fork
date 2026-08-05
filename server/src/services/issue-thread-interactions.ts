@@ -310,10 +310,12 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
   if (!args.current.createdByAgentId) return false;
   if (!args.actor.userId) return false;
-  if (!args.issue.assigneeUserId) return false;
-  if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
-  return true;
+  if (args.issue.assigneeAgentId) {
+    return args.issue.status === "in_review"
+      && args.issue.assigneeAgentId === args.current.createdByAgentId;
+  }
+  return Boolean(args.issue.assigneeUserId);
 }
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
