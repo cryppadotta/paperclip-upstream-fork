@@ -29,6 +29,7 @@ import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "../AppLogo";
+import { AppsConnect } from "../AppsConnect";
 import { MethodBadges, MethodSelect } from "./MethodSelect";
 import { ConfigureStep } from "./ConfigureStep";
 import type { ConfigureSubmit } from "./ConfigureStep";
@@ -104,6 +105,17 @@ function buildConnectValues(
 }
 
 export function AddConnectionWizard() {
+  const [searchParams] = useSearchParams();
+
+  // Custom MCP and archived-application reconnect links still use the
+  // established `?byo=1` contract. Keep that compatibility path intact while
+  // catalog-backed connectors use the v3 grammar wizard below.
+  if (searchParams.get("byo") === "1") return <AppsConnect />;
+
+  return <CatalogConnectionWizard />;
+}
+
+function CatalogConnectionWizard() {
   const navigate = useNavigate();
   const routeParams = useParams<{ appKey?: string }>();
   const [searchParams] = useSearchParams();

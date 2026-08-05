@@ -15,6 +15,7 @@ const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
+const mockSearch = vi.hoisted(() => ({ value: "" }));
 const assignMock = vi.hoisted(() => vi.fn());
 
 const GITHUB = CONNECTABLE_APP_DEFINITIONS.find((a) => a.slug === "github")!;
@@ -39,7 +40,11 @@ vi.mock("@/api/agents", () => ({
 vi.mock("@/lib/router", () => ({
   useNavigate: () => mockNavigate,
   useParams: () => mockParams,
-  useSearchParams: () => [new URLSearchParams(""), vi.fn()],
+  useSearchParams: () => [new URLSearchParams(mockSearch.value), vi.fn()],
+}));
+
+vi.mock("../AppsConnect", () => ({
+  AppsConnect: () => <div>Custom MCP compatibility wizard</div>,
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -93,6 +98,7 @@ describe("AddConnectionWizard — grammar orchestrator", () => {
 
   beforeEach(() => {
     mockParams.appKey = undefined;
+    mockSearch.value = "";
     container = document.createElement("div");
     document.body.appendChild(container);
     Object.defineProperty(window, "location", {
@@ -133,6 +139,13 @@ describe("AddConnectionWizard — grammar orchestrator", () => {
     expect(container.textContent).toContain("Configure");
     expect(buttonContaining("Create")).toBeTruthy();
     expect(buttonContaining("Create")?.textContent).toContain(GITHUB.name);
+  });
+
+  it("routes byo and reconnect links through the compatibility wizard", async () => {
+    mockSearch.value = "byo=1&applicationId=app-1";
+    await render();
+    expect(container.textContent).toContain("Custom MCP compatibility wizard");
+    expect(container.textContent).not.toContain("Choose app");
   });
 
   it("opens Notion's executable hosted MCP configuration", async () => {

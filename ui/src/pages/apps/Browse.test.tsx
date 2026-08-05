@@ -115,6 +115,16 @@ describe("Browse store door — Connections v3 §3", () => {
     expect(navigateMock).toHaveBeenCalledWith(`/apps/connect/${SLACK.slug}`);
   });
 
+  it("keeps the custom MCP compatibility path available", async () => {
+    await renderBrowse();
+    const card = tileFor("Connect your own tool");
+    expect(card).toBeTruthy();
+    await act(async () => {
+      card?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/apps/connect?byo=1");
+  });
+
   it("filters by search query via the URL param", async () => {
     mockSearch.value = "q=slack";
     await renderBrowse();

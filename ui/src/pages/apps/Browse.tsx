@@ -13,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { AppLogo } from "./AppLogo";
 import { MethodBadges } from "./connect/MethodSelect";
-import { AdvancedToolsLink } from "./store-cards";
+import { AdvancedToolsLink, BYO_CONNECT_HREF, ByoConnectCard } from "./store-cards";
 
 /**
  * Door 1 — Browse (the store), Connections v3 §3.
@@ -161,6 +161,10 @@ export function Browse() {
         </nav>
 
         <div className="min-w-0 flex-1 space-y-8">
+          {!loading && !category && !trimmed && (
+            <ByoConnectCard onConnect={() => navigate(BYO_CONNECT_HREF)} />
+          )}
+
           {/* Escape hatches, pinned */}
           {!loading && escapeHatches.length > 0 && !category && !trimmed && (
             <section className="grid gap-3 sm:grid-cols-2">
