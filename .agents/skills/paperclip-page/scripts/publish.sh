@@ -322,6 +322,9 @@ if [[ -n "$page_access_key_id" || -n "$page_secret_access_key" ]]; then
   [[ -z "${PAPERCLIP_PAGE_AWS_PROFILE:-}" ]] ||
     die "set PAPERCLIP_PAGE_AWS_PROFILE or the PAPERCLIP_PAGE_AWS_* key pair, not both"
 fi
+if [[ -n "${PAPERCLIP_PAGE_AWS_SESSION_TOKEN:-}" && -z "$page_access_key_id" ]]; then
+  die "PAPERCLIP_PAGE_AWS_SESSION_TOKEN requires the PAPERCLIP_PAGE_AWS_* key pair"
+fi
 
 explicit_slug=0
 if [[ -n "$slug_arg" ]]; then

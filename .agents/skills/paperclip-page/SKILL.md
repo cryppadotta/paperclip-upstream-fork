@@ -24,7 +24,8 @@ host, for example `https://pages.paperclip.ing/<slug>/`.
 - Optional environment variables:
   - `PAPERCLIP_PAGE_DEFAULT_PREFIX`
   - `PAPERCLIP_PAGE_AWS_PROFILE` (alternative to the namespaced key pair)
-  - `PAPERCLIP_PAGE_AWS_SESSION_TOKEN`
+  - `PAPERCLIP_PAGE_AWS_SESSION_TOKEN` (only together with the namespaced key
+    pair)
 
 Do not bind the page-uploader credentials as global `AWS_ACCESS_KEY_ID` /
 `AWS_SECRET_ACCESS_KEY`: static env keys take precedence over `AWS_PROFILE` in

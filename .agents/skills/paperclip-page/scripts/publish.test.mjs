@@ -141,6 +141,16 @@ test("namespaced page keys require both halves of the pair", () => {
   assert.match(result.output, /must be set together/);
 });
 
+test("namespaced session token requires the namespaced key pair", () => {
+  const result = runPublish(
+    [createSite(), "--slug", "demo-page", "--dry-run"],
+    { PAPERCLIP_PAGE_AWS_SESSION_TOKEN: "page-session-token" },
+  );
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /requires the PAPERCLIP_PAGE_AWS_\* key pair/);
+});
+
 test("namespaced page keys conflict with PAPERCLIP_PAGE_AWS_PROFILE", () => {
   const result = runPublish(
     [createSite(), "--slug", "demo-page", "--dry-run"],

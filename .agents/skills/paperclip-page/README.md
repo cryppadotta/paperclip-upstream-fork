@@ -82,7 +82,7 @@ Optional:
 ```bash
 export PAPERCLIP_PAGE_DEFAULT_PREFIX=""
 export PAPERCLIP_PAGE_AWS_PROFILE=paperclip-page-uploader
-export PAPERCLIP_PAGE_AWS_SESSION_TOKEN=...
+export PAPERCLIP_PAGE_AWS_SESSION_TOKEN=...  # only with the namespaced key pair
 ```
 
 Credential resolution order inside `publish.sh`:
