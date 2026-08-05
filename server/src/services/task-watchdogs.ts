@@ -138,10 +138,11 @@ export type TaskWatchdogWaitsByIssueId = Record<string, {
 }>;
 
 export type TaskWatchdogStopSnapshot = {
-  version: 2;
+  version: 2 | 3;
   fingerprint: string;
   materialLeaves: TaskWatchdogMaterialLeaf[];
   waitsByIssueId: TaskWatchdogWaitsByIssueId;
+  nonLeafStatuses?: Array<{ issueId: string; status: string }>;
 };
 
 type TaskWatchdogPendingInteractionsByIssueId = Record<string, Array<{
@@ -341,7 +342,7 @@ function parseStopSnapshot(value: unknown): TaskWatchdogStopSnapshot | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<TaskWatchdogStopSnapshot>;
   if (
-    candidate.version !== 2 ||
+    (candidate.version !== 2 && candidate.version !== 3) ||
     typeof candidate.fingerprint !== "string" ||
     !Array.isArray(candidate.materialLeaves) ||
     !candidate.waitsByIssueId ||
@@ -369,6 +370,10 @@ function isShrinkOfReviewedSnapshot(
   reviewed: TaskWatchdogStopSnapshot | null | undefined,
 ) {
   if (!reviewed || canonicalJson(current.waitsByIssueId) !== canonicalJson(reviewed.waitsByIssueId)) return false;
+  if (
+    reviewed.version === 3 &&
+    canonicalJson(current.nonLeafStatuses ?? []) !== canonicalJson(reviewed.nonLeafStatuses ?? [])
+  ) return false;
   const reviewedLeaves = new Map(reviewed.materialLeaves.map((leaf) => [leaf.issueId, leaf]));
   return current.materialLeaves.every((leaf) => {
     const previous = reviewedLeaves.get(leaf.issueId);
@@ -524,10 +529,11 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
     nonLeafStatuses,
   });
   const currentStopSnapshot: TaskWatchdogStopSnapshot = {
-    version: 2,
+    version: 3,
     fingerprint: stopFingerprint,
     materialLeaves,
     waitsByIssueId,
+    nonLeafStatuses,
   };
 
   if (
