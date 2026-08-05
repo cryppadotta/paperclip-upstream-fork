@@ -40,6 +40,8 @@ describeEmbeddedPostgres("status card migrations", () => {
         await sql.unsafe(migrationSql);
       }
     },
-    15_000,
+    // Embedded PostgreSQL startup can exceed the default timeout when the
+    // workspace suite is also compiling and starting other test databases.
+    60_000,
   );
 });
