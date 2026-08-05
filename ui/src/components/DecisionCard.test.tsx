@@ -135,6 +135,27 @@ describe("DecisionCard", () => {
     expect([...el.querySelectorAll("button")].some((b) => b.textContent?.includes("Dismiss"))).toBe(true);
   });
 
+  it("links the target issue the decision applies to, not just the origin", () => {
+    const el = render({});
+    expect(el.textContent).toContain("applies to");
+    const provenance = el.querySelector("p");
+    expect(provenance?.textContent).toContain("PAP-456");
+    expect(
+      [...(provenance?.querySelectorAll("a") ?? [])].some((a) => a.getAttribute("href") === "/PAP/issues/PAP-456"),
+    ).toBe(true);
+  });
+
+  it("omits the applies-to link when the decision only targets its origin issue", () => {
+    const el = render({
+      decision: mkDecision({
+        options: [
+          { id: "comment", label: "Comment", effects: [{ type: "comment_on_issue", targetIssueId: "issue-origin", staleness: "lenient", bodyMarkdown: "nudge" }] },
+        ],
+      }),
+    });
+    expect(el.textContent).not.toContain("applies to");
+  });
+
   it("fires onDecide with the chosen option id", () => {
     const onDecide = vi.fn();
     const el = render({ onDecide });

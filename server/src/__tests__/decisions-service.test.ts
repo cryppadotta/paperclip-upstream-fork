@@ -542,6 +542,26 @@ describePg("decisionService", () => {
     expect(wakes).toHaveLength(2);
   });
 
+  it("expires strict decisions whose targets completed after they were proposed", async () => {
+    const completed = await createCommentDecision("strict", { idempotencyKey: "target-completed" });
+    const lenient = await createCommentDecision("lenient", { idempotencyKey: "lenient-survives" });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, targetIssueId));
+
+    expect((await service().sweepExpired()).expired).toBe(1);
+
+    expect((await service().get(completed.id))?.metadata).toMatchObject({ expiredReason: "target_completed" });
+    expect((await service().get(lenient.id))?.status).toBe("open");
+    expect(wakes).toEqual([{ companyId, agentId, issueId: originIssueId, decisionId: completed.id, outcome: "expired" }]);
+  });
+
+  it("keeps strict decisions that intentionally target an already-done issue", async () => {
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, targetIssueId));
+    const reopen = await createCommentDecision("strict", { idempotencyKey: "already-done" });
+
+    expect((await service().sweepExpired()).expired).toBe(0);
+    expect((await service().get(reopen.id))?.status).toBe("open");
+  });
+
   it("groups rule-key stats and separates explicit dismissals from expiry", async () => {
     const accepted = await service().create({
       companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign?", body: "Body",

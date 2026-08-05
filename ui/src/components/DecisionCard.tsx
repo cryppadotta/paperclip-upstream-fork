@@ -313,6 +313,19 @@ export function DecisionCard({
 
   const dimmed = decision.status === "expired" || decision.status === "cancelled";
 
+  // The issues this decision acts on. The origin issue is only where the agent
+  // was running when it proposed the decision — the queue links there, but the
+  // decision may target a different issue entirely, so name the targets
+  // explicitly or the card is undiscoverable from the issue it applies to.
+  const targetRefs = useMemo(() => {
+    const ids = new Set<string>();
+    for (const option of decision.options) {
+      for (const effect of option.effects) ids.add(effect.targetIssueId);
+    }
+    if (originIssue?.id) ids.delete(originIssue.id);
+    return [...ids].map((id) => ({ id, ref: resolveIssue(id) }));
+  }, [decision.options, originIssue?.id, resolveIssue]);
+
   return (
     <div
       className={cn(
@@ -347,6 +360,23 @@ export function DecisionCard({
             <a href={originIssue.href} className="font-medium text-sky-700 hover:underline dark:text-sky-300">
               {issueLabel(originIssue, originIssue.id)}
             </a>
+          </>
+        )}
+        {targetRefs.length > 0 && (
+          <>
+            {" · applies to "}
+            {targetRefs.map(({ id, ref }, index) => (
+              <span key={id}>
+                {index > 0 && ", "}
+                {ref ? (
+                  <a href={ref.href} className="font-medium text-sky-700 hover:underline dark:text-sky-300">
+                    {issueLabel(ref, id)}
+                  </a>
+                ) : (
+                  <span className="font-medium text-foreground">{issueLabel(null, id)}</span>
+                )}
+              </span>
+            ))}
           </>
         )}
         {runHref && (

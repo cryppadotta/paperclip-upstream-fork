@@ -762,8 +762,15 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         ? await db.select({ id: issues.id, status: issues.status }).from(issues).where(and(eq(issues.companyId, decision.companyId), inArray(issues.id, [...strictTargetIds])))
         : [];
       const targetGone = targets.length !== strictTargetIds.size || targets.some((target) => target.status === "cancelled");
-      if (!targetGone && decision.expiresAt >= now) continue;
-      const reason = targetGone ? "target_gone" : "ttl";
+      // A decision whose strict targets all completed after it was proposed is moot:
+      // the strict guard would skip its effects anyway, so retire it instead of
+      // leaving it pending until TTL. Targets that were already done at proposal
+      // time don't count — those decisions intentionally act on a done issue.
+      const snapshots = decision.targetSnapshots as Record<string, Snapshot>;
+      const targetsCompleted = !targetGone && strictTargetIds.size > 0 &&
+        targets.every((target) => target.status === "done" && snapshots[target.id]?.status !== "done");
+      if (!targetGone && !targetsCompleted && decision.expiresAt >= now) continue;
+      const reason = targetGone ? "target_gone" : targetsCompleted ? "target_completed" : "ttl";
       const [updated] = await db.update(decisions).set({ status: "expired", updatedAt: now, metadata: { ...decision.metadata, expiredReason: reason,
         ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, decision.id), eq(decisions.status, "open"))).returning();
       if (!updated) continue; expired += 1;
