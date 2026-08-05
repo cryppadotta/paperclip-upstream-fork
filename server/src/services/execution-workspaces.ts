@@ -44,9 +44,10 @@ import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-poli
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { logActivity } from "./activity-log.js";
 import {
-  createPullRequestMergeStateResolver,
+  createPullRequestMergeDetailsResolver,
   extractGitHubPullRequestReferences,
-  type PullRequestMergeStateResolver,
+  type GitHubPullRequestReference,
+  type PullRequestMergeDetailsResolver,
 } from "./github-pull-request-merge.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -66,9 +67,28 @@ const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 export const ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON = "issue_terminal";
 
 export type ExecutionWorkspaceServiceOptions = {
-  resolvePullRequestState?: PullRequestMergeStateResolver;
+  resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
 };
+
+function parseGitHubRepository(repoUrl: string | null) {
+  if (!repoUrl) return null;
+  const match = /^(?:https?:\/\/(?:www\.)?github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i.exec(repoUrl.trim());
+  if (!match) return null;
+  return { owner: match[1]!.toLowerCase(), repo: match[2]!.toLowerCase() };
+}
+
+function pullRequestMatchesWorkspaceRepository(
+  reference: GitHubPullRequestReference,
+  workspace: Pick<ExecutionWorkspaceRow, "repoUrl">,
+) {
+  const repository = parseGitHubRepository(workspace.repoUrl);
+  return Boolean(
+    repository
+    && repository.owner === reference.owner.toLowerCase()
+    && repository.repo === reference.repo.toLowerCase(),
+  );
+}
 
 export function deriveExecutionWorkspaceDeliveryState(input: {
   sourceIssueTerminal: boolean;
@@ -1030,12 +1050,12 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
 
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
   const recoveryActionsSvc = issueRecoveryActionService(db);
-  const resolvePullRequestState = opts.resolvePullRequestState ?? createPullRequestMergeStateResolver(db);
+  const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
   const pullRequestStateCache = new Map<
     string,
     {
-      state: Awaited<ReturnType<PullRequestMergeStateResolver>>;
+      details: Awaited<ReturnType<PullRequestMergeDetailsResolver>>;
       checkedAtMs: number;
     }
   >();
@@ -1082,7 +1102,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return db
       .select({
         id: issueWorkProducts.id,
-        status: issueWorkProducts.status,
         url: issueWorkProducts.url,
         externalId: issueWorkProducts.externalId,
         title: issueWorkProducts.title,
@@ -1121,23 +1140,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           product.metadata ? JSON.stringify(product.metadata) : null,
         ]);
         if (references.length === 0) continue;
-        if (product.status === "merged") {
-          mergedPullRequest = true;
-          break;
-        }
         for (const reference of references) {
+          if (!pullRequestMatchesWorkspaceRepository(reference, workspace)) continue;
           const key = `${workspace.companyId}:${reference.owner.toLowerCase()}/${reference.repo.toLowerCase()}#${reference.number}`;
           const cached = pullRequestStateCache.get(key);
-          let state = cached?.state;
-          if (!cached || now().getTime() - cached.checkedAtMs >= pullRequestStateCacheTtlMs) {
-            state = await resolvePullRequestState(workspace.companyId, reference);
-            pullRequestStateCache.set(key, { state, checkedAtMs: now().getTime() });
+          let details;
+          if (cached && now().getTime() - cached.checkedAtMs < pullRequestStateCacheTtlMs) {
+            details = cached.details;
+          } else {
+            details = await resolvePullRequestDetails(workspace.companyId, reference);
+            pullRequestStateCache.set(key, { details, checkedAtMs: now().getTime() });
           }
-          if (state === "merged") {
+          if (details.state === "merged" && details.headRef === workspace.branchName) {
             mergedPullRequest = true;
             break;
           }
-          if (state === "unknown") pullRequestStateUnknown = true;
+          if (details.state === "unknown" || (details.state === "merged" && !details.headRef)) {
+            pullRequestStateUnknown = true;
+          }
         }
         if (mergedPullRequest) break;
       }

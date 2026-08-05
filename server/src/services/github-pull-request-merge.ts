@@ -10,10 +10,20 @@ export type GitHubPullRequestReference = {
 
 export type PullRequestMergeState = "merged" | "open" | "unknown";
 
+export type PullRequestMergeDetails = {
+  state: PullRequestMergeState;
+  headRef: string | null;
+};
+
 export type PullRequestMergeStateResolver = (
   companyId: string,
   reference: GitHubPullRequestReference,
 ) => Promise<PullRequestMergeState>;
+
+export type PullRequestMergeDetailsResolver = (
+  companyId: string,
+  reference: GitHubPullRequestReference,
+) => Promise<PullRequestMergeDetails>;
 
 const GITHUB_PULL_REQUEST_URL_PATTERN = /https:\/\/(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([1-9][0-9]*)/gi;
 const GITHUB_PULL_REQUEST_SHORTHAND_PATTERN = /(^|[^A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#([1-9][0-9]*)\b/g;
@@ -47,12 +57,18 @@ export function extractGitHubPullRequestReferences(values: readonly unknown[]) {
   return [...references.values()];
 }
 
-export function createPullRequestMergeStateResolver(db: Db): PullRequestMergeStateResolver {
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
   const resolver = createGitHubExternalObjectProvider(db).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {
-    if (!resolver) return "unknown";
+    if (!resolver) return { state: "unknown", headRef: null };
     const result = await resolver.resolve({
       companyId,
       object: {
@@ -60,9 +76,18 @@ export function createPullRequestMergeStateResolver(db: Db): PullRequestMergeSta
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
       } as never,
     });
-    if (!result.ok) return "unknown";
-    return result.snapshot.statusKey === "merged" || result.snapshot.data?.merged === true
-      ? "merged"
-      : "open";
+    if (!result.ok) return { state: "unknown", headRef: null };
+    const data = readRecord(result.snapshot.data);
+    return {
+      state: result.snapshot.statusKey === "merged" || data?.merged === true
+        ? "merged"
+        : "open",
+      headRef: typeof data?.headRef === "string" ? data.headRef : null,
+    };
   };
+}
+
+export function createPullRequestMergeStateResolver(db: Db): PullRequestMergeStateResolver {
+  const resolveDetails = createPullRequestMergeDetailsResolver(db);
+  return async (companyId, reference) => (await resolveDetails(companyId, reference)).state;
 }

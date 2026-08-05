@@ -243,7 +243,14 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-execution-workspaces-service-");
     db = createDb(tempDb.connectionString);
-    svc = executionWorkspaceService(db);
+    svc = executionWorkspaceService(db, {
+      resolvePullRequestDetails: vi.fn(async (_companyId, reference) => ({
+        state: [10623, 10624, 10625].includes(reference.number) ? "merged" : "open",
+        headRef: reference.number === 10625 ? "descendant-delivery" : reference.number === 10624
+          ? "unrelated-delivery"
+          : "PAP-16015-delivery",
+      })),
+    });
   }, 20_000);
 
   afterEach(async () => {
@@ -303,7 +310,8 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       name: identifier,
       status: "active",
       providerType: "local_fs",
-      branchName: identifier,
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
+      branchName: "PAP-16015-delivery",
     });
     await db.insert(issues).values({
       id: sourceIssueId,
@@ -384,6 +392,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       providerRef: worktreePath,
       providerType: "git_worktree",
       baseRef: "main",
+      repoUrl: "https://github.com/paperclipai/paperclip.git",
       branchName: "PAP-16015-delivery",
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     await db.insert(issueWorkProducts).values({
@@ -468,6 +477,43 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       cleanupEligibleAt: null,
       cleanupReason: null,
     });
+  });
+
+  it("does not trust directly linked merged products for a different repository or branch", async () => {
+    const seeded = await seedTerminalWorkspace();
+    await db.insert(issueWorkProducts).values([
+      {
+        companyId: seeded.companyId,
+        issueId: seeded.sourceIssueId,
+        executionWorkspaceId: seeded.executionWorkspaceId,
+        type: "pull_request",
+        provider: "github",
+        title: "Wrong branch merged PR",
+        url: "https://github.com/paperclipai/paperclip/pull/10624",
+        status: "merged",
+      },
+      {
+        companyId: seeded.companyId,
+        issueId: seeded.sourceIssueId,
+        executionWorkspaceId: seeded.executionWorkspaceId,
+        type: "pull_request",
+        provider: "github",
+        title: "Wrong repository merged PR",
+        url: "https://github.com/unrelated/paperclip/pull/10623",
+        status: "merged",
+      },
+    ]);
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(readiness?.deliveryState).toBe("unknown");
+    expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+    expect(workspace?.status).toBe("active");
   });
 
   it("does not treat a descendant workspace PR as parent delivery evidence", async () => {
