@@ -1309,8 +1309,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           executionWorkspaceId: workspace.id,
         }),
         assertSafeToCleanup: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
-        // The Git index lock above prevents a commit from crossing final
-        // validation, while non-forced removal rejects late dirty writes.
+        // Git index, HEAD, and branch-ref locks prevent a clean HEAD change
+        // from crossing final validation, while non-forced removal rejects
+        // late dirty writes.
         runCleanupCommands: false,
         forceWorktreeRemoval: false,
       });

@@ -643,9 +643,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(fs.access(cleanupMarker)).rejects.toThrow();
   });
 
-  it("holds the Git index lock across terminal cleanup", async () => {
+  it("holds Git index and ref locks across terminal cleanup", async () => {
     const seeded = await seedTerminalWorkspace({ mergedPr: true });
     let commitFailure = "";
+    let refUpdateFailure = "";
     const lockingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
         pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
@@ -655,12 +656,18 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         } catch (error) {
           commitFailure = error instanceof Error ? error.message : String(error);
         }
+        try {
+          await runGit(seeded.worktreePath, ["update-ref", "HEAD", seeded.headSha]);
+        } catch (error) {
+          refUpdateFailure = error instanceof Error ? error.message : String(error);
+        }
       },
     });
 
     const sweep = await lockingService.sweepTerminalWorkspaces();
 
     expect(commitFailure).toContain("index.lock");
+    expect(refUpdateFailure).toMatch(/HEAD\.lock|refs\/heads\/PAP-16015-delivery\.lock/);
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     await expect(fs.access(seeded.worktreePath)).rejects.toThrow();
   });

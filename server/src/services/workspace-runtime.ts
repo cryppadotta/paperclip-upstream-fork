@@ -3219,16 +3219,31 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
 }
 
 export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
-  const rawLockPath = await runGit(["rev-parse", "--git-path", "index.lock"], worktreePath);
-  const lockPath = path.isAbsolute(rawLockPath)
-    ? rawLockPath
-    : path.resolve(worktreePath, rawLockPath);
-  let lockHandle: fs.FileHandle;
+  const branchRef = await runGit(["symbolic-ref", "--quiet", "HEAD"], worktreePath).catch(() => null);
+  const rawLockPaths = await Promise.all([
+    runGit(["rev-parse", "--git-path", "index.lock"], worktreePath),
+    runGit(["rev-parse", "--git-path", "HEAD.lock"], worktreePath),
+    ...(branchRef
+      ? [runGit(["rev-parse", "--git-path", `${branchRef}.lock`], worktreePath)]
+      : []),
+  ]);
+  const lockPaths = [...new Set(rawLockPaths.map((rawLockPath) =>
+    path.isAbsolute(rawLockPath)
+      ? rawLockPath
+      : path.resolve(worktreePath, rawLockPath)
+  ))];
+  const lockHandles: Array<{ handle: fs.FileHandle; lockPath: string }> = [];
   try {
-    lockHandle = await fs.open(lockPath, "wx", 0o600);
+    for (const lockPath of lockPaths) {
+      lockHandles.push({ handle: await fs.open(lockPath, "wx", 0o600), lockPath });
+    }
   } catch (error) {
+    for (const { handle, lockPath } of lockHandles.reverse()) {
+      await handle.close().catch(() => {});
+      await fs.rm(lockPath, { force: true }).catch(() => {});
+    }
     if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(`git index lock exists at ${lockPath}`);
+      throw new Error("git worktree cleanup lock is already held");
     }
     throw error;
   }
@@ -3237,8 +3252,10 @@ export async function acquireGitWorktreeCleanupLock(worktreePath: string) {
   return async () => {
     if (released) return;
     released = true;
-    await lockHandle.close().catch(() => {});
-    await fs.rm(lockPath, { force: true }).catch(() => {});
+    for (const { handle, lockPath } of lockHandles.reverse()) {
+      await handle.close().catch(() => {});
+      await fs.rm(lockPath, { force: true }).catch(() => {});
+    }
   };
 }
 
