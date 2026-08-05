@@ -40,40 +40,6 @@
         "page",
         "database"
       ]
-    },
-    {
-      "key": "api-key",
-      "transport": "rest_api",
-      "auth": "api_key",
-      "ownershipModes": [
-        "customer"
-      ],
-      "whenToUse": "Use a Notion integration token for direct REST API access.",
-      "defaults": {
-        "serviceHost": "api.notion.com"
-      },
-      "guidanceMd": "Create a Notion internal integration, copy its secret, and share only the pages and databases agents should use.",
-      "riskTier": "S3",
-      "credentialFields": [
-        {
-          "key": "apiKey",
-          "label": "Integration token",
-          "type": "password",
-          "required": true,
-          "placeholder": "secret_...",
-          "secret": true
-        }
-      ],
-      "keyPlacement": {
-        "location": "header",
-        "name": "Authorization",
-        "prefix": "Bearer "
-      },
-      "requiredResourceFilters": [
-        "workspace",
-        "page",
-        "database"
-      ]
     }
   ]
 }

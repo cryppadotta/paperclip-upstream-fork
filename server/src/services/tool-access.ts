@@ -4339,18 +4339,6 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         };
       }
 
-      if (galleryEntry && method?.transport === "rest_api") {
-        return {
-          connectionId: connectionRow.id,
-          application: toApplication(applicationRow),
-          connection: toConnection(connectionRow),
-          catalog: [],
-          actions: { readOnly: [], canMakeChanges: [] },
-          suggestedDefaults,
-          auth: null,
-        };
-      }
-
       try {
         await checkConnectionHealth(connectionRow.id, actor);
       } catch (error) {

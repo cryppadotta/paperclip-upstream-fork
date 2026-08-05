@@ -4726,36 +4726,35 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
-  it("honors the selected gallery method and stores its credentials", async () => {
+  it("honors and validates the selected gallery method", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
+    mockToolsList([]);
 
     const connected = await service.connectGalleryApp(
       company.id,
       {
-        galleryKey: "notion",
-        methodKey: "api-key",
-        name: "Notion REST",
-        credentialValues: { "credentials.apiKey": "secret_notion" },
+        galleryKey: "github",
+        methodKey: "mcp-key",
+        name: "GitHub selected method",
+        credentialValues: { "credentials.authorization": "github_pat_test" },
       },
       { actorType: "user", actorId: "board" },
     );
 
-    expect(connected.auth).toBeNull();
     expect(connected.connection).toMatchObject({
-      transport: "rest_api",
+      transport: "mcp_remote",
       authKind: "api_key",
       status: "draft",
       enabled: false,
       config: expect.objectContaining({
-        serviceHost: "api.notion.com",
-        sourceTemplateKey: "notion",
-        sourceMethodKey: "api-key",
+        sourceTemplateKey: "github",
+        sourceMethodKey: "mcp-key",
       }),
       credentialSecretRefs: [
         expect.objectContaining({
-          configPath: "credentials.apiKey",
-          label: "Integration token",
+          configPath: "credentials.authorization",
+          label: "GitHub token",
         }),
       ],
     });

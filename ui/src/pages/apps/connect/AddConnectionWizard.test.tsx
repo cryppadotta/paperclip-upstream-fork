@@ -135,27 +135,13 @@ describe("AddConnectionWizard — grammar orchestrator", () => {
     expect(buttonContaining("Create")?.textContent).toContain(GITHUB.name);
   });
 
-  it("offers Notion MCP and REST methods with distinct UID namespaces", async () => {
+  it("opens Notion's executable hosted MCP configuration", async () => {
     mockParams.appKey = "notion";
     await render();
 
-    expect(container.textContent).toContain("Choose a connection method");
-    expect(container.textContent).toContain("MCP");
-    expect(container.textContent).toContain("REST API");
-    expect(container.textContent).toContain("Use Notion's hosted MCP server");
-    expect(container.textContent).toContain("Use a Notion integration token");
-
-    await act(async () => click(buttonContaining("MCP")));
-    await flushReact();
+    expect(container.textContent).toContain("Register OAuth Connector for Notion");
+    expect(container.textContent).toContain("Add this redirect URI to your OAuth app");
     expect(container.textContent).toContain("notion/");
-
-    await act(async () => click(buttonContaining("Choose a connection method")));
-    await flushReact();
-    await act(async () => click(buttonContaining("REST API")));
-    await flushReact();
-
-    expect(container.textContent).toContain("api.notion.com/");
-    expect(container.querySelector<HTMLInputElement>('input[placeholder="secret_..."]')).toBeTruthy();
   });
 
   it("connects an api-key app and advances to the Actions step", async () => {
@@ -219,37 +205,6 @@ describe("AddConnectionWizard — grammar orchestrator", () => {
 
     await act(async () => click(signIn));
     expect(assignMock).toHaveBeenCalledWith("https://slack.com/oauth/authorize?x=1");
-  });
-
-  it("sends the selected method for a multi-method app", async () => {
-    mockParams.appKey = "notion";
-    connectAppMock.mockResolvedValue({
-      connectionId: "conn-notion",
-      application: { id: "app-notion", name: NOTION.name },
-      connection: {},
-      catalog: [],
-      actions: { readOnly: [], canMakeChanges: [] },
-      suggestedDefaults: {},
-      auth: null,
-    });
-    await render();
-
-    await act(async () => click(buttonContaining("REST API")));
-    await flushReact();
-    const token = container.querySelector<HTMLInputElement>('input[placeholder="secret_..."]');
-    await act(async () => setInputValue(token!, "secret_notion"));
-    await flushReact();
-    await act(async () => click(buttonContaining("Create")));
-    await flushReact();
-
-    expect(connectAppMock).toHaveBeenCalledWith(
-      "company-1",
-      expect.objectContaining({
-        galleryKey: "notion",
-        methodKey: "api-key",
-        credentialValues: { "credentials.apiKey": "secret_notion" },
-      }),
-    );
   });
 
   it("finishes: enables an action, keeps default all-agents access, and calls finishApp", async () => {
