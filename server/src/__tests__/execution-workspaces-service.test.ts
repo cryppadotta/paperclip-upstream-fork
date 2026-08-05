@@ -367,7 +367,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     return { companyId, projectId, executionWorkspaceId, sourceIssueId, identifier };
   }
 
-  it("reports a cross-issue squash delivery as merged_via_pr and suppresses the ancestry warning", async () => {
+  it("reports a squash cross-branch delivery as merged_via_pr and suppresses the ancestry warning", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
     const worktreePath = path.join(path.dirname(repoRoot), `paperclip-delivery-${randomUUID()}`);
@@ -386,27 +386,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
       branchName: "PAP-16015-delivery",
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
-    const prIssueId = randomUUID();
-    await db.insert(issues).values({
-      id: prIssueId,
-      companyId: seeded.companyId,
-      projectId: seeded.projectId,
-      title: `Create PR for ${seeded.identifier}`,
-      status: "done",
-      priority: "medium",
-    });
-    await db.insert(issueReferenceMentions).values({
-      companyId: seeded.companyId,
-      sourceIssueId: prIssueId,
-      targetIssueId: seeded.sourceIssueId,
-      sourceKind: "title",
-      sourceRecordId: null,
-      documentKey: null,
-      matchedText: seeded.identifier,
-    });
     await db.insert(issueWorkProducts).values({
       companyId: seeded.companyId,
-      issueId: prIssueId,
+      issueId: seeded.sourceIssueId,
       type: "pull_request",
       provider: "github",
       title: "Cross-branch delivery",
@@ -438,7 +420,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(archived?.cleanupEligibleAt).toBeInstanceOf(Date);
   }, 20_000);
 
-  it("does not treat an unrelated issue branch mention as delivery evidence", async () => {
+  it("does not treat an unrelated inbound issue mention as delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
     const unrelatedIssueId = randomUUID();
     await db.insert(issues).values({
@@ -448,6 +430,15 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       title: `Investigate ${seeded.identifier} follow-up`,
       status: "done",
       priority: "medium",
+    });
+    await db.insert(issueReferenceMentions).values({
+      companyId: seeded.companyId,
+      sourceIssueId: unrelatedIssueId,
+      targetIssueId: seeded.sourceIssueId,
+      sourceKind: "title",
+      sourceRecordId: null,
+      documentKey: null,
+      matchedText: seeded.identifier,
     });
     await db.insert(issueWorkProducts).values({
       companyId: seeded.companyId,

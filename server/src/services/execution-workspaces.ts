@@ -9,7 +9,6 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
-  issueReferenceMentions,
   issueWorkProducts,
   issues,
   projects,
@@ -1076,19 +1075,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     issueTreeIds: string[],
   ) {
     if (!workspace.sourceIssueId) return [];
-    const inboundReferences = await db
-      .select({ issueId: issueReferenceMentions.sourceIssueId })
-      .from(issueReferenceMentions)
-      .where(and(
-        eq(issueReferenceMentions.companyId, workspace.companyId),
-        eq(issueReferenceMentions.targetIssueId, workspace.sourceIssueId),
-      ));
-    const relatedIssueIds = [...new Set([
-      ...issueTreeIds,
-      ...inboundReferences.map((row) => row.issueId),
-    ])];
     const referencesWorkspace = or(
-      inArray(issueWorkProducts.issueId, relatedIssueIds),
+      inArray(issueWorkProducts.issueId, issueTreeIds),
       eq(issueWorkProducts.executionWorkspaceId, workspace.id),
     );
 
