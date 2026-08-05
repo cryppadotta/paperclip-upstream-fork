@@ -153,15 +153,20 @@ export function getMergeConfirmationPullRequestReferences(
   const intentValues = [row.title, row.summary, payload.prompt, payload.acceptLabel];
   const intentText = intentValues.filter((value): value is string => typeof value === "string").join("\n");
   if (!MERGE_CONFIRMATION_INTENT_PATTERN.test(intentText)) return [];
-  if (GOVERNED_CONFIRMATION_INTENT_PATTERN.test(intentText)) return [];
 
-  return extractGitHubPullRequestReferences([
+  const trustedTextValues = [
     ...intentValues,
     payload.detailsMarkdown,
     target?.key,
     target?.label,
     target?.href,
-  ]);
+  ];
+  const trustedText = trustedTextValues
+    .filter((value): value is string => typeof value === "string")
+    .join("\n");
+  if (GOVERNED_CONFIRMATION_INTENT_PATTERN.test(trustedText)) return [];
+
+  return extractGitHubPullRequestReferences(trustedTextValues);
 }
 
 const ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT =

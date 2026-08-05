@@ -73,6 +73,34 @@ describe("merged pull-request confirmation extraction", () => {
       { host: "github.com", owner: "paperclipai", repo: "paperclip", number: 40 },
     ]);
   });
+
+  it("denies governed actions mentioned in details or custom target metadata", () => {
+    const base = {
+      kind: "request_confirmation",
+      title: "Merge the linked PR?",
+      summary: "The checks are green.",
+    } as const;
+    expect(getMergeConfirmationPullRequestReferences({
+      ...base,
+      payload: {
+        version: 1,
+        prompt: "Merge the linked pull request?",
+        detailsMarkdown: "Deploy to production after paperclipai/paperclip#39 merges.",
+      },
+    })).toEqual([]);
+    expect(getMergeConfirmationPullRequestReferences({
+      ...base,
+      payload: {
+        version: 1,
+        prompt: "Merge the linked pull request?",
+        target: {
+          type: "custom",
+          label: "Release to production",
+          href: "https://github.com/paperclipai/paperclip/pull/39",
+        },
+      },
+    })).toEqual([]);
+  });
 });
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -141,6 +169,7 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
 
     const interactionIds = {
       merged: randomUUID(),
+      boardOrAgents: randomUUID(),
       someOpen: randomUUID(),
       zeroRefs: randomUUID(),
       toolAction: randomUUID(),
@@ -159,6 +188,14 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
         ...common,
         id: interactionIds.merged,
         title: "Merge https://github.com/paperclipai/paperclip/pull/39?",
+        payload: { version: 1, prompt: "Merge the PR?" },
+      },
+      {
+        ...common,
+        id: interactionIds.boardOrAgents,
+        title: "Merge paperclipai/paperclip#39?",
+        requestedResolverPolicy: "board_or_agents",
+        effectiveResolverPolicy: "board_or_agents",
         payload: { version: 1, prompt: "Merge the PR?" },
       },
       {
@@ -195,10 +232,10 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
     });
 
     await expect(service.sweepMergedPullRequestConfirmations()).resolves.toEqual({
-      checked: 4,
-      candidates: 2,
-      accepted: 1,
-      woken: 1,
+      checked: 5,
+      candidates: 3,
+      accepted: 2,
+      woken: 2,
     });
 
     const stored = await db
@@ -207,6 +244,7 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
       .where(inArray(issueThreadInteractions.id, Object.values(interactionIds)));
     expect(new Map(stored.map((row) => [row.id, row.status]))).toEqual(new Map([
       [interactionIds.merged, "accepted"],
+      [interactionIds.boardOrAgents, "accepted"],
       [interactionIds.someOpen, "pending"],
       [interactionIds.zeroRefs, "pending"],
       [interactionIds.toolAction, "pending"],
@@ -215,6 +253,11 @@ describeEmbeddedPostgres.sequential("merged pull-request confirmation sweep", ()
       requestedByActorType: "system",
       requestedByActorId: "system:pr-merged",
       idempotencyKey: `interaction:${interactionIds.merged}:accepted`,
+    }));
+    expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
+      requestedByActorType: "system",
+      requestedByActorId: "system:pr-merged",
+      idempotencyKey: `interaction:${interactionIds.boardOrAgents}:accepted`,
     }));
     expect(resolvePullRequestState).toHaveBeenCalledTimes(2);
 
