@@ -11,7 +11,7 @@ import {
   ShieldAlert,
   XCircle,
 } from "lucide-react";
-import type { DecisionEffect, DecisionOption } from "@paperclipai/shared";
+import { decisionEffectTargetIssueIds, type DecisionEffect, type DecisionOption } from "@paperclipai/shared";
 import type {
   Decision,
   DecisionEffectExecution,
@@ -66,18 +66,6 @@ export interface DecisionCardProps {
 function humanStatus(status: string | null | undefined): string {
   if (!status) return "unknown";
   return status.replaceAll("_", " ");
-}
-
-function referencedTargetIds(effect: DecisionEffect): string[] {
-  const ids = new Set([effect.targetIssueId]);
-  if (effect.type === "create_issue") {
-    if (effect.draft.parentId) ids.add(effect.draft.parentId);
-    for (const id of effect.draft.blockedByIssueIds ?? []) ids.add(id);
-  }
-  if (effect.type === "resolve_blocker") {
-    for (const id of effect.removeBlockedByIssueIds) ids.add(id);
-  }
-  return [...ids];
 }
 
 function issueLabel(ref: DecisionIssueRef | null, fallbackId: string): string {
@@ -322,7 +310,7 @@ export function DecisionCard({
     const ids = new Set<string>();
     for (const option of decision.options) {
       for (const effect of option.effects) {
-        for (const id of referencedTargetIds(effect)) ids.add(id);
+        for (const id of decisionEffectTargetIssueIds(effect)) ids.add(id);
       }
     }
     if (originIssue?.id) ids.delete(originIssue.id);
@@ -451,7 +439,7 @@ export function DecisionCard({
           {decision.options.map((option) => {
             const destructive = isDestructiveOption(option);
             const blockedStale = option.effects.some(
-              (effect) => effect.staleness === "strict" && referencedTargetIds(effect).some((id) => staleTargetIdSet.has(id)),
+              (effect) => effect.staleness === "strict" && decisionEffectTargetIssueIds(effect).some((id) => staleTargetIdSet.has(id)),
             );
             const disabled = busy || requiredUnmet || blockedStale;
             const cancelTree = cancelTreeEffect(option);

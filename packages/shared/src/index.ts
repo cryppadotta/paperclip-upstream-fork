@@ -20,6 +20,8 @@ export {
   type DecisionSpecInput,
 } from "./validators/decision.js";
 
+export { decisionEffectTargetIssueIds } from "./types/decision.js";
+
 export type {
   DecisionEffectStaleness,
   DecisionOptionStyle,

@@ -1,3 +1,4 @@
+export { decisionEffectTargetIssueIds } from "./decision.js";
 export type {
   Company,
   InteractionResolverGovernance,
