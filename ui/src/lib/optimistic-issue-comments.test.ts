@@ -628,6 +628,7 @@ describe("optimistic issue comments", () => {
           strategyType: "project_primary",
           branchName: null,
           status: "active",
+          deliveryState: "unknown",
           name: "Execution workspace",
           cwd: "/tmp/paperclip",
           repoUrl: null,

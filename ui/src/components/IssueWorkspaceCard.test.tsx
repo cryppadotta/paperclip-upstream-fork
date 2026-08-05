@@ -49,6 +49,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "Issue sandbox",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/issue-sandbox",
     repoUrl: null,
     baseRef: null,

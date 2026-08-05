@@ -292,6 +292,7 @@ function createExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): 
     strategyType: "git_worktree",
     name: "PAP-1 workspace",
     status: "active",
+    deliveryState: "unknown",
     cwd: "/tmp/paperclip/PAP-1",
     repoUrl: null,
     baseRef: "master",

@@ -10,6 +10,7 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     projectWorkspaceId: "project-workspace-1",
     sourceIssueId: null,
     status: "active",
+    deliveryState: "unknown",
     mode: "isolated_workspace",
     strategyType: "git_worktree",
     name: "Parent workspace",

@@ -258,6 +258,7 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     strategyType: "git_worktree",
     name: "PAP-1 branch",
     status: "active",
+    deliveryState: overrides.deliveryState ?? "unknown",
     cwd: "/tmp/project/worktree",
     repoUrl: null,
     baseRef: null,
