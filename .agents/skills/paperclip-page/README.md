@@ -90,7 +90,10 @@ Credential resolution order inside `publish.sh`:
 1. `PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID` + `PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY`
    (scoped to the helper's `aws` calls; the surrounding process identity is
    untouched)
-2. `PAPERCLIP_PAGE_AWS_PROFILE`, passed to `aws` as `--profile`
+2. `PAPERCLIP_PAGE_AWS_PROFILE`, passed to `aws` as `--profile` (ambient
+   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` /
+   `AWS_PROFILE` are stripped from the helper's `aws` calls so the named
+   profile always wins)
 3. The ambient AWS credential chain
 
 Setting both the namespaced key pair and `PAPERCLIP_PAGE_AWS_PROFILE` is an

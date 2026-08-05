@@ -21,7 +21,8 @@ Optional environment:
 Credential resolution for aws calls made by this helper:
   1. PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID + PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY
      (used only by this helper; ambient AWS_PROFILE/AWS_* identity is untouched)
-  2. PAPERCLIP_PAGE_AWS_PROFILE (passed as --profile)
+  2. PAPERCLIP_PAGE_AWS_PROFILE (passed as --profile; ambient AWS_* identity
+     variables are stripped from the helper's aws calls)
   3. Ambient AWS credential chain (env keys, profile, instance role)
 
 Options:
@@ -133,14 +134,15 @@ join_prefix() {
 }
 
 aws_base_args=()
+aws_env_unset=()
 aws_env_overrides=()
 
 aws_cli() {
-  if [[ ${#aws_env_overrides[@]} -gt 0 ]]; then
+  if [[ ${#aws_env_unset[@]} -gt 0 || ${#aws_env_overrides[@]} -gt 0 ]]; then
     # Scope the page-uploader identity to this helper's aws calls only, and
-    # drop ambient profile/session state so the static key pair resolves
-    # deterministically instead of mixing with the surrounding identity.
-    env -u AWS_PROFILE -u AWS_SESSION_TOKEN "${aws_env_overrides[@]}" \
+    # drop the ambient identity variables that would otherwise mix with or
+    # shadow the configured credential source.
+    env "${aws_env_unset[@]}" "${aws_env_overrides[@]}" \
       aws "${aws_base_args[@]}" "$@"
   else
     aws "${aws_base_args[@]}" "$@"
@@ -340,6 +342,7 @@ if [[ "$dry_run" == "0" ]]; then
   [[ -n "$region" ]] || die "AWS_REGION is required for live publish"
   aws_base_args=(--region "$region")
   if [[ -n "$page_access_key_id" ]]; then
+    aws_env_unset=(-u AWS_PROFILE -u AWS_SESSION_TOKEN)
     aws_env_overrides=(
       AWS_ACCESS_KEY_ID="$page_access_key_id"
       AWS_SECRET_ACCESS_KEY="$page_secret_access_key"
@@ -349,6 +352,7 @@ if [[ "$dry_run" == "0" ]]; then
     fi
   elif [[ -n "${PAPERCLIP_PAGE_AWS_PROFILE:-}" ]]; then
     aws_base_args+=(--profile "$PAPERCLIP_PAGE_AWS_PROFILE")
+    aws_env_unset=(-u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_PROFILE)
   fi
 fi
 

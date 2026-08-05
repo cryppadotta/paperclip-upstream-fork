@@ -222,6 +222,68 @@ exit 0
   assert.match(seen, /^AWS_PROFILE=<unset>$/m);
 });
 
+test("PAPERCLIP_PAGE_AWS_PROFILE strips ambient static credentials", () => {
+  const siteDir = createSite();
+  const binDir = mkdtempSync(join(tmpdir(), "paperclip-page-bin-"));
+  tempDirs.add(binDir);
+  const envDump = join(binDir, "aws-env.txt");
+
+  writeExecutable(
+    join(binDir, "aws"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+profile="<none>"
+while [[ "$1" == "--region" || "$1" == "--profile" ]]; do
+  if [[ "$1" == "--profile" ]]; then
+    profile="$2"
+  fi
+  shift 2
+done
+{
+  echo "PROFILE_ARG=$profile"
+  echo "AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID:-<unset>}"
+  echo "AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY:-<unset>}"
+  echo "AWS_SESSION_TOKEN=\${AWS_SESSION_TOKEN:-<unset>}"
+  echo "AWS_PROFILE=\${AWS_PROFILE:-<unset>}"
+} >"${envDump}"
+if [[ "$1" == "s3api" ]]; then
+  echo "None"
+  exit 0
+fi
+if [[ "$1" == "s3" && "$2" == "sync" ]]; then
+  exit 0
+fi
+echo "unexpected aws call: $*" >&2
+exit 1
+`,
+  );
+  writeExecutable(
+    join(binDir, "curl"),
+    `#!/usr/bin/env bash
+exit 0
+`,
+  );
+
+  const result = runPublish([siteDir, "--slug", "demo-page"], {
+    AWS_REGION: "us-east-1",
+    PATH: `${binDir}:${process.env.PATH}`,
+    AWS_ACCESS_KEY_ID: "AKIAAMBIENTIDENTITY",
+    AWS_SECRET_ACCESS_KEY: "ambient-secret",
+    AWS_SESSION_TOKEN: "ambient-session-token",
+    AWS_PROFILE: "ambient-profile",
+    PAPERCLIP_PAGE_AWS_PROFILE: "paperclip-page-uploader",
+  });
+
+  assert.equal(result.status, 0);
+
+  const seen = readFileSync(envDump, "utf8");
+  assert.match(seen, /^PROFILE_ARG=paperclip-page-uploader$/m);
+  assert.match(seen, /^AWS_ACCESS_KEY_ID=<unset>$/m);
+  assert.match(seen, /^AWS_SECRET_ACCESS_KEY=<unset>$/m);
+  assert.match(seen, /^AWS_SESSION_TOKEN=<unset>$/m);
+  assert.match(seen, /^AWS_PROFILE=<unset>$/m);
+});
+
 test("live publish writes state before URL verification", () => {
   const siteDir = createSite();
   const binDir = mkdtempSync(join(tmpdir(), "paperclip-page-bin-"));
