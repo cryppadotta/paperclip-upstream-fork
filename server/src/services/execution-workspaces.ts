@@ -1304,6 +1304,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         executionWorkspaceId: workspace.id,
       }),
       assertSafeToRemove: () => assertTerminalCleanupGitStateUnchanged(workspace, expectedHeadSha),
+      // Automated archival must not run user-configured hooks: a hook can
+      // delete work created after the last Git-state check. A non-forced Git
+      // removal provides a final fail-closed guard if the worktree changes in
+      // the narrow interval after revalidation.
+      runCleanupCommands: false,
+      forceWorktreeRemoval: false,
     });
     const cleanupReason = [ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON, ...cleanup.warnings].join(" | ");
     if (!cleanup.cleaned || cleanup.warnings.length > 0) {

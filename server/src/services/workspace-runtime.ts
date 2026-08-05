@@ -3240,6 +3240,8 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   teardownCommand?: string | null;
   recorder?: WorkspaceOperationRecorder | null;
   assertSafeToRemove?: (() => Promise<void>) | null;
+  runCleanupCommands?: boolean;
+  forceWorktreeRemoval?: boolean;
 }) {
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
@@ -3270,13 +3272,15 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
-  const cleanupCommands = [
-    input.cleanupCommand ?? null,
-    input.projectWorkspace?.cleanupCommand ?? null,
-    input.teardownCommand ?? null,
-  ]
-    .map((value) => asString(value, "").trim())
-    .filter(Boolean);
+  const cleanupCommands = input.runCleanupCommands === false
+    ? []
+    : [
+        input.cleanupCommand ?? null,
+        input.projectWorkspace?.cleanupCommand ?? null,
+        input.teardownCommand ?? null,
+      ]
+        .map((value) => asString(value, "").trim())
+        .filter(Boolean);
 
   for (const command of cleanupCommands) {
     try {
@@ -3333,7 +3337,12 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
           await input.assertSafeToRemove?.();
           await recordGitOperation(input.recorder, {
             phase: "worktree_cleanup",
-            args: ["worktree", "remove", "--force", workspacePath],
+            args: [
+              "worktree",
+              "remove",
+              ...(input.forceWorktreeRemoval === false ? [] : ["--force"]),
+              workspacePath,
+            ],
             cwd: repoRoot,
             metadata: {
               workspaceId: input.workspace.id,

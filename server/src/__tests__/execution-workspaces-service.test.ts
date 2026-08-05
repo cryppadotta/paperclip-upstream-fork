@@ -620,6 +620,28 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       .resolves.toBe("not delivered\n");
   });
 
+  it("archives terminal workspaces without running configured cleanup hooks", async () => {
+    const seeded = await seedTerminalWorkspace({ mergedPr: true });
+    const cleanupMarker = path.join(path.dirname(seeded.worktreePath), `cleanup-marker-${randomUUID()}`);
+    tempDirs.add(cleanupMarker);
+    await db.update(executionWorkspaces).set({
+      metadata: {
+        createdByRuntime: true,
+        config: { cleanupCommand: `touch ${cleanupMarker}` },
+      },
+    }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [workspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
+    expect(workspace?.status).toBe("archived");
+    await expect(fs.access(cleanupMarker)).rejects.toThrow();
+  });
+
   it("does not treat a descendant PR on the shared workspace as parent delivery evidence", async () => {
     const seeded = await seedTerminalWorkspace();
     const descendantIssueId = randomUUID();
