@@ -6,10 +6,8 @@ import { EmptyState } from "../../components/EmptyState";
 import { AuditFeed } from "./AuditFeed";
 
 /**
- * Company-level agent audit page — a permission-gated
- * rich view in the unified codebase, matching the `tools:view_audit` precedent.
- * The feed itself renders the upsell/permission-denied state when the caller
- * lacks `audit:view_agent_actions` (server-authoritative, see `AuditFeed`).
+ * Company-level audit page. All company readers receive the redacted shared
+ * feed; attribution filters and export remain permission-gated server-side.
  */
 export function CompanyAudit() {
   const { selectedCompanyId } = useCompany();

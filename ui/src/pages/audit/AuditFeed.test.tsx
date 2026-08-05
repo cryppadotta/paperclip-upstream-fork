@@ -91,7 +91,7 @@ describe("AuditFeed", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null });
+    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "full" });
     listAgentsMock.mockResolvedValue([{ id: "agent-1", name: "Fable", icon: null }]);
     listUserDirectoryMock.mockResolvedValue({
       users: [{ principalId: "user-1", status: "active", user: { id: "user-1", name: "Dotta", email: null, image: null } }],
@@ -116,6 +116,7 @@ describe("AuditFeed", () => {
       );
     });
     await flushReact();
+    return client;
   }
 
   function clickButton(text: string) {
@@ -129,6 +130,10 @@ describe("AuditFeed", () => {
   it("renders the humanized sentence, the task link, the excerpt, and the on-behalf chip", async () => {
     await render();
 
+    expect(listAgentActionsMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ actorScope: "all" }),
+    );
     expect(container.textContent).toContain("Fable");
     expect(container.textContent).toContain("commented on");
     const taskLink = container.querySelector('a[href="/issues/PAP-1"]');
@@ -151,11 +156,104 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("Recorded by Paperclip");
   });
 
+  it("hides attribution filters and export for a basic all-actors reader", async () => {
+    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
+    await render();
+
+    expect(container.textContent).toContain("commented on");
+    expect(container.textContent).not.toContain("All agents");
+    expect(container.textContent).not.toContain("All responsible users");
+    expect(container.textContent).not.toContain("Export CSV");
+  });
+
+  it("clears privileged filters and recovers the basic feed after an access downgrade", async () => {
+    let permissionRevoked = false;
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { from?: string }) => {
+      if (permissionRevoked && filters.from) {
+        return Promise.reject(
+          new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
+        );
+      }
+      return Promise.resolve({
+        items: [record()],
+        nextCursor: null,
+        accessTier: permissionRevoked ? "basic" : "full",
+      });
+    });
+    await render();
+
+    const fromDate = container.querySelector<HTMLInputElement>('input[aria-label="From date"]');
+    expect(fromDate).toBeTruthy();
+    const setInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    expect(setInputValue).toBeTruthy();
+    await act(async () => {
+      permissionRevoked = true;
+      setInputValue!.call(fromDate, "2026-08-01");
+      fromDate!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(listAgentActionsMock.mock.calls.some(([, filters]) => filters.from)).toBe(true);
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "all", from: undefined }),
+    );
+    expect(container.textContent).toContain("commented on");
+    expect(container.textContent).not.toContain("Paperclip Enterprise view");
+    expect(container.textContent).not.toContain("All agents");
+    expect(container.textContent).not.toContain("Export CSV");
+  });
+
+  it("drops cached privileged pages when pagination observes an access downgrade", async () => {
+    let permissionRevoked = false;
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
+      if (filters.cursor === "cursor-2") {
+        return Promise.resolve({
+          items: [record({
+            id: "evt-2",
+            agentId: null,
+            runId: null,
+            responsibleUserId: null,
+            details: null,
+          })],
+          nextCursor: null,
+          accessTier: "basic",
+        });
+      }
+      if (permissionRevoked) {
+        return Promise.resolve({
+          items: [record({ agentId: null, runId: null, responsibleUserId: null, details: null })],
+          nextCursor: null,
+          accessTier: "basic",
+        });
+      }
+      return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
+    });
+    await render();
+
+    expect(container.textContent).toContain("on behalf of Dotta");
+    expect(container.textContent).toContain("Export CSV");
+    permissionRevoked = true;
+    await clickButton("Load more");
+    await flushReact();
+
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "all", cursor: undefined }),
+    );
+    expect(container.textContent).toContain("commented on");
+    expect(container.textContent).not.toContain("on behalf of Dotta");
+    expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("All agents");
+    expect(container.textContent).not.toContain("Export CSV");
+  });
+
   it("hides the agent filter and pins the query when lockedAgentId is set", async () => {
     await render({ lockedAgentId: "agent-1" });
 
     const [, filters] = listAgentActionsMock.mock.calls[0];
-    expect((filters as { agentId?: string }).agentId).toBe("agent-1");
+    expect(filters).toEqual(expect.objectContaining({ actorScope: "agents", agentId: "agent-1" }));
     // No "All agents" option means the agent filter is hidden on the per-agent tab.
     expect(container.textContent).not.toContain("All agents");
   });
@@ -171,9 +269,9 @@ describe("AuditFeed", () => {
   it("loads more when a cursor is returned", async () => {
     listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
       if (filters.cursor === "cursor-2") {
-        return Promise.resolve({ items: [record({ id: "evt-2", entity: { issue: { id: "i2", identifier: "PAP-2", title: "Second" }, comment: null, document: null } })], nextCursor: null });
+        return Promise.resolve({ items: [record({ id: "evt-2", entity: { issue: { id: "i2", identifier: "PAP-2", title: "Second" }, comment: null, document: null } })], nextCursor: null, accessTier: "full" });
       }
-      return Promise.resolve({ items: [record()], nextCursor: "cursor-2" });
+      return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
     });
     await render();
 
@@ -196,7 +294,10 @@ describe("AuditFeed", () => {
     await clickButton("Export CSV");
     await flushReact();
 
-    expect(exportCsvMock).toHaveBeenCalledWith("company-1", expect.any(Object));
+    expect(exportCsvMock).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ actorScope: "all" }),
+    );
     expect(createUrl).toHaveBeenCalled();
     expect(revokeUrl).not.toHaveBeenCalled();
     const deferredRevoke = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)?.[0];

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
@@ -256,6 +256,10 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   );
 
   const filters: AuditActionFilters = {
+    // The company feed is the shared all-actors view. The per-agent tab keeps
+    // the legacy privileged scope because it always carries an attribution
+    // filter and must not silently downgrade to the basic tier.
+    actorScope: lockedAgentId ? "agents" : "all",
     agentId: lockedAgentId ?? (agent === ALL ? undefined : agent),
     responsibleUserId: responsibleUser === ALL ? undefined : responsibleUser,
     action: actionDomain === ALL ? undefined : actionDomain,
@@ -275,6 +279,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
 
   const feed = useInfiniteQuery({
     queryKey: queryKeys.audit.agentActions(companyId, {
+      actorScope: filters.actorScope,
       agentId: filters.agentId,
       responsibleUserId: filters.responsibleUserId,
       action: filters.action,
@@ -295,6 +300,33 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   );
 
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
+  const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
+  const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
+  // Access may be revoked between cursor requests. Treat the least-privileged
+  // page as authoritative until every cached page has been fetched again.
+  const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
+  const hasMixedAccessTiers = hasBasicPage && hasFullPage;
+  const canUseAdvancedControls = lockedAgentId
+    ? true
+    : accessTier === "full";
+  const recoveringFromAccessDowngrade = Boolean(
+    !lockedAgentId
+      && ((permissionDenied && hasActiveFilters) || hasMixedAccessTiers),
+  );
+
+  useEffect(() => {
+    if (!lockedAgentId && (accessTier === "basic" || recoveringFromAccessDowngrade)) {
+      setAgent(ALL);
+      setResponsibleUser(ALL);
+      setActionDomain(ALL);
+      setEntityType(ALL);
+      setDateFrom("");
+      setDateTo("");
+    }
+    if (hasMixedAccessTiers) {
+      void feed.refetch();
+    }
+  }, [accessTier, feed, hasMixedAccessTiers, lockedAgentId, recoveringFromAccessDowngrade]);
 
   const clearFilters = () => {
     setAgent(ALL);
@@ -309,6 +341,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     setExporting(true);
     try {
       const blob = await auditApi.exportAgentActionsCsv(companyId, {
+        actorScope: filters.actorScope,
         agentId: filters.agentId,
         responsibleUserId: filters.responsibleUserId,
         action: filters.action,
@@ -338,7 +371,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     }
   };
 
-  if (permissionDenied) {
+  if (permissionDenied && !recoveringFromAccessDowngrade) {
     return <AuditUpsell />;
   }
 
@@ -349,100 +382,108 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
           <div>
             <h1 className="text-lg font-semibold text-foreground">Audit</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Everything your agents did, newest first — each line is one recorded action, with the
-              person responsible for it. Click through to the task or run for the full context.
+              Everything your company did, newest first — each line is one recorded action. Full
+              audit access also shows responsible-person and run attribution.
             </p>
           </div>
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2">
-        {!lockedAgentId ? (
-          <Select value={agent} onValueChange={setAgent}>
-            <SelectTrigger className="w-40">
-              <SelectValue placeholder="Agent" />
+      {canUseAdvancedControls ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {!lockedAgentId ? (
+            <Select value={agent} onValueChange={setAgent}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Agent" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All agents</SelectItem>
+                {(agents.data ?? []).map((a) => (
+                  <SelectItem key={a.id} value={a.id}>
+                    {a.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : null}
+          <Select value={responsibleUser} onValueChange={setResponsibleUser}>
+            <SelectTrigger className="w-44">
+              <SelectValue placeholder="Responsible user" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL}>All agents</SelectItem>
-              {(agents.data ?? []).map((a) => (
-                <SelectItem key={a.id} value={a.id}>
-                  {a.name}
+              <SelectItem value={ALL}>All responsible users</SelectItem>
+              {(userDirectory.data?.users ?? []).map((u) => (
+                <SelectItem key={u.principalId} value={u.principalId}>
+                  {u.user?.name ?? u.user?.email ?? u.principalId.slice(0, 8)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-        ) : null}
-        <Select value={responsibleUser} onValueChange={setResponsibleUser}>
-          <SelectTrigger className="w-44">
-            <SelectValue placeholder="Responsible user" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All responsible users</SelectItem>
-            {(userDirectory.data?.users ?? []).map((u) => (
-              <SelectItem key={u.principalId} value={u.principalId}>
-                {u.user?.name ?? u.user?.email ?? u.principalId.slice(0, 8)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={actionDomain} onValueChange={setActionDomain}>
-          <SelectTrigger className="w-36">
-            <SelectValue placeholder="Action" />
-          </SelectTrigger>
-          <SelectContent>
-            {ACTION_DOMAINS.map((d) => (
-              <SelectItem key={d.value} value={d.value}>
-                {d.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={entityType} onValueChange={setEntityType}>
-          <SelectTrigger className="w-36">
-            <SelectValue placeholder="Entity" />
-          </SelectTrigger>
-          <SelectContent>
-            {ENTITY_TYPES.map((e) => (
-              <SelectItem key={e.value} value={e.value}>
-                {e.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Input
-          type="date"
-          aria-label="From date"
-          value={dateFrom}
-          max={dateTo || undefined}
-          onChange={(e) => setDateFrom(e.target.value)}
-          className="w-36"
-        />
-        <Input
-          type="date"
-          aria-label="To date"
-          value={dateTo}
-          min={dateFrom || undefined}
-          onChange={(e) => setDateTo(e.target.value)}
-          className="w-36"
-        />
-        {hasActiveFilters ? (
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
+          <Select value={actionDomain} onValueChange={setActionDomain}>
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="Action" />
+            </SelectTrigger>
+            <SelectContent>
+              {ACTION_DOMAINS.map((d) => (
+                <SelectItem key={d.value} value={d.value}>
+                  {d.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={entityType} onValueChange={setEntityType}>
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="Entity" />
+            </SelectTrigger>
+            <SelectContent>
+              {ENTITY_TYPES.map((e) => (
+                <SelectItem key={e.value} value={e.value}>
+                  {e.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            type="date"
+            aria-label="From date"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="w-36"
+          />
+          <Input
+            type="date"
+            aria-label="To date"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="w-36"
+          />
+          {hasActiveFilters ? (
+            <Button variant="ghost" size="sm" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={handleExport}
+            disabled={exporting || feed.isLoading || items.length === 0}
+          >
+            <Download className="mr-1.5 h-4 w-4" />
+            {exporting ? "Exporting…" : "Export CSV"}
           </Button>
-        ) : null}
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto"
-          onClick={handleExport}
-          disabled={exporting || feed.isLoading || items.length === 0}
-        >
-          <Download className="mr-1.5 h-4 w-4" />
-          {exporting ? "Exporting…" : "Export CSV"}
-        </Button>
-      </div>
+        </div>
+      ) : null}
 
-      {feed.isLoading ? (
+      {recoveringFromAccessDowngrade ? (
+        <Card>
+          <CardContent className="py-14 text-center text-sm text-muted-foreground">
+            Refreshing audit access…
+          </CardContent>
+        </Card>
+      ) : feed.isLoading ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
         </Card>
