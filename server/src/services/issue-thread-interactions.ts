@@ -59,8 +59,16 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
-import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import {
+  createPullRequestMergeStateResolver,
+  extractGitHubPullRequestReferences,
+  type GitHubPullRequestReference,
+  type PullRequestMergeState,
+} from "./github-pull-request-merge.js";
+
+export { extractGitHubPullRequestReferences } from "./github-pull-request-merge.js";
+export type { GitHubPullRequestReference } from "./github-pull-request-merge.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -69,15 +77,6 @@ type InteractionActor = {
   systemId?: string | null;
   resolutionDetails?: Record<string, unknown>;
 };
-
-export type GitHubPullRequestReference = {
-  host: "github.com";
-  owner: string;
-  repo: string;
-  number: number;
-};
-
-type PullRequestMergeState = "merged" | "open" | "unknown";
 
 type InteractionWakeup = (agentId: string, options: {
   source: "automation";
@@ -162,35 +161,6 @@ function isMergeConfirmationOnlyText(value: string) {
   return normalized
     .split(/\s+/)
     .every((word) => word === "pr_reference" || MERGE_CONFIRMATION_ALLOWED_WORDS.has(word));
-}
-
-function addPullRequestReference(
-  references: Map<string, GitHubPullRequestReference>,
-  owner: string,
-  repo: string,
-  rawNumber: string,
-) {
-  const number = Number(rawNumber);
-  if (!Number.isSafeInteger(number) || number <= 0) return;
-  const reference = { host: "github.com", owner, repo, number } as const;
-  const key = `${owner.toLowerCase()}/${repo.toLowerCase()}#${number}`;
-  if (!references.has(key)) references.set(key, reference);
-}
-
-export function extractGitHubPullRequestReferences(values: readonly unknown[]) {
-  const references = new Map<string, GitHubPullRequestReference>();
-  for (const value of values) {
-    if (typeof value !== "string" || value.length === 0) continue;
-    GITHUB_PULL_REQUEST_URL_PATTERN.lastIndex = 0;
-    for (const match of value.matchAll(GITHUB_PULL_REQUEST_URL_PATTERN)) {
-      addPullRequestReference(references, match[1]!, match[2]!, match[3]!);
-    }
-    GITHUB_PULL_REQUEST_SHORTHAND_PATTERN.lastIndex = 0;
-    for (const match of value.matchAll(GITHUB_PULL_REQUEST_SHORTHAND_PATTERN)) {
-      addPullRequestReference(references, match[2]!, match[3]!, match[4]!);
-    }
-  }
-  return [...references.values()];
 }
 
 export function getMergeConfirmationPullRequestReferences(
@@ -1186,28 +1156,16 @@ async function expireStaleRequestConfirmationTarget(db: Db | any, args: {
 export function issueThreadInteractionService(db: Db, opts: IssueThreadInteractionServiceOptions = {}) {
   const pullRequestStateCache = new Map<string, { state: PullRequestMergeState; checkedAt: number }>();
   const now = opts.now ?? (() => new Date());
-  const githubPullRequestResolver = opts.resolvePullRequestState
+  const defaultPullRequestStateResolver = opts.resolvePullRequestState
     ? null
-    : createGitHubExternalObjectProvider(db).resolvers
-      .find((candidate) => candidate.objectType === "pull_request") ?? null;
+    : createPullRequestMergeStateResolver(db);
 
   async function resolvePullRequestState(
     companyId: string,
     reference: GitHubPullRequestReference,
   ): Promise<PullRequestMergeState> {
     if (opts.resolvePullRequestState) return opts.resolvePullRequestState(companyId, reference);
-    if (!githubPullRequestResolver) return "unknown";
-    const result = await githubPullRequestResolver.resolve({
-      companyId,
-      object: {
-        externalId: `${reference.owner}/${reference.repo}#pull/${reference.number}`,
-        sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
-      } as never,
-    });
-    if (!result.ok) return "unknown";
-    return result.snapshot.statusKey === "merged" || result.snapshot.data?.merged === true
-      ? "merged"
-      : "open";
+    return defaultPullRequestStateResolver?.(companyId, reference) ?? "unknown";
   }
 
   async function resolvePullRequestStates(
