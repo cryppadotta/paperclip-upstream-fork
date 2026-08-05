@@ -1092,13 +1092,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   }
 
   async function listDeliveryPullRequestProducts(
-    workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">,
+    workspace: Pick<ExecutionWorkspaceRow, "companyId" | "sourceIssueId">,
   ) {
     if (!workspace.sourceIssueId) return [];
-    const referencesWorkspace = or(
-      eq(issueWorkProducts.issueId, workspace.sourceIssueId),
-      eq(issueWorkProducts.executionWorkspaceId, workspace.id),
-    );
 
     return db
       .select({
@@ -1113,7 +1109,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       .where(and(
         eq(issueWorkProducts.companyId, workspace.companyId),
         eq(issueWorkProducts.type, "pull_request"),
-        referencesWorkspace,
+        eq(issueWorkProducts.issueId, workspace.sourceIssueId),
       ))
       .orderBy(desc(issueWorkProducts.updatedAt))
       .limit(100);
@@ -1129,6 +1125,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     const subtreeTerminal = Boolean(sourceIssue && issueTree.every((issue) => TERMINAL_ISSUE_STATUSES.has(issue.status)));
     let mergedPullRequest = false;
     let pullRequestStateUnknown = false;
+    const workspaceHeadSha = git?.repoRoot && git.workspacePath
+      ? await runGit(["rev-parse", "HEAD"], git.workspacePath)
+        .then((result) => result.stdout.trim() || null)
+        .catch(() => null)
+      : null;
 
     if (sourceIssueTerminal) {
       const products = await listDeliveryPullRequestProducts(workspace);
@@ -1156,11 +1157,19 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               { details, checkedAtMs: now().getTime() },
             );
           }
-          if (details.state === "merged" && details.headRef === workspace.branchName) {
+          if (
+            details.state === "merged"
+            && details.headRef === workspace.branchName
+            && details.headSha === workspaceHeadSha
+            && workspaceHeadSha !== null
+          ) {
             mergedPullRequest = true;
             break;
           }
-          if (details.state === "unknown" || (details.state === "merged" && !details.headRef)) {
+          if (
+            details.state === "unknown"
+            || (details.state === "merged" && (!details.headRef || !details.headSha || !workspaceHeadSha))
+          ) {
             pullRequestStateUnknown = true;
           }
         }
@@ -1177,6 +1186,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }),
       sourceIssueTerminal,
       subtreeTerminal,
+      workspaceDirty: Boolean(git?.hasDirtyTrackedFiles || git?.hasUntrackedFiles),
     };
   }
 
@@ -1996,6 +2006,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const assessment = await assessDelivery(workspace, git);
         if (!assessment.sourceIssueTerminal || !assessment.subtreeTerminal) {
           result.skippedNonTerminalTree += 1;
+          continue;
+        }
+        if (assessment.workspaceDirty) {
+          result.skippedUndelivered += 1;
           continue;
         }
         if (

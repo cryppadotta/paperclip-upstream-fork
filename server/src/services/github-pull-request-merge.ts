@@ -13,6 +13,7 @@ export type PullRequestMergeState = "merged" | "open" | "unknown";
 export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
+  headSha: string | null;
 };
 
 export type PullRequestMergeStateResolver = (
@@ -84,7 +85,7 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
   return async (companyId, reference) => {
-    if (!resolver) return { state: "unknown", headRef: null };
+    if (!resolver) return { state: "unknown", headRef: null, headSha: null };
     const result = await resolver.resolve({
       companyId,
       object: {
@@ -92,13 +93,14 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
       } as never,
     });
-    if (!result.ok) return { state: "unknown", headRef: null };
+    if (!result.ok) return { state: "unknown", headRef: null, headSha: null };
     const data = readRecord(result.snapshot.data);
     return {
       state: result.snapshot.statusKey === "merged" || data?.merged === true
         ? "merged"
         : "open",
       headRef: typeof data?.headRef === "string" ? data.headRef : null,
+      headSha: typeof data?.headSha === "string" ? data.headSha : null,
     };
   };
 }
