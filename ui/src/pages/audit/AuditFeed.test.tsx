@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,13 +105,25 @@ describe("AuditFeed", () => {
     vi.clearAllMocks();
   });
 
-  async function render(props: { companyId?: string; lockedAgentId?: string } = {}) {
+  async function render(
+    props: {
+      companyId?: string;
+      lockedAgentId?: string;
+      mode?: "all" | "agents";
+      onModeChange?: (mode: "all" | "agents") => void;
+    } = {},
+  ) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);
     await act(async () => {
       root.render(
         <QueryClientProvider client={client}>
-          <AuditFeed companyId={props.companyId ?? "company-1"} lockedAgentId={props.lockedAgentId} />
+          <AuditFeed
+            companyId={props.companyId ?? "company-1"}
+            lockedAgentId={props.lockedAgentId}
+            mode={props.mode}
+            onModeChange={props.onModeChange}
+          />
         </QueryClientProvider>,
       );
     });
@@ -119,11 +131,35 @@ describe("AuditFeed", () => {
     return client;
   }
 
+  /** Poll until `text` renders, for states that settle behind query retry backoff. */
+  async function waitForText(text: string, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (container.textContent?.includes(text)) return;
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
+      });
+    }
+    expect(container.textContent, `waiting for "${text}"`).toContain(text);
+  }
+
   function clickButton(text: string) {
     const btn = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes(text));
     expect(btn, `button "${text}"`).toBeTruthy();
     return act(async () => {
       btn!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  /** Radix tabs activate on mousedown, so drive both events like a real click. */
+  function clickTab(label: string) {
+    const tab = Array.from(container.querySelectorAll('[role="tab"]')).find(
+      (el) => el.textContent?.trim() === label,
+    );
+    expect(tab, `tab "${label}"`).toBeTruthy();
+    return act(async () => {
+      tab!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      tab!.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
     });
   }
 
@@ -249,6 +285,75 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("Export CSV");
   });
 
+  it("surfaces the retry UI when the access-downgrade recovery refetch fails", async () => {
+    // The downgrade recovery refetch can itself fail. React Query keeps the
+    // cached mixed-tier pages on failure, so without a guard the feed sits on
+    // "Refreshing audit access…" forever with no way out.
+    let downgraded = false;
+    let calls = 0;
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
+      calls += 1;
+      if (filters.cursor === "cursor-2") {
+        downgraded = true;
+        return Promise.resolve({
+          items: [record({ id: "evt-2", agentId: null, runId: null, responsibleUserId: null, details: null })],
+          nextCursor: null,
+          accessTier: "basic",
+        });
+      }
+      if (downgraded) return Promise.reject(new Error("Network down"));
+      return Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" });
+    });
+    await render();
+    await clickButton("Load more");
+    // The feed retries twice with backoff (~3s) before the query settles as
+    // errored, and it stays "fetching" throughout — so wait for the settled
+    // state rather than a fixed number of microtask flushes. The explicit test
+    // timeout below keeps that wait inside the budget on slower CI runners.
+    await waitForText("Try again", 20_000);
+
+    expect(container.textContent).not.toContain("Refreshing audit access…");
+    expect(container.textContent).toContain("Network down");
+    expect(container.textContent).toContain("Try again");
+
+    // And the recovery must not loop: no further refetches once it has failed.
+    const settledCalls = calls;
+    await flushReact();
+    expect(calls).toBe(settledCalls);
+  }, 30_000);
+
+  it("renders the feed when the recovery refetch cannot clear the mixed tiers", async () => {
+    // Pathological but reachable: the refetch succeeds and still returns one
+    // full page plus one basic page. The recovery has had its shot, so the feed
+    // must render at the least-privileged tier instead of sitting on the banner.
+    listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) =>
+      filters.cursor === "cursor-2"
+        ? Promise.resolve({
+            items: [record({ id: "evt-2", agentId: null, runId: null, responsibleUserId: null, details: null })],
+            nextCursor: null,
+            accessTier: "basic",
+          })
+        : Promise.resolve({ items: [record()], nextCursor: "cursor-2", accessTier: "full" }),
+    );
+    await render();
+    await clickButton("Load more");
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).not.toContain("Refreshing audit access…");
+    expect(container.textContent).toContain("commented on");
+    // Least-privileged page wins, so the privileged chrome stays hidden.
+    expect(container.textContent).not.toContain("Export CSV");
+    // And the cached full-tier page must not render revoked attribution beside
+    // the stripped rows just because the recovery has run out of attempts.
+    expect(container.textContent).not.toContain("on behalf of Dotta");
+    expect(container.querySelector('a[href="/agents/agent-1/runs/run-1"]')).toBeFalsy();
+
+    const settledCalls = listAgentActionsMock.mock.calls.length;
+    await flushReact();
+    expect(listAgentActionsMock.mock.calls.length).toBe(settledCalls);
+  });
+
   it("hides the agent filter and pins the query when lockedAgentId is set", async () => {
     await render({ lockedAgentId: "agent-1" });
 
@@ -256,6 +361,109 @@ describe("AuditFeed", () => {
     expect(filters).toEqual(expect.objectContaining({ actorScope: "agents", agentId: "agent-1" }));
     // No "All agents" option means the agent filter is hidden on the per-agent tab.
     expect(container.textContent).not.toContain("All agents");
+  });
+
+  it("ignores the mode toggle on the per-agent tab", async () => {
+    const onModeChange = vi.fn();
+    await render({ lockedAgentId: "agent-1", mode: "all", onModeChange });
+
+    expect(container.querySelector('[role="tab"]')).toBeFalsy();
+    expect(listAgentActionsMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "agents", agentId: "agent-1" }),
+    );
+    expect(onModeChange).not.toHaveBeenCalled();
+  });
+
+  it("offers the agent-actions mode to a full-tier reader and requests the privileged scope", async () => {
+    // Mirror the page: the mode lives above the feed, so toggling re-queries.
+    function Harness() {
+      const [mode, setMode] = useState<"all" | "agents">("all");
+      return <AuditFeed companyId="company-1" mode={mode} onModeChange={setMode} />;
+    }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <Harness />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("All activity");
+    expect(container.textContent).toContain("Agent actions");
+    expect(listAgentActionsMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "all" }),
+    );
+
+    await clickTab("Agent actions");
+    await flushReact();
+
+    expect(listAgentActionsMock.mock.calls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ actorScope: "agents" }),
+    );
+    // The privileged scope keeps the attribution filters and the export.
+    expect(container.textContent).toContain("All responsible users");
+    expect(container.textContent).toContain("Export CSV");
+  });
+
+  it("resolves a basic-tier agent name from the company-readable actorId", async () => {
+    // The basic tier nulls privileged attribution but retains the acting
+    // principal, which is also available through the company agent directory.
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({ agentId: null, runId: null, responsibleUserId: null, details: null })],
+      nextCursor: null,
+      accessTier: "basic",
+    });
+    await render({ mode: "all", onModeChange: vi.fn() });
+
+    expect(container.textContent).toContain("Fable");
+    expect(container.textContent).not.toContain("Agent commented");
+    expect(container.textContent).not.toContain("System");
+  });
+
+  it("falls back to the actor type when an agent is absent from the readable directory", async () => {
+    listAgentActionsMock.mockResolvedValue({
+      items: [record({ actorId: "filtered-agent", agentId: null, runId: null, responsibleUserId: null, details: null })],
+      nextCursor: null,
+      accessTier: "basic",
+    });
+    await render({ mode: "all", onModeChange: vi.fn() });
+
+    expect(container.textContent).toContain("Agent");
+    expect(container.textContent).not.toContain("System");
+  });
+
+  it("hides the mode toggle from a basic all-actors reader", async () => {
+    listAgentActionsMock.mockResolvedValue({ items: [record()], nextCursor: null, accessTier: "basic" });
+    await render({ mode: "all", onModeChange: vi.fn() });
+
+    expect(container.querySelector('[role="tab"]')).toBeFalsy();
+    expect(container.textContent).not.toContain("Agent actions");
+    // The basic feed itself still renders.
+    expect(container.textContent).toContain("commented on");
+  });
+
+  it("falls back to all-activity instead of the upsell when a basic reader opens the agent-actions mode", async () => {
+    listAgentActionsMock.mockRejectedValue(
+      new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
+    );
+    const onModeChange = vi.fn();
+    await render({ mode: "agents", onModeChange });
+
+    expect(onModeChange).toHaveBeenCalledWith("all");
+    expect(container.textContent).not.toContain("Paperclip Enterprise view");
+    expect(container.textContent).toContain("Refreshing audit access…");
+  });
+
+  it("still upsells an uncontrolled agent-actions feed that 403s", async () => {
+    listAgentActionsMock.mockRejectedValue(
+      new ApiError("Missing permission: audit:view_agent_actions", 403, { error: "Missing permission" }),
+    );
+    await render({ mode: "agents" });
+
+    expect(container.textContent).toContain("Paperclip Enterprise view");
   });
 
   it("only offers action domains present in the agent-action feed", async () => {

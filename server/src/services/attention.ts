@@ -52,8 +52,10 @@ import {
   BLOCKER_ATTENTION_MAX_NODES,
   issueService,
 } from "./issues.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
+import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -791,7 +793,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       eq(issues.projectWorkspaceId, projectWorkspaces.id),
       eq(projectWorkspaces.companyId, companyId),
     ))
-    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), isNull(issues.hiddenAt)));
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, ids), visibleIssueCondition()));
   return new Map(rows.map((row) => [row.id, {
     id: row.id,
     companyId: row.companyId,
@@ -1117,6 +1119,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
           payload: issueThreadInteractions.payload,
+          addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
@@ -1127,7 +1130,24 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
-      const visibleInteractionRows = collapsePendingConfirmationsToNewest(interactionRows);
+      const companyAgentRows: AgentOrgRow[] = interactionRows.some((row) => row.addresseeAgentId !== null)
+        ? await db
+          .select({
+            id: agents.id,
+            companyId: agents.companyId,
+            name: agents.name,
+            reportsTo: agents.reportsTo,
+            status: agents.status,
+          })
+          .from(agents)
+          .where(eq(agents.companyId, companyId))
+        : [];
+      const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
+      const boardInteractionRows = interactionRows.filter((row) =>
+        row.addresseeAgentId === null ||
+        !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable
+      );
+      const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
         issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),
         issueImageMap(db, companyId, visibleInteractionRows.map((row) => row.issueId)),
@@ -1556,7 +1576,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: issues.updatedAt,
         })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), isNull(issues.hiddenAt)))
+        .where(and(eq(issues.companyId, companyId), eq(issues.status, "in_review"), visibleIssueCondition()))
         .orderBy(desc(issues.updatedAt), desc(issues.id));
       const reviewIssueIds = reviewRows.map((row) => row.id);
       const pendingReviewApprovalRows = reviewIssueIds.length === 0
@@ -1572,7 +1592,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(approvals.status, "pending"),
           ));
       const pendingApprovalByIssueId = new Map(pendingReviewApprovalRows.map((row) => [row.issueId, row.approvalId]));
-      const [reviewIssueMap, reviewImageMap] = await Promise.all([
+      const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([
+        issueService(db).listReviewAttention(companyId, reviewRows),
         issueSummaryMap(db, companyId, reviewIssueIds),
         issueImageMap(db, companyId, reviewIssueIds),
       ]);
@@ -1582,28 +1603,46 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const currentParticipant = state?.status === "pending" ? state.currentParticipant : null;
         const hasHumanParticipant = currentParticipant?.type === "user";
         const pendingApprovalId = pendingApprovalByIssueId.get(review.id) ?? null;
-        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId) continue;
+        const reviewAttention = reviewAttentionByIssueId.get(review.id);
+        const stalled = reviewAttention?.state === "stalled";
+        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId && !stalled) continue;
         const issue = reviewIssueMap.get(review.id);
         if (!issue) continue;
         const dedupKey = `review:${review.id}`;
+        // A stalled review carries no interaction/approval/monitor to open, so
+        // it is resolved in-row with the three review verbs (PAP-16080 §4.4).
+        // Covered reviews still deep-link — their real action lives elsewhere
+        // (the pending interaction/approval card, a monitor, a live run).
+        const reviewSubject = issueSubject(prefix, issue);
         add(createItem({
           companyId,
           sourceKind: "review",
-          subject: issueSubject(prefix, issue),
-          whyNow: pendingApprovalId
+          subject: stalled
+            ? { ...reviewSubject, metadata: { ...reviewSubject.metadata, reviewAttentionState: "stalled" } }
+            : reviewSubject,
+          whyNow: stalled
+            ? "Issue is in review without a maintained reviewer, interaction, approval, monitor, run, wake, or recovery path."
+            : pendingApprovalId
             ? "Issue is in review with a linked pending approval."
             : hasHumanParticipant
               ? "Issue is in review and the current execution participant is a user."
               : "Issue is in review and assigned to a user.",
-          decisionVerbs: decisionVerbs(
-            { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
-            { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
-          ),
-          inlineResolvable: false,
-          entryRule: "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
+          decisionVerbs: stalled
+            ? decisionVerbs(
+                { id: "choose_review_path", label: "Choose review path", description: "Add a reviewer or waiting path, return the issue to work, or accept it." },
+                { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
+              )
+            : decisionVerbs(
+                { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
+                { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
+              ),
+          inlineResolvable: stalled,
+          entryRule: stalled
+            ? "issues.status = 'in_review' and reviewAttention.state = 'stalled'."
+            : "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
           exitRule: "Issue leaves in_review or the human review path resolves.",
           dedupKey,
-          severity: "medium",
+          severity: stalled ? "high" : "medium",
           activityAt: toIso(review.updatedAt),
           createdAt: toIso(review.createdAt),
           updatedAt: toIso(review.updatedAt),

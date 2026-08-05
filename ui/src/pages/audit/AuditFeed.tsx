@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { cn, relativeTime } from "@/lib/utils";
@@ -52,6 +53,13 @@ const ENTITY_TYPES: { value: string; label: string }[] = [
   { value: "company", label: "Company" },
 ];
 
+/**
+ * Which actors the feed covers. `all` is the shared company activity view
+ * (people, agents, and the system); `agents` is the privileged agent-action
+ * audit that carries responsible-person and run attribution.
+ */
+export type AuditFeedMode = "all" | "agents";
+
 export interface AuditFeedProps {
   companyId: string;
   /**
@@ -61,6 +69,13 @@ export interface AuditFeedProps {
   lockedAgentId?: string;
   /** Hide the section header/description (the AgentDetail tab supplies its own chrome). */
   hideHeader?: boolean;
+  /**
+   * Controlled feed mode. Supplying `onModeChange` turns on the mode toggle for
+   * callers that hold `audit:view_agent_actions`; without it the feed stays in
+   * `mode` (or the all-actors default). Ignored when `lockedAgentId` is set.
+   */
+  mode?: AuditFeedMode;
+  onModeChange?: (mode: AuditFeedMode) => void;
 }
 
 function toStartIso(value: string): string | undefined {
@@ -85,7 +100,14 @@ function AuditActor({
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
 }) {
-  const agent = record.agentId ? agentMap.get(record.agentId) : null;
+  // Agent names are company-readable through the same authorization-filtered
+  // directory used by this page. The basic audit tier strips privileged
+  // attribution (`agentId`) but retains the acting principal (`actorId`), so
+  // use that principal to avoid presenting a trivially joinable identity as
+  // an anonymous "Agent" in the UI.
+  const actorAgentId = record.agentId
+    ?? (record.actorType === "agent" ? record.actorId : null);
+  const agent = actorAgentId ? agentMap.get(actorAgentId) : null;
   if (agent) {
     return (
       <span className="inline-flex min-w-0 items-center gap-1.5" title={agent.name}>
@@ -107,7 +129,16 @@ function AuditActor({
       />
     );
   }
-  const label = record.actorType === "plugin" ? "Plugin" : "System";
+  // Fall back to the actor *type*, never a blanket "System". This still covers
+  // deleted or authorization-filtered agents that are absent from the directory.
+  const label =
+    record.actorType === "plugin"
+      ? "Plugin"
+      : record.actorType === "agent"
+        ? "Agent"
+        : record.actorType === "user"
+          ? "User"
+          : "System";
   return <Identity name={label} size="sm" className="font-medium text-foreground" />;
 }
 
@@ -226,7 +257,13 @@ function AuditUpsell() {
   );
 }
 
-export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedProps) {
+export function AuditFeed({
+  companyId,
+  lockedAgentId,
+  hideHeader,
+  mode,
+  onModeChange,
+}: AuditFeedProps) {
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
   const [responsibleUser, setResponsibleUser] = useState<string>(ALL);
@@ -235,6 +272,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
   const [exporting, setExporting] = useState(false);
+  const [downgradeRecoveryAttempted, setDowngradeRecoveryAttempted] = useState(false);
 
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -255,11 +293,13 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     [userDirectory.data],
   );
 
+  // The per-agent tab keeps the legacy privileged scope because it always
+  // carries an attribution filter and must not silently downgrade to the basic
+  // tier. Everywhere else the mode picks the scope, defaulting to all actors.
+  const resolvedMode: AuditFeedMode = lockedAgentId ? "agents" : mode ?? "all";
+
   const filters: AuditActionFilters = {
-    // The company feed is the shared all-actors view. The per-agent tab keeps
-    // the legacy privileged scope because it always carries an attribution
-    // filter and must not silently downgrade to the basic tier.
-    actorScope: lockedAgentId ? "agents" : "all",
+    actorScope: resolvedMode,
     agentId: lockedAgentId ?? (agent === ALL ? undefined : agent),
     responsibleUserId: responsibleUser === ALL ? undefined : responsibleUser,
     action: actionDomain === ALL ? undefined : actionDomain,
@@ -294,14 +334,19 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
   });
 
-  const items = useMemo(
-    () => feed.data?.pages.flatMap((page) => page.items) ?? [],
-    [feed.data],
-  );
-
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
   const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
   const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
+
+  // Once the server answers at the basic tier the caller has lost the permission
+  // that produced the privileged attribution on the pages already in the cache.
+  // Drop those pages rather than rendering revoked "on behalf of" attribution
+  // next to stripped rows — the recovery refetch below may never clear them.
+  const items = useMemo(() => {
+    const pages = feed.data?.pages ?? [];
+    const visible = hasBasicPage ? pages.filter((page) => page.accessTier !== "full") : pages;
+    return visible.flatMap((page) => page.items);
+  }, [feed.data, hasBasicPage]);
   // Access may be revoked between cursor requests. Treat the least-privileged
   // page as authoritative until every cached page has been fetched again.
   const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
@@ -309,10 +354,40 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
   const canUseAdvancedControls = lockedAgentId
     ? true
     : accessTier === "full";
+  // The recovery refetch below gets one shot. If it does not clear the mixed
+  // pages — it errored, or it somehow came back mixed again — the cache keeps
+  // them, so `hasMixedAccessTiers` would stay true forever. Only call the feed
+  // "recovering" while that attempt is outstanding; once it has settled, fall
+  // through to normal rendering. Otherwise the banner permanently hides the
+  // error state and its "Try again" button, with no way off the page. Falling
+  // through is safe because `items` already excludes the privileged pages, so
+  // an unrecovered cache renders as a plain basic-tier feed.
+  const downgradeRecoveryExhausted = Boolean(
+    hasMixedAccessTiers && downgradeRecoveryAttempted && !feed.isFetching,
+  );
   const recoveringFromAccessDowngrade = Boolean(
     !lockedAgentId
+      && !downgradeRecoveryExhausted
       && ((permissionDenied && hasActiveFilters) || hasMixedAccessTiers),
   );
+  // A reader without `audit:view_agent_actions` can still land on the
+  // agent-actions mode through an old `/audit` deep link. Drop them into the
+  // shared all-activity feed instead of blocking the whole page with the upsell.
+  const fallingBackToAllActivity = Boolean(
+    permissionDenied && !lockedAgentId && resolvedMode === "agents" && onModeChange,
+  );
+  // The privileged mode is only offered to callers the server already answered
+  // at the full tier — everyone else just gets the basic all-activity feed.
+  const showModeToggle = Boolean(
+    !lockedAgentId
+      && onModeChange
+      && !fallingBackToAllActivity
+      && (resolvedMode === "agents" || accessTier === "full"),
+  );
+
+  useEffect(() => {
+    if (fallingBackToAllActivity) onModeChange?.("all");
+  }, [fallingBackToAllActivity, onModeChange]);
 
   useEffect(() => {
     if (!lockedAgentId && (accessTier === "basic" || recoveringFromAccessDowngrade)) {
@@ -323,10 +398,20 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       setDateFrom("");
       setDateTo("");
     }
-    if (hasMixedAccessTiers) {
-      void feed.refetch();
+  }, [accessTier, hasMixedAccessTiers, lockedAgentId, recoveringFromAccessDowngrade]);
+
+  // Recover from a mid-pagination downgrade with exactly one refetch. `feed`
+  // gets a new identity on every render, so an unguarded refetch here re-fires
+  // on each render and hammers the endpoint while the tiers stay mixed.
+  useEffect(() => {
+    if (!hasMixedAccessTiers) {
+      if (downgradeRecoveryAttempted) setDowngradeRecoveryAttempted(false);
+      return;
     }
-  }, [accessTier, feed, hasMixedAccessTiers, lockedAgentId, recoveringFromAccessDowngrade]);
+    if (downgradeRecoveryAttempted) return;
+    setDowngradeRecoveryAttempted(true);
+    void feed.refetch();
+  }, [downgradeRecoveryAttempted, feed, hasMixedAccessTiers]);
 
   const clearFilters = () => {
     setAgent(ALL);
@@ -352,7 +437,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `agent-audit-${companyId}.csv`;
+      link.download = `${resolvedMode === "agents" ? "agent-audit" : "activity"}-${companyId}.csv`;
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -371,7 +456,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
     }
   };
 
-  if (permissionDenied && !recoveringFromAccessDowngrade) {
+  if (permissionDenied && !recoveringFromAccessDowngrade && !fallingBackToAllActivity) {
     return <AuditUpsell />;
   }
 
@@ -380,13 +465,23 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       {!hideHeader ? (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Audit</h1>
+            <h1 className="text-lg font-semibold text-foreground">Activity</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              Everything your company did, newest first — each line is one recorded action. Full
-              audit access also shows responsible-person and run attribution.
+              {resolvedMode === "agents"
+                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
+                : "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."}
             </p>
           </div>
         </div>
+      ) : null}
+
+      {showModeToggle ? (
+        <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
+          <TabsList aria-label="Activity scope">
+            <TabsTrigger value="all">All activity</TabsTrigger>
+            <TabsTrigger value="agents">Agent actions</TabsTrigger>
+          </TabsList>
+        </Tabs>
       ) : null}
 
       {canUseAdvancedControls ? (
@@ -407,7 +502,8 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
             </Select>
           ) : null}
           <Select value={responsibleUser} onValueChange={setResponsibleUser}>
-            <SelectTrigger className="w-44">
+            {/* Wide enough for "All responsible users" — w-44 truncated it. */}
+            <SelectTrigger className="w-52">
               <SelectValue placeholder="Responsible user" />
             </SelectTrigger>
             <SelectContent>
@@ -477,7 +573,7 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
         </div>
       ) : null}
 
-      {recoveringFromAccessDowngrade ? (
+      {recoveringFromAccessDowngrade || fallingBackToAllActivity ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">
             Refreshing audit access…
@@ -509,7 +605,9 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 {hasActiveFilters
                   ? "Try a wider date range or different filters."
-                  : "As soon as your agents start doing things, their actions show up here."}
+                  : resolvedMode === "agents"
+                    ? "As soon as your agents start doing things, their actions show up here."
+                    : "As soon as anyone in your company does something, it shows up here."}
               </p>
             </div>
             {hasActiveFilters ? (
