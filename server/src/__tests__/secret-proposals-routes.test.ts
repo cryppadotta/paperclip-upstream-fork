@@ -5,7 +5,7 @@ import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -22,6 +22,7 @@ import {
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
+import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -127,7 +128,10 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     return app;
   }
 
-  function createBoardApp(fixture: Awaited<ReturnType<typeof seedRun>>, options?: { admin?: boolean }) {
+  function createBoardApp(
+    fixture: Awaited<ReturnType<typeof seedRun>>,
+    options?: { admin?: boolean; heartbeat?: IssueAssignmentWakeupDeps },
+  ) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -142,7 +146,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       };
       next();
     });
-    app.use("/api", secretRoutes(db));
+    app.use("/api", secretRoutes(db, options?.heartbeat ? { heartbeat: options.heartbeat } : undefined));
     app.use(errorHandler);
     return app;
   }
@@ -160,6 +164,51 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(rejected.status).toBe(403);
     expect(await db.select().from(companySecretProposals).where(eq(companySecretProposals.id, proposed.body.id)))
       .toEqual([expect.objectContaining({ status: "pending", valueCiphertext: expect.any(Object) })]);
+  });
+
+  it("keeps committed approve and reject responses successful when resolution wakeup fails", async () => {
+    const fixture = await seedRun();
+    await db.update(issues)
+      .set({ assigneeAgentId: fixture.agentId })
+      .where(eq(issues.id, fixture.issueId));
+    const wakeup = vi.fn().mockRejectedValue(new Error("wakeup queue unavailable"));
+    const boardApp = createBoardApp(fixture, { heartbeat: { wakeup } });
+
+    const approvedProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/notification/approve",
+        value: "approval-value",
+        justification: "Needed by task",
+      });
+    const approved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${approvedProposal.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    expect(approved.body.status).toBe("approved");
+
+    const rejectedProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/notification/reject",
+        value: "rejection-value",
+        justification: "Needed by task",
+      });
+    const rejected = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${rejectedProposal.body.id}/reject`)
+      .send({ reason: "No longer needed" });
+
+    expect(rejected.status).toBe(200);
+    expect(rejected.body.status).toBe("rejected");
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: approvedProposal.body.id, status: "approved", valueCiphertext: null }),
+      expect.objectContaining({ id: rejectedProposal.body.id, status: "rejected", valueCiphertext: null }),
+    ]));
+    expect(await db.select().from(issueComments)).toHaveLength(2);
   });
 
   it("requires agent JWT and atomically cascade-approves a secret plus binding with dual audits", async () => {

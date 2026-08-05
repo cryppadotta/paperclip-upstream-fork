@@ -25,8 +25,15 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
-import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import {
+  queueIssueAssignmentWakeup,
+  type IssueAssignmentWakeupDeps,
+} from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+
+type SecretRoutesDeps = {
+  heartbeat?: IssueAssignmentWakeupDeps;
+};
 
 function hasSecretDefinitionAdminAccess(req: Parameters<typeof assertBoard>[0], companyId: string) {
   assertBoard(req);
@@ -69,13 +76,13 @@ function isCompanyScopedSecret(secret: { scope?: string | null }) {
   return (secret.scope ?? "company") === "company";
 }
 
-export function secretRoutes(db: Db) {
+export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const router = Router();
   const svc = secretService(db);
   const proposals = createSecretProposalsService(db);
   const access = accessService(db);
   const issues = issueService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = deps.heartbeat ?? heartbeatService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
 
@@ -184,7 +191,6 @@ export function secretRoutes(db: Db) {
       contextSource: "secret.proposal.resolution",
       requestedByActorType: "user",
       requestedByActorId: input.userId,
-      rethrowOnError: true,
     });
   }
 
