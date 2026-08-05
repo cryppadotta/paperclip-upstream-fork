@@ -1072,11 +1072,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function listDeliveryPullRequestProducts(
     workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">,
-    issueTreeIds: string[],
   ) {
     if (!workspace.sourceIssueId) return [];
     const referencesWorkspace = or(
-      inArray(issueWorkProducts.issueId, issueTreeIds),
+      eq(issueWorkProducts.issueId, workspace.sourceIssueId),
       eq(issueWorkProducts.executionWorkspaceId, workspace.id),
     );
 
@@ -1112,7 +1111,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     let pullRequestStateUnknown = false;
 
     if (sourceIssueTerminal) {
-      const products = await listDeliveryPullRequestProducts(workspace, issueTree.map((issue) => issue.id));
+      const products = await listDeliveryPullRequestProducts(workspace);
       for (const product of products) {
         const references = extractGitHubPullRequestReferences([
           product.url,

@@ -470,6 +470,58 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   });
 
+  it("does not treat a descendant workspace PR as parent delivery evidence", async () => {
+    const seeded = await seedTerminalWorkspace();
+    const descendantWorkspaceId = randomUUID();
+    const descendantIssueId = randomUUID();
+    await db.insert(executionWorkspaces).values({
+      id: descendantWorkspaceId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Descendant workspace",
+      status: "archived",
+      providerType: "local_fs",
+      branchName: "descendant-delivery",
+    });
+    await db.insert(issues).values({
+      id: descendantIssueId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      parentId: seeded.sourceIssueId,
+      title: "Delivered descendant",
+      status: "done",
+      priority: "medium",
+      executionWorkspaceId: descendantWorkspaceId,
+    });
+    await db
+      .update(executionWorkspaces)
+      .set({ sourceIssueId: descendantIssueId })
+      .where(eq(executionWorkspaces.id, descendantWorkspaceId));
+    await db.insert(issueWorkProducts).values({
+      companyId: seeded.companyId,
+      issueId: descendantIssueId,
+      executionWorkspaceId: descendantWorkspaceId,
+      type: "pull_request",
+      provider: "github",
+      title: "Descendant delivery",
+      url: "https://github.com/paperclipai/paperclip/pull/10625",
+      status: "merged",
+    });
+
+    const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+    const sweep = await svc.sweepTerminalWorkspaces();
+    const [parentWorkspace] = await db
+      .select({ status: executionWorkspaces.status })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+
+    expect(readiness?.deliveryState).toBe("unknown");
+    expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+    expect(parentWorkspace?.status).toBe("active");
+  });
+
   it("reaps only fully-terminal delivered workspaces without active checkout runs", async () => {
     const eligible = await seedTerminalWorkspace({ mergedPr: true, childStatus: "done" });
     const activeRun = await seedTerminalWorkspace({ mergedPr: true, activeRun: true });
