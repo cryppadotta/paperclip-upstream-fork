@@ -4,7 +4,54 @@ import { describe, expect, it, vi } from "vitest";
 import {
   coordinateHeartbeatSchedulerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  stopManagedEmbeddedPostgres,
 } from "./shutdown.js";
+
+describe("stopManagedEmbeddedPostgres", () => {
+  it("stops a cluster started by the current server through its instance", async () => {
+    const stop = vi.fn(async () => undefined);
+    const signalProcess = vi.fn();
+
+    await stopManagedEmbeddedPostgres({
+      instance: { stop },
+      adoptedPid: null,
+      readRunningPid: () => null,
+      signalProcess,
+    });
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+
+  it("stops an adopted crash-surviving postmaster", async () => {
+    let runningPid: number | null = 4242;
+    const signalProcess = vi.fn(() => {
+      runningPid = null;
+    });
+
+    await stopManagedEmbeddedPostgres({
+      instance: null,
+      adoptedPid: 4242,
+      readRunningPid: () => runningPid,
+      signalProcess,
+      pollIntervalMs: 0,
+    });
+
+    expect(signalProcess).toHaveBeenCalledWith(4242, "SIGINT");
+  });
+
+  it("refuses to signal a pid that no longer matches the managed cluster", async () => {
+    const signalProcess = vi.fn();
+
+    await expect(stopManagedEmbeddedPostgres({
+      instance: null,
+      adoptedPid: 4242,
+      readRunningPid: () => 5252,
+      signalProcess,
+    })).rejects.toThrow("no longer matches postmaster.pid (5252)");
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+});
 
 describe("loadWithoutCoordinatedShutdownSignalHooks", () => {
   it("removes the eager signal handlers from the real embedded-postgres import", async () => {

@@ -9,6 +9,65 @@ type ShutdownSignalTarget = {
   removeListener(eventName: string, listener: (...args: any[]) => void): unknown;
 };
 
+type EmbeddedPostgresStopTarget = {
+  stop(): Promise<void>;
+};
+
+type StopManagedEmbeddedPostgresInput = {
+  instance: EmbeddedPostgresStopTarget | null;
+  adoptedPid: number | null;
+  readRunningPid: () => number | null;
+  signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+};
+
+/**
+ * Stop the embedded cluster even when this server adopted a postmaster left
+ * behind by a crash-restarted predecessor. `embedded-postgres.stop()` only
+ * acts on a child spawned by the current JS object, so adopted clusters must
+ * be signalled explicitly after re-validating the data directory's pid file.
+ */
+export async function stopManagedEmbeddedPostgres(
+  input: StopManagedEmbeddedPostgresInput,
+): Promise<void> {
+  if (input.instance) {
+    await input.instance.stop();
+    return;
+  }
+
+  if (input.adoptedPid === null) return;
+
+  const currentPid = input.readRunningPid();
+  if (currentPid === null) return;
+  if (currentPid !== input.adoptedPid) {
+    throw new Error(
+      `Refusing to stop embedded PostgreSQL: adopted pid ${input.adoptedPid} ` +
+        `no longer matches postmaster.pid (${currentPid})`,
+    );
+  }
+
+  const signalProcess = input.signalProcess ?? process.kill.bind(process);
+  try {
+    signalProcess(input.adoptedPid, "SIGINT");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") return;
+    throw err;
+  }
+
+  const timeoutMs = input.timeoutMs ?? 30_000;
+  const pollIntervalMs = input.pollIntervalMs ?? 50;
+  const deadline = Date.now() + timeoutMs;
+  while (input.readRunningPid() !== null) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for adopted embedded PostgreSQL pid ${input.adoptedPid} to stop`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+
 /**
  * Some dependencies eagerly install process signal handlers as an import side
  * effect. Paperclip must remain the sole owner of SIGINT/SIGTERM ordering: its

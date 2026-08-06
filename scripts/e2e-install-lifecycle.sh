@@ -412,6 +412,8 @@ EOF
     fi
 
     shim service logs -n 40 >/dev/null 2>&1 && pass "8m service logs readable" || fail_ "8m service logs readable"
+    POSTGRES_PID_FILE="$HOME/.paperclip/instances/default/db/postmaster.pid"
+    MANAGED_POSTGRES_PID="$(head -n 1 "$POSTGRES_PID_FILE" 2>/dev/null || true)"
     if shim service uninstall; then
       pass "8n service uninstall exits 0"
     else
@@ -424,6 +426,19 @@ EOF
     else
       echo "$STATUS_JSON"
       fail_ "8o uninstall leaves no service loaded or active"
+    fi
+    if [ -z "$MANAGED_POSTGRES_PID" ]; then
+      fail_ "8p captured embedded PostgreSQL pid before uninstall"
+    else
+      DEADLINE=$(( $(date +%s) + 30 ))
+      while [ "$(date +%s)" -lt "$DEADLINE" ] && kill -0 "$MANAGED_POSTGRES_PID" 2>/dev/null; do
+        sleep 1
+      done
+      if kill -0 "$MANAGED_POSTGRES_PID" 2>/dev/null; then
+        fail_ "8p uninstall stopped crash-surviving embedded PostgreSQL (pid $MANAGED_POSTGRES_PID still running)"
+      else
+        pass "8p uninstall stopped crash-surviving embedded PostgreSQL"
+      fi
     fi
   fi
 fi

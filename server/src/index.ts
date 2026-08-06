@@ -84,6 +84,7 @@ import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent
 import {
   coordinateHeartbeatSchedulerShutdown,
   loadWithoutCoordinatedShutdownSignalHooks,
+  stopManagedEmbeddedPostgres,
 } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
@@ -335,7 +336,8 @@ export async function startServer(): Promise<StartedServer> {
   let db;
   let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
-  let embeddedPostgresStartedByThisProcess = false;
+  let adoptedEmbeddedPostgresPid: number | null = null;
+  let readRunningEmbeddedPostgresPid: (() => number | null) | null = null;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
   let resolvedEmbeddedPostgresPort: number | null = null;
@@ -435,9 +437,11 @@ export async function startServer(): Promise<StartedServer> {
         return null;
       }
     };
+    readRunningEmbeddedPostgresPid = getRunningPid;
   
     const runningPid = getRunningPid();
     if (runningPid) {
+      adoptedEmbeddedPostgresPid = runningPid;
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
@@ -498,7 +502,6 @@ export async function startServer(): Promise<StartedServer> {
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        embeddedPostgresStartedByThisProcess = true;
       }
     }
   
@@ -1490,10 +1493,14 @@ export async function startServer(): Promise<StartedServer> {
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
       appShutdown?.();
 
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      if (embeddedPostgres || adoptedEmbeddedPostgresPid !== null) {
         logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {
-          await embeddedPostgres?.stop();
+          await stopManagedEmbeddedPostgres({
+            instance: embeddedPostgres,
+            adoptedPid: adoptedEmbeddedPostgresPid,
+            readRunningPid: readRunningEmbeddedPostgresPid ?? (() => null),
+          });
         } catch (err) {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
         }
