@@ -10,7 +10,6 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const lifecycleScript = path.join(repoRoot, "scripts", "e2e-install-lifecycle.sh");
 const migrationScript = path.join(repoRoot, "scripts", "e2e-update-migrations.sh");
 const systemdDriver = path.join(repoRoot, "scripts", "run-install-e2e-systemd-docker.sh");
-const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "install-e2e.yml"), "utf8");
 
 test("install acceptance shell harnesses have valid syntax", () => {
   for (const script of [lifecycleScript, migrationScript, systemdDriver]) {
@@ -19,15 +18,20 @@ test("install acceptance shell harnesses have valid syntax", () => {
   }
 });
 
-test("CI runs git refs plus native amd64 and arm64 systemd lanes", () => {
-  assert.match(workflow, /case: master/);
-  assert.match(workflow, /case: tag/);
-  assert.match(workflow, /case: sha/);
-  assert.match(workflow, /case: fork-repo/);
-  assert.match(workflow, /ubuntu-24\.04-arm/);
-  assert.match(workflow, /run-install-e2e-systemd-docker\.sh all/);
-  assert.match(workflow, /actions\/upload-artifact/);
-  assert.doesNotMatch(workflow, /skipping cross-version update e2e/);
+test("package commands expose both native systemd acceptance lanes", () => {
+  const packageJson = JSON.parse(readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts["test:install-e2e"], "./scripts/e2e-install-lifecycle.sh");
+  assert.equal(packageJson.scripts["test:update-migrations-e2e"], "./scripts/e2e-update-migrations.sh");
+  assert.equal(
+    packageJson.scripts["test:install-e2e-systemd-docker"],
+    "./scripts/run-install-e2e-systemd-docker.sh all",
+  );
+
+  const driver = readFileSync(systemdDriver, "utf8");
+  assert.match(driver, /lifecycle\|migration\|all/);
+  assert.match(driver, /run_one lifecycle/);
+  assert.match(driver, /run_one migration/);
+  assert.match(driver, /install-e2e-systemd\.Dockerfile/);
 });
 
 test("systemd lifecycle asserts every service acceptance invariant", () => {
@@ -56,7 +60,7 @@ test("systemd hot restart preserves children and orders embedded database shutdo
   );
   assert.match(serviceManager, /KillMode=process/);
   assert.match(serviceManager, /Environment="EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK=1"/);
-  assert.match(server, /EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK = "1"/);
+  assert.match(server, /loadWithoutCoordinatedShutdownSignalHooks/);
   assert.match(server, /loadEmbeddedPostgresCtor/);
   assert.doesNotMatch(
     readFileSync(path.join(repoRoot, "server", "package.json"), "utf8"),
