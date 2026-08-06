@@ -3913,21 +3913,21 @@ export function issueRoutes(
     boundaryDecision: Awaited<ReturnType<typeof decideIssueAccess>>;
     requestedUpdate: unknown;
   }) {
-    if (input.req.actor.type !== "agent") return false;
-    if (input.boundaryDecision.reason !== "deny_missing_grant") return false;
-    if (!isIssueGraphCleanupUpdateRequest(input.requestedUpdate)) return false;
+    if (input.req.actor.type !== "agent") return null;
+    if (input.boundaryDecision.reason !== "deny_missing_grant") return null;
+    if (!isIssueGraphCleanupUpdateRequest(input.requestedUpdate)) return null;
 
     const actorAgentId = input.req.actor.agentId;
     if (!actorAgentId || !input.issue.assigneeAgentId || input.issue.assigneeAgentId === actorAgentId) {
-      return false;
+      return null;
     }
     if (!(await hasActiveCheckoutManagementOverride(actorAgentId, input.issue.companyId, input.issue.assigneeAgentId))) {
-      return false;
+      return null;
     }
 
     const run = await loadActorRunContext(input.req, input.issue.companyId);
     const sourceIssueId = readRunContextIssueId(run?.contextSnapshot);
-    if (!run || run.status !== "running" || !sourceIssueId || sourceIssueId === input.issue.id) return false;
+    if (!run || run.status !== "running" || !sourceIssueId || sourceIssueId === input.issue.id) return null;
 
     const sourceIssue = await svc.getById(sourceIssueId);
     if (
@@ -3937,16 +3937,18 @@ export function issueRoutes(
       sourceIssue.status !== "in_progress" ||
       sourceIssue.originKind !== RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation
     ) {
-      return false;
+      return null;
     }
-    if (sourceIssue.checkoutRunId !== run.id && sourceIssue.executionRunId !== run.id) return false;
+    if (sourceIssue.checkoutRunId !== run.id && sourceIssue.executionRunId !== run.id) return null;
 
     const sourceAncestry = await loadIssueAncestryForCleanupOverride(input.issue.companyId, sourceIssue.id, sourceIssue);
     const targetAncestry = await loadIssueAncestryForCleanupOverride(input.issue.companyId, input.issue.id, input.issue);
-    if (!sourceAncestry || !targetAncestry || sourceAncestry.length < 2) return false;
+    if (!sourceAncestry || !targetAncestry || sourceAncestry.length < 2) return null;
 
     const sourceRootId = sourceAncestry[sourceAncestry.length - 1]?.id ?? null;
-    return Boolean(sourceRootId && targetAncestry.some((entry) => entry.id === sourceRootId));
+    return sourceRootId && targetAncestry.some((entry) => entry.id === sourceRootId)
+      ? { runId: run.id }
+      : null;
   }
 
   async function assertAgentIssueMutationAllowed(
@@ -4000,16 +4002,16 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
-      if (
-        options.allowIssueGraphCleanupOverride === true &&
-        await hasIssueGraphCleanupMutationOverride({
+      const issueGraphCleanupOverride = options.allowIssueGraphCleanupOverride === true
+        ? await hasIssueGraphCleanupMutationOverride({
           req,
           issue,
           boundaryDecision,
           requestedUpdate: options.requestedUpdate,
         })
-      ) {
-        return true;
+        : null;
+      if (issueGraphCleanupOverride) {
+        return { issueGraphCleanupRunId: issueGraphCleanupOverride.runId };
       }
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
@@ -8547,6 +8549,9 @@ export function issueRoutes(
       },
     );
     if (!issueMutationAccess) return;
+    const issueGraphCleanupRunId = typeof issueMutationAccess === "object"
+      ? issueMutationAccess.issueGraphCleanupRunId
+      : null;
     const issueMutationAuthorizationReason = req.actor.type === "agent"
       ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate"))
       : issueWriteAuthorizationReason(req, true);
@@ -9030,40 +9035,89 @@ export function issueRoutes(
         },
       }, postCommitActivityPublications);
     };
+    let issueGraphCleanupComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    let issueGraphCleanupCancelledRun: Awaited<ReturnType<typeof heartbeat.cancelRun>> | null = null;
+    let issueGraphCleanupCancellationError: unknown = null;
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
-      if (transition.decision && decisionId) {
-        const decision = transition.decision;
+      if ((transition.decision && decisionId) || shouldRelayStop || issueGraphCleanupRunId) {
         issue = await db.transaction(async (tx) => {
+          if (issueGraphCleanupRunId) {
+            const lockedRun = await tx
+              .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+              .from(heartbeatRuns)
+              .where(and(
+                eq(heartbeatRuns.id, issueGraphCleanupRunId),
+                eq(heartbeatRuns.companyId, existing.companyId),
+                eq(heartbeatRuns.agentId, actor.agentId!),
+                eq(heartbeatRuns.status, "running"),
+              ))
+              .for("update")
+              .then((rows) => rows[0] ?? null);
+            if (!lockedRun) {
+              throw forbidden("Issue graph cleanup run is no longer active", {
+                code: "issue_graph_cleanup_run_not_running",
+                runId: issueGraphCleanupRunId,
+              });
+            }
+
+            // Cancel before updating the issue row. cancelRun may release the
+            // target run's issue lock through its own transaction; doing that
+            // after updateIssue(tx) would make the nested transaction wait on
+            // this transaction's issue-row lock.
+            if (runToCancelForCancelledStatus) {
+              try {
+                issueGraphCleanupCancelledRun = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+              } catch (err) {
+                issueGraphCleanupCancellationError = err;
+              }
+            }
+          }
+
           const updated = await updateIssue(tx);
           if (!updated) return null;
 
-          await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
-            companyId: updated.companyId,
-            issueId: updated.id,
-            stageId: decision.stageId,
-            stageType: decision.stageType,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            outcome: decision.outcome,
-            body: decision.body,
-            createdByRunId: actor.runId ?? null,
-          });
+          if (transition.decision && decisionId) {
+            const decision = transition.decision;
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: decision.stageId,
+              stageType: decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: decision.outcome,
+              body: decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
 
           if (shouldRelayStop) {
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           }
 
-          await persistBoundReviewActivity(tx, updated);
+          // Keep the actor-run row locked across every mutation granted only by
+          // the cleanup override. A concurrent terminal transition must wait
+          // until the issue write, target-run cancellation, and comment finish.
+          if (issueGraphCleanupRunId && commentBody) {
+            issueGraphCleanupComment = await svc.addComment(
+              id,
+              commentBody,
+              {
+                agentId: actor.agentId ?? undefined,
+                userId: actor.actorType === "user" ? actor.actorId : undefined,
+                runId: actor.runId,
+                onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+              },
+              {
+                authorizationReason: issueMutationAuthorizationReason,
+                sourceTrust: await sourceTrustForActorWrite(updated, actor),
+              },
+              tx,
+            );
+          }
 
-          return updated;
-        });
-      } else if (shouldRelayStop) {
-        issue = await db.transaction(async (tx) => {
-          const updated = await updateIssue(tx);
-          if (!updated) return null;
-          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           await persistBoundReviewActivity(tx, updated);
           return updated;
         });
@@ -9128,7 +9182,10 @@ export function issueRoutes(
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
-        const cancelled = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+        if (issueGraphCleanupCancellationError) throw issueGraphCleanupCancellationError;
+        const cancelled = issueGraphCleanupRunId
+          ? issueGraphCleanupCancelledRun
+          : await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
           await logActivity(db, {
@@ -9500,20 +9557,25 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
+    let comment = issueGraphCleanupComment;
     let lostReviewPathRef: string | null = null;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-      }, {
-        authorizationReason: issueMutationAuthorizationReason,
-        sourceTrust: await sourceTrustForActorWrite(issue, actor),
-      });
+      comment ??= await svc.addComment(
+        id,
+        commentBody,
+        {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+          onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+        },
+        {
+          authorizationReason: issueMutationAuthorizationReason,
+          sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        },
+      );
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
