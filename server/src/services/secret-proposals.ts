@@ -1,6 +1,7 @@
 import { and, count, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companySecretProposals, companySecrets, heartbeatRuns, issues } from "@paperclipai/db";
+import type { SecretProvider } from "@paperclipai/shared";
 import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
@@ -67,15 +68,17 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 export function createSecretProposalsService(db: Db) {
-  async function getById(companyId: string, proposalId: string, dbClient: Db = db) {
-    return dbClient.select().from(companySecretProposals).where(and(
+  async function getById(companyId: string, proposalId: string, dbClient: Db = db, lockForUpdate = false) {
+    const query = dbClient.select().from(companySecretProposals).where(and(
       eq(companySecretProposals.id, proposalId),
       eq(companySecretProposals.companyId, companyId),
-    )).then((rows) => rows[0] ?? null);
+    ));
+    if (lockForUpdate) return query.for("update").then((rows) => rows[0] ?? null);
+    return query.then((rows) => rows[0] ?? null);
   }
 
-  async function requirePending(companyId: string, proposalId: string) {
-    const proposal = await getById(companyId, proposalId);
+  async function requirePending(companyId: string, proposalId: string, dbClient: Db = db, lockForUpdate = false) {
+    const proposal = await getById(companyId, proposalId, dbClient, lockForUpdate);
     if (!proposal) throw notFound("Secret proposal not found");
     if (proposal.status !== "pending") throw conflict("Only pending proposals can be resolved");
     return proposal;
@@ -363,13 +366,22 @@ export function createSecretProposalsService(db: Db) {
       material: proposal.valueCiphertext,
       externalRef: null,
     });
-    const created = await secretService(txDb).create(
+    const secrets = secretService(txDb);
+    const providerConfigId = input.overrides?.providerConfigId ?? null;
+    const providerConfig = providerConfigId
+      ? await secrets.getProviderConfigById(providerConfigId)
+      : null;
+    if (providerConfigId && (!providerConfig || providerConfig.companyId !== proposal.companyId)) {
+      throw notFound("Provider vault not found");
+    }
+    const provider = (providerConfig?.provider ?? "local_encrypted") as SecretProvider;
+    const created = await secrets.create(
       proposal.companyId,
       {
         name,
         key: proposal.proposedKey || normalizeSecretKey(name.split("/").at(-1) || ""),
-        provider: "local_encrypted",
-        providerConfigId: input.overrides?.providerConfigId ?? null,
+        provider,
+        providerConfigId,
         value,
         description: input.overrides?.description === undefined
           ? proposal.proposedDescription
@@ -472,10 +484,10 @@ export function createSecretProposalsService(db: Db) {
     cascade?: boolean;
     overrides?: { name?: string; description?: string | null; providerConfigId?: string | null };
   }) {
-    const proposal = await requirePending(companyId, proposalId);
-    assertNotExpired(proposal);
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      const proposal = await requirePending(companyId, proposalId, txDb, true);
+      assertNotExpired(proposal);
       await assertBindingSnapshotCurrent(proposal, txDb, true);
       if (proposal.kind === "secret") {
         const created = await applySecretApproval(txDb, proposal, input);
@@ -487,7 +499,7 @@ export function createSecretProposalsService(db: Db) {
 
       let secretId = proposal.secretId;
       if (proposal.secretProposalId) {
-        const dependency = await getById(companyId, proposal.secretProposalId, txDb);
+        const dependency = await getById(companyId, proposal.secretProposalId, txDb, true);
         if (!dependency || dependency.kind !== "secret") throw notFound("Prerequisite secret proposal not found");
         if (dependency.status !== "pending") {
           if (dependency.status !== "approved" || !dependency.createdSecretId) {

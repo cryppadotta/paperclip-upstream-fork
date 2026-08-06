@@ -23,6 +23,7 @@ import {
 import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
+import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(companySecretProposals);
@@ -223,6 +225,54 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       expect.objectContaining({ id: rejectedProposal.body.id, status: "rejected", valueCiphertext: null }),
     ]));
     expect(await db.select().from(issueComments)).toHaveLength(0);
+  });
+
+  it("uses the selected provider vault when approving a secret proposal", async () => {
+    const fixture = await seedRun();
+    const vault = await secretService(db).createProviderConfig(fixture.companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef =
+      "arn:aws:secretsmanager:us-east-1:123456789012:secret:paperclip/prod-use1/proposed-token";
+    const createSecret = vi.spyOn(awsSecretsManagerProvider, "createSecret").mockResolvedValue({
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: "aws-version-1",
+        source: "managed",
+      },
+      valueSha256: "value-sha-1",
+      fingerprintSha256: "fingerprint-sha-1",
+      externalRef,
+      providerVersionRef: "aws-version-1",
+    });
+
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/provider/token",
+        value: "provider-secret",
+        justification: "Store this credential in the company vault",
+      });
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({ overrides: { providerConfigId: vault.id } });
+
+    expect(approved.status).toBe(200);
+    expect(createSecret).toHaveBeenCalledWith(expect.objectContaining({
+      value: "provider-secret",
+      providerConfig: expect.objectContaining({ id: vault.id, provider: "aws_secrets_manager" }),
+    }));
+    expect(await db.select().from(companySecrets)).toEqual([
+      expect.objectContaining({
+        provider: "aws_secrets_manager",
+        providerConfigId: vault.id,
+        status: "active",
+      }),
+    ]);
   });
 
   it("requires agent JWT and atomically cascade-approves a secret plus binding with dual audits", async () => {
@@ -475,6 +525,40 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       .send({ cascade: true });
     expect(cascadeApproval.status).toBe(409);
     expect(await db.select().from(companySecrets)).toHaveLength(0);
+  });
+
+  it("rechecks expiry after acquiring the proposal approval lock", async () => {
+    const fixture = await seedRun();
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/expiry-race/token",
+        value: "expiry-race-secret",
+        justification: "Exercise the approval boundary",
+      });
+    let approvalPromise: Promise<{ status: number; body: Record<string, unknown> }> | null = null;
+
+    await db.transaction(async (tx) => {
+      await tx.select().from(companySecretProposals)
+        .where(eq(companySecretProposals.id, proposal.body.id))
+        .for("update");
+      approvalPromise = request(createBoardApp(fixture))
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+        .send({})
+        .then((response) => response);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await tx.update(companySecretProposals)
+        .set({ expiresAt: new Date(Date.now() - 1_000) })
+        .where(eq(companySecretProposals.id, proposal.body.id));
+    });
+
+    const approval = await approvalPromise;
+    expect(approval?.status).toBe(409);
+    expect(await db.select().from(companySecrets)).toHaveLength(0);
+    expect(await db.select().from(companySecretProposals)).toEqual([
+      expect.objectContaining({ id: proposal.body.id, status: "pending" }),
+    ]);
   });
 
   it("returns 409 without mutation when the current org graph no longer permits the stored binding target", async () => {
