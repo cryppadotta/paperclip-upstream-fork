@@ -202,7 +202,21 @@ export class SystemdServiceManager implements ServiceManager {
   }
 
   async start(): Promise<void> { await this.ensureCurrent(); await this.runner("systemctl", ["--user", "start", this.serviceName]); }
-  async stop(): Promise<void> { await this.runner("systemctl", ["--user", "stop", this.serviceName]); }
+  async stop(): Promise<void> {
+    await this.runner("systemctl", ["--user", "stop", this.serviceName]);
+    // KillMode=process deliberately preserves eligible children across a
+    // service restart. An explicit stop is different: after the main server
+    // exits, terminate every process that still belongs to the unit. Let
+    // systemd target its stable cgroup membership instead of trusting a PID
+    // read from disk, which could be reused before a numeric signal is sent.
+    await this.runner("systemctl", [
+      "--user",
+      "kill",
+      "--kill-whom=all",
+      "--signal=SIGINT",
+      this.serviceName,
+    ]);
+  }
   async restart(): Promise<void> { await this.ensureCurrent(); await this.runner("systemctl", ["--user", "restart", this.serviceName]); }
 
   async status(): Promise<ServiceStatus> {

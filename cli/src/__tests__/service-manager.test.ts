@@ -85,6 +85,29 @@ describe("systemd drift regeneration", () => {
     expect(calls).toContain("systemctl --user daemon-reload");
   });
 
+  it("cleans the remaining unit cgroup after an explicit stop", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager(
+      "default",
+      runner,
+      path.join(userHome, ".paperclip"),
+      path.join(userHome, ".local/bin/paperclipai"),
+      userHome,
+    );
+
+    await manager.stop();
+
+    expect(calls).toEqual([
+      "systemctl --user stop paperclipai.service",
+      "systemctl --user kill --kill-whom=all --signal=SIGINT paperclipai.service",
+    ]);
+  });
+
   it("keeps the unit installed when stopping an active service fails", async () => {
     const userHome = await temporaryDirectory();
     const runner: CommandRunner = async (command, args) => {
