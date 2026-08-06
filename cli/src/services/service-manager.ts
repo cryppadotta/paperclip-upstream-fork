@@ -194,7 +194,10 @@ export class SystemdServiceManager implements ServiceManager {
 
   async uninstall(): Promise<void> {
     const status = await this.status();
-    if (status.active) await this.stop();
+    // KillMode=process may leave adopted children in the unit cgroup after the
+    // main process has failed or become inactive. Stop every loaded unit so
+    // uninstall always reaches the cgroup cleanup in stop().
+    if (status.installed) await this.stop();
     await this.runner("systemctl", ["--user", "disable", this.serviceName]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
     await this.runner("systemctl", ["--user", "daemon-reload"]);

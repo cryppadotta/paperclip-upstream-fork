@@ -108,6 +108,38 @@ describe("systemd drift regeneration", () => {
     ]);
   });
 
+  it("cleans remaining unit processes when uninstalling an inactive service", async () => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (args.includes("--property=LoadState,ActiveState,UnitFileState,MainPID")) {
+        return {
+          stdout: "LoadState=loaded\nActiveState=inactive\nUnitFileState=enabled\nMainPID=0\n",
+          stderr: "",
+        };
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager(
+      "default",
+      runner,
+      path.join(userHome, ".paperclip"),
+      path.join(userHome, ".local/bin/paperclipai"),
+      userHome,
+    );
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(manager.definitionPath, manager.renderDefinition(), "utf8");
+
+    await manager.uninstall();
+
+    expect(calls).toContain("systemctl --user stop paperclipai.service");
+    expect(calls).toContain(
+      "systemctl --user kill --kill-whom=all --signal=SIGINT paperclipai.service",
+    );
+    await expect(fs.access(manager.definitionPath)).rejects.toThrow();
+  });
+
   it("keeps the unit installed when stopping an active service fails", async () => {
     const userHome = await temporaryDirectory();
     const runner: CommandRunner = async (command, args) => {
