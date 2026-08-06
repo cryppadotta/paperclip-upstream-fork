@@ -14,8 +14,8 @@ import { deriveActiveRecoveryDisplayState } from "./recovery-display";
 /**
  * A single, readable answer to: "what moves this task forward next?"
  *
- * PAP-13005 product rule + Phase 4 UX spec: every agent-owned non-terminal
- * task, and every task that blocks another, resolves into EXACTLY ONE of four
+ * Every agent-owned non-terminal task, and every task that blocks another,
+ * resolves into EXACTLY ONE of four
  * lanes so the board never has to synthesize an answer from five cards.
  *
  * Resolution priority (spec §2): Working now (an actual run beats everything)
@@ -103,6 +103,16 @@ export interface NextActionInput {
   hasLiveRun?: boolean;
 }
 
+/** A run is live for a touched task only when its own scope names that task. */
+export function isRunActiveForIssue(
+  run: { status: string; contextSnapshot: Record<string, unknown> | null },
+  issueId: string,
+): boolean {
+  if (run.status !== "queued" && run.status !== "running") return false;
+  const scopedId = run.contextSnapshot?.["issueId"] ?? run.contextSnapshot?.["taskId"];
+  return typeof scopedId === "string" && scopedId.trim() === issueId;
+}
+
 function toRef(
   ref:
     | IssueRelationIssueSummary
@@ -125,27 +135,30 @@ const ACTIVE_RETRY_STATUSES = new Set<IssueScheduledRetry["status"]>([
   "running",
 ]);
 
-function terminalGateBlockers(
+function workspaceFinalizeBlockers(
   diagnostics: IssueBlockerDiagnosticsResponse | null | undefined,
 ): IssueBlockerDiagnosticNode[] {
   if (!diagnostics) return [];
   return diagnostics.blockers.filter((blocker) =>
-    blocker.flags.some(
-      (flag) =>
-        flag === "done_but_blocking"
-        || flag === "workspace_finalize_pending"
-        || flag === "cancelled_blocker_in_set",
-    ),
+    blocker.flags.includes("workspace_finalize_pending"),
+  );
+}
+
+function staleBlockerRelations(
+  diagnostics: IssueBlockerDiagnosticsResponse | null | undefined,
+): IssueBlockerDiagnosticNode[] {
+  if (!diagnostics) return [];
+  return diagnostics.blockers.filter((blocker) =>
+    !blocker.flags.includes("workspace_finalize_pending")
+    && (blocker.flags.includes("done_but_blocking")
+      || blocker.flags.includes("cancelled_blocker_in_set")),
   );
 }
 
 function gateLabel(node: IssueBlockerDiagnosticNode): string | null {
-  const flag = node.flags.find(
-    (f) => f === "workspace_finalize_pending" || f === "done_but_blocking" || f === "cancelled_blocker_in_set",
-  );
-  if (flag === "workspace_finalize_pending") return "gate: workspace_finalize_pending";
-  if (flag === "cancelled_blocker_in_set") return "gate: cancelled_blocker";
-  if (flag === "done_but_blocking") return "gate: done_but_blocking";
+  if (node.flags.includes("workspace_finalize_pending")) return "gate: workspace_finalize_pending";
+  if (node.flags.includes("cancelled_blocker_in_set")) return "relation: cancelled_blocker";
+  if (node.flags.includes("done_but_blocking")) return "relation: done_but_blocking";
   return null;
 }
 
@@ -192,7 +205,8 @@ export function deriveNextAction(input: NextActionInput): NextActionSummary {
   // Spec §4: the panel hides on terminal tasks so it never adds noise.
   if (status === "done" || status === "cancelled") return NONE;
 
-  const gates = terminalGateBlockers(blockerDiagnostics);
+  const gates = workspaceFinalizeBlockers(blockerDiagnostics);
+  const staleRelations = staleBlockerRelations(blockerDiagnostics);
   const retryActive = Boolean(scheduledRetry && ACTIVE_RETRY_STATUSES.has(scheduledRetry.status));
 
   // 1. Working now — an actual run, or a queued/scheduled corrective wake.
@@ -323,14 +337,37 @@ export function deriveNextAction(input: NextActionInput): NextActionSummary {
       };
     }
 
-    // 4. Blocked by real work (with terminal-gate variant).
-    const terminalGate = gates.length > 0 || attn.leafIssue?.status === "done";
+    const staleLeaf = gates.length === 0
+      && (attn.leafIssue?.status === "done" || attn.leafIssue?.status === "cancelled");
+    if (staleRelations.length > 0 || staleLeaf) {
+      const leafRef = toRef(attn.leafIssue) ?? toRef(staleRelations[0]);
+      const leaf = leafRef?.identifier ?? leafRef?.title ?? "the blocker";
+      return {
+        ...NONE,
+        lane: "recovery",
+        accent: "recovery_red",
+        laneLabel: "Recovery debt",
+        statement: truncate(`Clear or replace the stale blocker relation for ${leaf}.`, 88),
+        why: "A Done or cancelled task cannot keep acting as unfinished work.",
+        owner: { label: "Board", kind: "board" },
+        primaryControl: leafRef
+          ? { label: "Open stale blocker", kind: "open_blocker", ref: leafRef }
+          : null,
+        references: buildReferences(attn, [...gates, ...staleRelations]),
+        recoveryDebt: true,
+        resolvedFrom: "stale_blocker_relation",
+        scheduledRetry: scheduledRetry ?? null,
+        terminalGates: gates,
+      };
+    }
+
+    // 4. Blocked by real work (with workspace-finalize gate variant).
+    const terminalGate = gates.length > 0;
     const leaf = attn.leafIssue?.identifier ?? attn.leafIssue?.title ?? "an upstream task";
-    const accent: NextActionAccent = terminalGate && gates.some(isUnhealthyGate) ? "blocked" : "todo";
     return {
       ...NONE,
       lane: "blocked_real_work",
-      accent,
+      accent: "todo",
       laneLabel: "Blocked by real work",
       statement: terminalGate
         ? truncate(`Blocked by ${leaf} — it's Done but its gate hasn't cleared.`, 88)
@@ -348,13 +385,38 @@ export function deriveNextAction(input: NextActionInput): NextActionSummary {
     };
   }
 
-  // 5. Blocker diagnostics alone can still reveal a terminal gate.
+  // 5. Stale relations need repair, not terminal-gate recovery.
+  if (staleRelations.length > 0) {
+    const first = staleRelations[0];
+    return {
+      ...NONE,
+      lane: "recovery",
+      accent: "recovery_red",
+      laneLabel: "Recovery debt",
+      statement: truncate(
+        `Clear or replace the stale blocker relation for ${first.identifier ?? first.title}.`,
+        88,
+      ),
+      why: "A Done or cancelled blocker still remains in the relation set.",
+      primaryControl: {
+        label: "Open stale blocker",
+        kind: "open_blocker",
+        ref: toRef(first)!,
+      },
+      references: [{ label: "Stale blocker", ref: toRef(first)!, gate: gateLabel(first) }],
+      recoveryDebt: true,
+      resolvedFrom: "stale_blocker_relation",
+      scheduledRetry: scheduledRetry ?? null,
+    };
+  }
+
+  // 6. Blocker diagnostics alone can still reveal a workspace-finalize gate.
   if (gates.length > 0) {
     const first = gates[0];
     return {
       ...NONE,
       lane: "blocked_real_work",
-      accent: gates.some(isUnhealthyGate) ? "blocked" : "todo",
+      accent: "todo",
       laneLabel: "Blocked by real work",
       statement: truncate(
         `Blocked by ${first.identifier ?? first.title} — Done, but its gate hasn't cleared.`,
@@ -377,10 +439,6 @@ export function deriveNextAction(input: NextActionInput): NextActionSummary {
   }
 
   return NONE;
-}
-
-function isUnhealthyGate(node: IssueBlockerDiagnosticNode): boolean {
-  return node.flags.includes("cancelled_blocker_in_set");
 }
 
 function buildReferences(
@@ -419,7 +477,7 @@ function buildReferences(
 
 /**
  * Compact, per-node verdict for the subtree / blocker diagnostics view
- * (Phase 4 UX spec §5). One line per node so the operator can scan a whole
+ * One line per node lets the operator scan a whole
  * tree and find where work moves next without opening every child.
  *
  * A subtree node only carries what the diagnostics endpoint exposes — status
@@ -510,12 +568,12 @@ export function deriveSubtreeNodeBadge(node: IssueSubtreeDiagnosticNode): NextAc
         resolvedFrom: "workspace_finalize_pending",
       };
     }
-    // done_but_blocking — a Done blocker whose gate hasn't cleared.
+    // A Done blocker left in the relation set is recovery debt, not a gate.
     return {
-      lane: "blocked_real_work",
-      accent: "todo",
-      laneLabel: "Blocked",
-      statement: `Blocked → ${blockerLabel(gate)}`,
+      lane: "recovery",
+      accent: "recovery_red",
+      laneLabel: "Recovery debt",
+      statement: "Recovery debt → clear stale blocker",
       target: blockerRef(gate),
       gate: gateLabel(gate),
       ready: false,
@@ -539,9 +597,24 @@ export function deriveSubtreeNodeBadge(node: IssueSubtreeDiagnosticNode): NextAc
     };
   }
 
-  // No blockers hold this node and it is non-terminal — this is where work can
-  // actually move next. It is a candidate for the single highlighted leaf.
+  // Status is not proof of liveness. Only a queued/claimed wake demonstrates
+  // that active-looking work currently has a continuation in this diagnostic.
   const inProgress = status === "in_progress" || status === "in_review";
+  const hasLiveWake = node.wakeEvents.some(
+    (event) => event.kind === "wake_request" && (event.status === "queued" || event.status === "claimed"),
+  );
+  if (inProgress && !hasLiveWake) {
+    return {
+      lane: "recovery",
+      accent: "recovery_amber",
+      laneLabel: "Needs recovery",
+      statement: "No live continuation.",
+      target: null,
+      gate: null,
+      ready: false,
+      resolvedFrom: "active_without_live_continuation",
+    };
+  }
   return {
     lane: inProgress ? "working_now" : "none",
     accent: inProgress ? "in_progress" : "none",
@@ -550,7 +623,7 @@ export function deriveSubtreeNodeBadge(node: IssueSubtreeDiagnosticNode): NextAc
     target: null,
     gate: null,
     ready: true,
-    resolvedFrom: inProgress ? "unblocked_active" : "unblocked_ready",
+    resolvedFrom: inProgress ? "live_wake" : "unblocked_ready",
   };
 }
 
@@ -565,11 +638,18 @@ export function selectActionableLeafNodeId(
   nodes: IssueSubtreeDiagnosticNode[],
 ): string | null {
   const scored = nodes.map((node) => ({ node, badge: deriveSubtreeNodeBadge(node) }));
-  const ready = scored.find(({ badge }) => badge.ready);
+  const parentNodeIds = new Set(nodes.flatMap((node) => node.parentId ? [node.parentId] : []));
+  const isLeaf = (node: IssueSubtreeDiagnosticNode) => !parentNodeIds.has(node.issue.id);
+  const ready = scored.find(({ node, badge }) => badge.ready && isLeaf(node));
   if (ready) return ready.node.issue.id;
-  const debt = scored.find(({ badge }) => badge.resolvedFrom === "cancelled_blocker_in_set");
+  const debt = scored.find(
+    ({ node, badge }) =>
+      isLeaf(node)
+      && (badge.resolvedFrom === "cancelled_blocker_in_set"
+        || badge.resolvedFrom === "done_but_blocking"),
+  );
   if (debt) return debt.node.issue.id;
-  const recovery = scored.find(({ badge }) => badge.lane === "recovery");
+  const recovery = scored.find(({ node, badge }) => badge.lane === "recovery" && isLeaf(node));
   if (recovery) return recovery.node.issue.id;
   return null;
 }

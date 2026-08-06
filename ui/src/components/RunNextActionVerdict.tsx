@@ -37,8 +37,8 @@ export interface RunNextActionVerdictProps {
 }
 
 /**
- * Compact, single-line next-action verdict for a run surface (PAP-13005
- * Phase 5b). Reuses the same four-lane resolver as the issue-detail panel so a
+ * Compact, single-line next-action verdict for a run surface. Reuses the same
+ * four-lane resolver as the issue-detail panel so a
  * run drawer answers "what moves this task forward next?" without re-deriving
  * it. Renders nothing when the task is on track or terminal.
  */
@@ -71,7 +71,7 @@ export function RunNextActionVerdict({ issueId, runIsActive, className }: RunNex
       role="status"
       data-testid="run-next-action-verdict"
       data-next-action-lane={summary.lane}
-      style={{ borderLeftColor: accent, borderLeftWidth: "3px" }}
+      style={{ borderLeftColor: accent, borderLeftWidth: "var(--sz-3px)" }}
       className={`flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs ${className ?? ""}`}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" style={{ color: accent }} aria-hidden />

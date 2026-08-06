@@ -82,8 +82,8 @@ export interface IssueNextActionCardProps {
 }
 
 /**
- * The consolidated "what moves this forward next" panel (PAP-13005 Phase 5,
- * per the Phase 4 UX spec). Resolves the task into exactly one of four lanes
+ * The consolidated "what moves this forward next" panel resolves the task
+ * into exactly one of four lanes
  * and renders it as a neutral card with a lane-hued left accent.
  */
 export function IssueNextActionCard({
@@ -124,7 +124,7 @@ export function IssueNextActionCard({
       data-next-action-accent={summary.accent}
       data-terminal-gate={summary.terminalGate ? "true" : undefined}
       data-recovery-debt={summary.recoveryDebt ? "true" : undefined}
-      style={{ borderLeftColor: accent, borderLeftWidth: "4px" }}
+      style={{ borderLeftColor: accent, borderLeftWidth: "var(--sz-4px)" }}
       className={`rounded-md border border-border bg-card text-card-foreground px-3 py-2.5 shadow-sm ${className ?? ""}`}
     >
       {/* 1. Lane chip */}
@@ -192,7 +192,7 @@ export function IssueNextActionCard({
         <p
           data-testid="issue-next-action-diagnostics-error"
           className="mt-1.5 rounded-md border border-border bg-muted px-2 py-1 text-xs leading-5 text-foreground"
-          style={{ borderLeftColor: "var(--status-task-blocked)", borderLeftWidth: "3px" }}
+          style={{ borderLeftColor: "var(--status-task-blocked)", borderLeftWidth: "var(--sz-3px)" }}
         >
           Couldn&apos;t load full blocker diagnostics: {diagnosticsError}
         </p>

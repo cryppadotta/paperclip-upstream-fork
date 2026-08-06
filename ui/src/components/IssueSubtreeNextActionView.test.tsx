@@ -126,7 +126,27 @@ describe("IssueSubtreeNextActionView", () => {
               },
             ],
           }),
-          node({ id: "leaf", identifier: "PAP-2", status: "in_progress", depth: 1 }),
+          node({
+            id: "leaf",
+            identifier: "PAP-2",
+            status: "in_progress",
+            depth: 1,
+            parentId: "root",
+            wakeEvents: [{
+              kind: "wake_request",
+              agentId: "agent-1",
+              source: "assigned",
+              reason: "issue_assigned",
+              status: "queued",
+              coalescedCount: 0,
+              runId: null,
+              requestedAt: "2026-08-06T00:00:00.000Z",
+              claimedAt: null,
+              finishedAt: null,
+              failureClass: null,
+            }],
+            wakeRequestCount: 1,
+          }),
         ])}
       />,
     );

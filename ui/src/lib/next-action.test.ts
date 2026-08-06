@@ -11,6 +11,7 @@ import type {
 import {
   deriveNextAction,
   deriveSubtreeNodeBadge,
+  isRunActiveForIssue,
   selectActionableLeafNodeId,
 } from "./next-action";
 
@@ -222,10 +223,22 @@ describe("deriveNextAction", () => {
     ).toBe(true);
   });
 
-  it("reveals a terminal gate from blocker diagnostics alone", () => {
+  it("treats a stale Done blocker relation as recovery debt, not a terminal gate", () => {
     const result = deriveNextAction({
       status: "blocked",
       blockerDiagnostics: blockerDiagnostics(["done_but_blocking"]),
+    });
+    expect(result.lane).toBe("recovery");
+    expect(result.recoveryDebt).toBe(true);
+    expect(result.terminalGate).toBe(false);
+    expect(result.statement).toContain("Clear or replace");
+    expect(result.references[0]?.gate).toBe("relation: done_but_blocking");
+  });
+
+  it("reveals a workspace-finalize terminal gate from diagnostics alone", () => {
+    const result = deriveNextAction({
+      status: "blocked",
+      blockerDiagnostics: blockerDiagnostics(["done_but_blocking", "workspace_finalize_pending"]),
     });
     expect(result.lane).toBe("blocked_real_work");
     expect(result.terminalGate).toBe(true);
@@ -235,6 +248,24 @@ describe("deriveNextAction", () => {
   it("returns none when nothing needs attention", () => {
     const result = deriveNextAction({ status: "in_progress" });
     expect(result.lane).toBe("none");
+  });
+});
+
+describe("isRunActiveForIssue", () => {
+  it("only marks the issue named by an active run scope", () => {
+    const run = {
+      status: "running",
+      contextSnapshot: { issueId: "current-issue" },
+    };
+    expect(isRunActiveForIssue(run, "current-issue")).toBe(true);
+    expect(isRunActiveForIssue(run, "historical-issue")).toBe(false);
+  });
+
+  it("does not treat a finished run as live for its scoped issue", () => {
+    expect(isRunActiveForIssue(
+      { status: "succeeded", contextSnapshot: { issueId: "current-issue" } },
+      "current-issue",
+    )).toBe(false);
   });
 });
 
@@ -354,6 +385,54 @@ describe("deriveSubtreeNodeBadge", () => {
     expect(badge.accent).toBe("recovery_red");
   });
 
+  it("treats a stale Done blocker relation as recovery debt", () => {
+    const badge = deriveSubtreeNodeBadge(
+      subtreeNode({
+        status: "blocked",
+        blockers: [
+          blockerNode({
+            status: "done",
+            isUnresolved: false,
+            flags: ["done_but_blocking"],
+          }),
+        ],
+      }),
+    );
+    expect(badge.lane).toBe("recovery");
+    expect(badge.laneLabel).toBe("Recovery debt");
+    expect(badge.gate).toBe("relation: done_but_blocking");
+  });
+
+  it("does not infer active work from status without a live wake", () => {
+    const badge = deriveSubtreeNodeBadge(subtreeNode({ status: "in_progress" }));
+    expect(badge.lane).toBe("recovery");
+    expect(badge.ready).toBe(false);
+    expect(badge.statement).toBe("No live continuation.");
+  });
+
+  it("marks active work only when a queued wake provides live evidence", () => {
+    const badge = deriveSubtreeNodeBadge(subtreeNode({
+      status: "in_progress",
+      wakeEvents: [{
+        kind: "wake_request",
+        agentId: "a1",
+        source: "assigned",
+        reason: "issue_assigned",
+        status: "queued",
+        coalescedCount: 0,
+        runId: null,
+        requestedAt: "2026-08-06T00:00:00.000Z",
+        claimedAt: null,
+        finishedAt: null,
+        failureClass: null,
+      }],
+      wakeRequestCount: 1,
+    }));
+    expect(badge.lane).toBe("working_now");
+    expect(badge.ready).toBe(true);
+    expect(badge.resolvedFrom).toBe("live_wake");
+  });
+
   it("marks an unblocked non-terminal node as ready to run", () => {
     const badge = deriveSubtreeNodeBadge(subtreeNode({ status: "todo" }));
     expect(badge.ready).toBe(true);
@@ -387,6 +466,14 @@ describe("selectActionableLeafNodeId", () => {
     const nodes = [
       subtreeNode({ id: "a", status: "done" }),
       subtreeNode({ id: "b", status: "cancelled" }),
+    ];
+    expect(selectActionableLeafNodeId(nodes)).toBeNull();
+  });
+
+  it("does not select a ready parent when only its child is a leaf", () => {
+    const nodes = [
+      subtreeNode({ id: "parent", status: "todo" }),
+      subtreeNode({ id: "child", status: "done", parentId: "parent", depth: 1 }),
     ];
     expect(selectActionableLeafNodeId(nodes)).toBeNull();
   });

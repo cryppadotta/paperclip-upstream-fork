@@ -37,7 +37,7 @@ export interface IssueSubtreeNextActionViewProps {
 
 /**
  * Subtree diagnostics — the same next-action resolver, one compact line per
- * node (Phase 4 UX spec §5). The operator scans the tree to find where work
+ * node. The operator scans the tree to find where work
  * moves next without opening every child; the single actionable leaf is
  * highlighted so it reads at a glance (Information Scent / F-pattern).
  */
@@ -81,9 +81,8 @@ export function IssueSubtreeNextActionView({ data, className }: IssueSubtreeNext
               style={
                 isActionable
                   ? {
-                    // Actionable leaf highlight: lane hue @ 6% bg + accent rail.
-                    backgroundColor: "color-mix(in oklab, var(--status-task-todo) 6%, transparent)",
-                    boxShadow: "inset 3px 0 0 0 var(--status-task-todo)",
+                    backgroundColor: "var(--surface-next-action-marker)",
+                    boxShadow: "var(--shadow-next-action-marker)",
                   }
                   : undefined
               }
@@ -91,7 +90,7 @@ export function IssueSubtreeNextActionView({ data, className }: IssueSubtreeNext
               {/* Depth indentation so the parent→child shape reads. */}
               <span
                 aria-hidden
-                style={{ width: `${Math.min(node.depth, 6) * 12}px` }}
+                style={{ width: `calc(var(--sz-12px) * ${Math.min(node.depth, 6)})` }}
                 className="shrink-0"
               />
 
@@ -112,7 +111,7 @@ export function IssueSubtreeNextActionView({ data, className }: IssueSubtreeNext
                     className="rounded-sm px-1 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-wide"
                     style={{
                       color: "var(--status-task-todo)",
-                      backgroundColor: "color-mix(in oklab, var(--status-task-todo) 14%, transparent)",
+                      backgroundColor: "var(--surface-next-action-chip)",
                     }}
                   >
                     Act here

@@ -97,6 +97,7 @@ import {
   MAX_LIVE_LOG_LINES,
 } from "../lib/live-log-buffer";
 import { RunNextActionVerdict } from "../components/RunNextActionVerdict";
+import { isRunActiveForIssue } from "../lib/next-action";
 import {
   isUuidLike,
   type Agent,
@@ -3435,7 +3436,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 </Link>
                 <RunNextActionVerdict
                   issueId={issue.issueId}
-                  runIsActive={run.status === "running" || run.status === "queued"}
+                  runIsActive={isRunActiveForIssue(run, issue.issueId)}
                   className="mt-2"
                 />
               </div>

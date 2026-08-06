@@ -8,7 +8,7 @@ import type {
 import { IssueNextActionCard } from "@/components/IssueNextActionCard";
 
 /**
- * PAP-13005 Phase 5 — the consolidated "what moves this forward next" surface.
+ * The consolidated "what moves this forward next" surface.
  * Each story exercises one branch of the next-action derivation so the board
  * always sees a single readable answer instead of recovery churn.
  */
