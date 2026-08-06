@@ -1651,10 +1651,10 @@ function TranscriptGoalRow({
         <Gauge className="mt-0.5 h-4 w-4 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.14em]">
+            <span className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps)">
               Goal {formatGoalStatus(block.status)}
             </span>
-            {usage && <span className="text-[11px] text-current/75">{usage}</span>}
+            {usage && <span className="text-(length:--text-micro) text-current/75">{usage}</span>}
           </div>
           {block.objective && (
             <div className={cn("mt-1 break-words text-foreground/85 dark:text-foreground/80", compact ? "text-xs" : "text-sm")}>

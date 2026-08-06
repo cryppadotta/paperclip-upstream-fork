@@ -1478,13 +1478,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     <span className="flex min-w-0 items-baseline gap-1.5">
                       <span className="shrink-0 font-mono">{slashCommandLabel(option)}</span>
                       {option.argHint ? (
-                        <span className="truncate font-mono text-[11px] text-muted-foreground">
+                        <span className="truncate font-mono text-(length:--text-micro) text-muted-foreground">
                           {option.argHint}
                         </span>
                       ) : null}
                     </span>
                     {option.description ? (
-                      <span className="truncate text-[11px] leading-4 text-muted-foreground">
+                      <span className="truncate text-(length:--text-micro) leading-4 text-muted-foreground">
                         {option.description}
                       </span>
                     ) : null}
@@ -1519,7 +1519,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "chat-command" && (
-                  <span className="ml-auto self-start text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto self-start text-(length:--text-nano) uppercase tracking-(--tracking-caps) text-muted-foreground">
                     Command
                   </span>
                 )}
