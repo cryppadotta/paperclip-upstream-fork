@@ -287,6 +287,7 @@ function createRunContextDb(
         companyId,
         agentId: runAgentOrRows,
         agentCompanyId: companyId,
+        status: "running",
         contextSnapshot,
       }];
   const firstRun = runRows[0] ?? {};
@@ -1645,6 +1646,77 @@ describe("agent issue mutation checkout ownership", () => {
       expect.objectContaining({ agentId: peerAgentId, runId: managerRunId }),
       expect.any(Object),
     );
+  });
+
+  it("rejects terminal manager cleanup runs with stale issue lock references", async () => {
+    const cleanupIssueId = "dddddddd-1111-4111-8111-dddddddd1111";
+    const targetParentIssueId = "dddddddd-2222-4222-8222-dddddddd2222";
+    const treeRootIssueId = "dddddddd-3333-4333-8333-dddddddd3333";
+    const managerRunId = peerActor().runId as string;
+    const issueById = new Map<string, Record<string, unknown>>([
+      [issueId, makeIssue({
+        id: issueId,
+        status: "in_progress",
+        assigneeAgentId: ownerAgentId,
+        parentId: targetParentIssueId,
+      })],
+      [cleanupIssueId, makeIssue({
+        id: cleanupIssueId,
+        status: "in_progress",
+        assigneeAgentId: peerAgentId,
+        parentId: treeRootIssueId,
+        originKind: "harness_liveness_escalation",
+        checkoutRunId: managerRunId,
+        executionRunId: managerRunId,
+      })],
+      [targetParentIssueId, makeIssue({
+        id: targetParentIssueId,
+        status: "blocked",
+        assigneeAgentId: ownerAgentId,
+        parentId: treeRootIssueId,
+      })],
+      [treeRootIssueId, makeIssue({
+        id: treeRootIssueId,
+        status: "blocked",
+        assigneeAgentId: peerAgentId,
+        parentId: null,
+      })],
+    ]);
+    mockIssueService.getById.mockImplementation(async (id: string) => issueById.get(id) ?? null);
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read" || input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts"
+        ? "allow_manager_chain"
+        : input.action === "issue:read"
+          ? "allow_explicit_grant"
+          : "deny_missing_grant",
+      explanation: input.action === "tasks:manage_active_checkouts"
+        ? "Allowed because the actor manages the issue assignee."
+        : input.action === "issue:read"
+          ? "Allowed to read the target issue."
+          : "No agent permission mapping exists for issue:mutate.",
+    }));
+
+    const app = await createApp(
+      peerActor(),
+      createRunContextDb({}, [{
+        id: managerRunId,
+        companyId,
+        agentId: peerAgentId,
+        agentCompanyId: companyId,
+        status: "failed",
+        contextSnapshot: { issueId: cleanupIssueId },
+      }]),
+    );
+    const res = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled", comment: "Stale terminal run attempted cleanup." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details.code).toBe("issue_write_not_visible");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 
   it("rejects ordinary manager runs from mutating same-tree sibling issues", async () => {

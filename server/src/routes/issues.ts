@@ -4588,12 +4588,18 @@ export function issueRoutes(
         id: heartbeatRuns.id,
         companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
+        status: heartbeatRuns.status,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
+    if (
+      !run ||
+      run.companyId !== companyId ||
+      run.agentId !== req.actor.agentId ||
+      run.status !== "running"
+    ) return null;
     return run;
   }
 
