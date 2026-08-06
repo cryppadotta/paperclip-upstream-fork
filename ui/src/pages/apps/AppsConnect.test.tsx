@@ -333,6 +333,66 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).toHaveBeenCalledWith("conn-refreshed");
   });
 
+  it("resumes Notion OAuth after a failed connection lookup is retried", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock
+      .mockRejectedValueOnce(new Error("Lookup unavailable"))
+      .mockResolvedValueOnce({
+        applications: [{
+          id: "app-notion",
+          status: "draft",
+          metadata: { sourceTemplateKey: "notion" },
+        }],
+      });
+    listConnectionsMock
+      .mockResolvedValueOnce({ connections: [] })
+      .mockResolvedValueOnce({
+        connections: [{
+          id: "conn-after-retry",
+          applicationId: "app-notion",
+          authKind: "oauth",
+          status: "draft",
+          config: { sourceTemplateKey: "notion" },
+          transportConfig: {},
+        }],
+      });
+
+    await render();
+
+    expect(container.textContent).toContain("couldn’t check for an existing connection");
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-after-retry");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=resumed",
+    );
+  });
+
+  it("restores the Notion lookup error when retrying still fails", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockRejectedValue(new Error("Lookup unavailable"));
+
+    await render();
+
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(container.textContent).toContain("couldn’t check for an existing connection");
+    expect(buttonByText("Try again")).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+  });
+
   it("retries OAuth on the prepared connection without creating another draft", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });

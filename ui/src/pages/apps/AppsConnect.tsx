@@ -166,6 +166,7 @@ export function AppsConnect() {
   const [oauthPhase, setOAuthPhase] = useState<OAuthConnectPhase>("entry");
   const [oauthError, setOAuthError] = useState<string | null>(null);
   const directOAuthStartedRef = useRef(false);
+  const directOAuthRetryingRef = useRef(false);
 
   const openGallery = () => {
     setEntry(null);
@@ -360,6 +361,7 @@ export function AppsConnect() {
       !applicationsQuery.isFetchedAfterMount ||
       !connectionsQuery.isFetchedAfterMount
     )) return;
+    if (directOAuth && directOAuthRetryingRef.current) return;
     if (directOAuth && (applicationsQuery.isError || connectionsQuery.isError)) {
       setOAuthPhase("error");
       setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
@@ -437,11 +439,34 @@ export function AppsConnect() {
         entry={directOAuthEntry}
         phase={oauthPhase}
         error={oauthError}
-        onRetry={() => {
+        onRetry={async () => {
           setOAuthError(null);
           setOAuthPhase("starting");
           if (applicationsQuery.isError || connectionsQuery.isError) {
-            void Promise.all([applicationsQuery.refetch(), connectionsQuery.refetch()]);
+            directOAuthRetryingRef.current = true;
+            try {
+              const [applicationsResult, connectionsResult] = await Promise.all([
+                applicationsQuery.refetch(),
+                connectionsQuery.refetch(),
+              ]);
+              if (applicationsResult.isError || connectionsResult.isError) {
+                setOAuthPhase("error");
+                setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
+                return;
+              }
+              const refreshedConnection = reusableOAuthConnection(
+                directOAuthSource,
+                applicationsResult.data?.applications ?? [],
+                connectionsResult.data?.connections ?? [],
+              );
+              if (refreshedConnection) {
+                startOAuth(refreshedConnection.id);
+              } else {
+                connectMutation.mutate(directOAuthEntry);
+              }
+            } finally {
+              directOAuthRetryingRef.current = false;
+            }
             return;
           }
           const connectionId = connectResult?.connectionId ?? existingOAuthConnection?.id;
