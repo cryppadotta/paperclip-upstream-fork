@@ -23,6 +23,7 @@ const startOAuthMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "setup" as string | undefined }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -55,6 +56,10 @@ vi.mock("@/api/agents", () => ({
       { id: "agent-1", name: "Coder", title: "Engineer", status: "active" },
     ]),
   },
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: (target: string) => navigateTopLevelMock(target),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -680,5 +685,30 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("This app needs reconnecting");
     expect(container.textContent).toContain("Token expired.");
     expect(container.textContent).toContain("Who can use it");
+  });
+
+  it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth",
+      healthStatus: "failed",
+      healthMessage: "Authorization expired (invalid_grant).",
+    }));
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain("Reconnect required");
+    expect(container.textContent).toContain("Authorization expired (invalid_grant).");
+    expect(container.querySelector('input[placeholder="Paste your new key"]')).toBeNull();
+
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Reconnect")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith("http://example.test/oauth");
   });
 });

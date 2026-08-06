@@ -13,10 +13,12 @@ const finishAppMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
+const navigateTopLevelMock = vi.hoisted(() => vi.fn());
 const mockSearch = vi.hoisted(() => ({ value: "" }));
 const mockParams = vi.hoisted(() => ({ appKey: undefined as string | undefined }));
 
 const ZAPIER = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "zapier")!;
+const NOTION = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "notion")!;
 const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "google-sheets")!;
 
 vi.mock("@/api/tools", () => ({
@@ -32,6 +34,10 @@ vi.mock("@/api/tools", () => ({
 
 vi.mock("@/api/agents", () => ({
   agentsApi: { list: (companyId: string) => listAgentsMock(companyId) },
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: (target: string) => navigateTopLevelMock(target),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -188,6 +194,72 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
 
     expect(container.textContent).toContain("Connect Zapier");
     expect(container.textContent).not.toContain("Pick the app you want your agents to use.");
+  });
+
+  it("auto-starts the allowlisted Notion source deep link and opens provider sign-in", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-notion",
+      application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-notion" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: "https://mcp.notion.com/authorize?state=opaque" },
+    });
+
+    await render();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", {
+      galleryKey: "notion",
+      name: "Notion",
+      credentialValues: {},
+      configValues: undefined,
+      applicationId: undefined,
+    });
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=opaque",
+    );
+  });
+
+  it("shows an in-flight state while Paperclip prepares Notion sign-in", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockReturnValueOnce(new Promise(() => {}));
+
+    await render();
+
+    expect(container.textContent).toContain("Connect Notion");
+    expect(container.textContent).toContain("Preparing secure sign-in");
+    expect(container.textContent).toContain("Preparing…");
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps non-allowlisted OAuth apps blocked", async () => {
+    const slack = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
+    mockParams.appKey = "slack";
+    listGalleryMock.mockResolvedValueOnce({ apps: [slack] });
+
+    await render();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect", { replace: true });
+  });
+
+  it("routes the enabled Notion gallery tile through the generic source deep link", async () => {
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    await render();
+
+    const notionTile = buttonContaining("Notion");
+    expect(notionTile?.disabled).toBe(false);
+    expect(notionTile?.textContent).toContain("Connect");
+
+    await act(async () => {
+      notionTile?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/apps/connect?source=notion");
   });
 
   it("choosing No and clicking Check link connects with no credentials", async () => {
