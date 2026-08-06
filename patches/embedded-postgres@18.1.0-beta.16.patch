@@ -28,10 +28,3 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = this.process.stderr) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -364,3 +364,5 @@ function gracefulShutdown(done) {
- // Register graceful shutdown function
--AsyncExitHook(gracefulShutdown);
-+if (globalThis.process.env.EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK !== '1') {
-+    AsyncExitHook(gracefulShutdown);
-+}
- export default EmbeddedPostgres;

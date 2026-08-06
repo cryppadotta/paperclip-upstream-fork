@@ -54,19 +54,9 @@ test("systemd lifecycle asserts every service acceptance invariant", () => {
 test("systemd hot restart preserves children and orders embedded database shutdown", () => {
   const serviceManager = readFileSync(path.join(repoRoot, "cli", "src", "services", "service-manager.ts"), "utf8");
   const server = readFileSync(path.join(repoRoot, "server", "src", "index.ts"), "utf8");
-  const embeddedPatch = readFileSync(
-    path.join(repoRoot, "patches", "embedded-postgres@18.1.0-beta.16.patch"),
-    "utf8",
-  );
   assert.match(serviceManager, /KillMode=process/);
-  assert.match(serviceManager, /Environment="EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK=1"/);
   assert.match(server, /loadWithoutCoordinatedShutdownSignalHooks/);
   assert.match(server, /loadEmbeddedPostgresCtor/);
-  assert.doesNotMatch(
-    readFileSync(path.join(repoRoot, "server", "package.json"), "utf8"),
-    /"embedded-postgres"/,
-  );
-  assert.match(embeddedPatch, /EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK/);
 });
 
 test("cross-version migration harness cleans failed installs and exposes base backup errors", () => {

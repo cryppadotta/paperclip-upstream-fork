@@ -97,7 +97,6 @@ ExecStart="${escapeSystemd(input.shimPath)}" run --instance "${escapeSystemd(inp
 Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
-Environment="EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK=1"
 WorkingDirectory=%h
 # The server owns graceful teardown of embedded Postgres and deliberately leaves
 # eligible local-agent children alive for hot-restart adoption. Signalling the
@@ -128,7 +127,6 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_SERVICE_MANAGED</key><string>1</string>
     <key>PAPERCLIP_INSTANCE_ID</key><string>${escapeXml(input.instanceId)}</string>
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
-    <key>EMBEDDED_POSTGRES_DISABLE_EXIT_HOOK</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
