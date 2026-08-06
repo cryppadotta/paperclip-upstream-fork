@@ -3927,7 +3927,7 @@ export function issueRoutes(
 
     const run = await loadActorRunContext(input.req, input.issue.companyId);
     const sourceIssueId = readRunContextIssueId(run?.contextSnapshot);
-    if (!run || !sourceIssueId || sourceIssueId === input.issue.id) return false;
+    if (!run || run.status !== "running" || !sourceIssueId || sourceIssueId === input.issue.id) return false;
 
     const sourceIssue = await svc.getById(sourceIssueId);
     if (
@@ -4594,12 +4594,7 @@ export function issueRoutes(
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
-    if (
-      !run ||
-      run.companyId !== companyId ||
-      run.agentId !== req.actor.agentId ||
-      run.status !== "running"
-    ) return null;
+    if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
   }
 
