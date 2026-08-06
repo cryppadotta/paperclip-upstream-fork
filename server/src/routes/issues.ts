@@ -9038,7 +9038,7 @@ export function issueRoutes(
     let issueGraphCleanupComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
     const lockRunningIssueGraphCleanupRun = async (tx: NonNullable<Parameters<typeof svc.update>[2]>) => {
       if (!issueGraphCleanupRunId) return true;
-      const lockedRun = await tx
+      const lockedRuns = await tx
         .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(and(
@@ -9047,9 +9047,8 @@ export function issueRoutes(
           eq(heartbeatRuns.agentId, actor.agentId!),
           eq(heartbeatRuns.status, "running"),
         ))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      return Boolean(lockedRun);
+        .for("update");
+      return lockedRuns.length > 0;
     };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
