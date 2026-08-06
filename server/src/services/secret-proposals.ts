@@ -228,18 +228,21 @@ export function createSecretProposalsService(db: Db) {
       )).then((rows) => rows[0] ?? null);
       if (!secret || secret.scope !== "company" || secret.status === "deleted") throw notFound("Secret not found");
     }
-    if (input.secretProposalId) {
-      const dependency = await getById(context.companyId, input.secretProposalId);
-      if (!dependency || dependency.kind !== "secret") throw notFound("Secret proposal not found");
-      if (dependency.status !== "pending") {
-        throw unprocessable(
-          "Prerequisite secret proposal is no longer pending; use secretId to reference an approved secret",
-        );
-      }
-    }
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
       async (txDb) => {
+        if (input.secretProposalId) {
+          const dependency = await txDb.select().from(companySecretProposals).where(and(
+            eq(companySecretProposals.id, input.secretProposalId),
+            eq(companySecretProposals.companyId, context.companyId),
+          )).for("update").then((rows) => rows[0] ?? null);
+          if (!dependency || dependency.kind !== "secret") throw notFound("Secret proposal not found");
+          if (dependency.status !== "pending") {
+            throw unprocessable(
+              "Prerequisite secret proposal is no longer pending; use secretId to reference an approved secret",
+            );
+          }
+        }
         const proposal = await txDb.insert(companySecretProposals).values({
           companyId: context.companyId,
           kind: "binding",

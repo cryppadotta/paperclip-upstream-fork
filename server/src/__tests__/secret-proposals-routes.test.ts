@@ -24,6 +24,7 @@ import { conflict } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { secretRoutes } from "../routes/secrets.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
+import { issueService } from "../services/issues.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { secretService } from "../services/secrets.js";
 import {
@@ -133,7 +134,11 @@ describeEmbeddedPostgres("secret proposal routes", () => {
 
   function createBoardApp(
     fixture: Awaited<ReturnType<typeof seedRun>>,
-    options?: { admin?: boolean; heartbeat?: IssueAssignmentWakeupDeps },
+    options?: {
+      admin?: boolean;
+      heartbeat?: IssueAssignmentWakeupDeps;
+      issues?: Pick<ReturnType<typeof issueService>, "getById" | "addComment">;
+    },
   ) {
     const app = express();
     app.use(express.json());
@@ -149,7 +154,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       };
       next();
     });
-    app.use("/api", secretRoutes(db, options?.heartbeat ? { heartbeat: options.heartbeat } : undefined));
+    app.use("/api", secretRoutes(db, { heartbeat: options?.heartbeat, issues: options?.issues }));
     app.use(errorHandler);
     return app;
   }
@@ -169,13 +174,18 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       .toEqual([expect.objectContaining({ status: "pending", valueCiphertext: expect.any(Object) })]);
   });
 
-  it("keeps committed approve and reject responses successful when resolution wakeup fails", async () => {
+  it("keeps committed approve and reject responses successful when resolution notifications fail", async () => {
     const fixture = await seedRun();
     await db.update(issues)
       .set({ assigneeAgentId: fixture.agentId })
       .where(eq(issues.id, fixture.issueId));
     const wakeup = vi.fn().mockRejectedValue(new Error("wakeup queue unavailable"));
-    const boardApp = createBoardApp(fixture, { heartbeat: { wakeup } });
+    const persistedIssues = issueService(db);
+    const addComment = vi.fn().mockRejectedValue(new Error("comment store unavailable"));
+    const boardApp = createBoardApp(fixture, {
+      heartbeat: { wakeup },
+      issues: { getById: persistedIssues.getById, addComment },
+    });
 
     const approvedProposal = await request(createAgentApp(fixture))
       .post("/api/agents/me/secret-proposals")
@@ -206,12 +216,13 @@ describeEmbeddedPostgres("secret proposal routes", () => {
 
     expect(rejected.status).toBe(200);
     expect(rejected.body.status).toBe("rejected");
+    expect(addComment).toHaveBeenCalledTimes(2);
     expect(wakeup).toHaveBeenCalledTimes(2);
     expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: approvedProposal.body.id, status: "approved", valueCiphertext: null }),
       expect.objectContaining({ id: rejectedProposal.body.id, status: "rejected", valueCiphertext: null }),
     ]));
-    expect(await db.select().from(issueComments)).toHaveLength(2);
+    expect(await db.select().from(issueComments)).toHaveLength(0);
   });
 
   it("requires agent JWT and atomically cascade-approves a secret plus binding with dual audits", async () => {
@@ -534,6 +545,100 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(await db.select().from(companySecretProposals)).toEqual([
       expect.objectContaining({ id: secretProposal.body.id, status: "withdrawn" }),
     ]);
+  });
+
+  it("serializes binding creation with concurrent dependency rejection", async () => {
+    const fixture = await seedRun();
+    const secretProposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "secret",
+        name: "dev/concurrent-reject/token",
+        value: "concurrent-reject-secret",
+        justification: "Create a binding while review is pending",
+      });
+    expect(secretProposal.status).toBe(201);
+
+    const advisoryLockKey = 147460186;
+    await db.execute(sql.raw(`
+      CREATE OR REPLACE FUNCTION paperclip_test_pause_binding_proposal()
+      RETURNS trigger
+      LANGUAGE plpgsql
+      AS $function$
+      BEGIN
+        IF NEW.kind = 'binding' THEN
+          PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+          PERFORM pg_sleep(1);
+        END IF;
+        RETURN NEW;
+      END
+      $function$;
+      CREATE TRIGGER paperclip_test_pause_binding_proposal
+      BEFORE INSERT ON company_secret_proposals
+      FOR EACH ROW EXECUTE FUNCTION paperclip_test_pause_binding_proposal();
+    `));
+
+    try {
+      const bindingPromise = request(createAgentApp(fixture))
+        .post("/api/agents/me/secret-proposals")
+        .send({
+          kind: "binding",
+          secretProposalId: secretProposal.body.id,
+          configPath: "env.CONCURRENT_REJECT_TOKEN",
+          justification: "Exercise dependency serialization",
+        })
+        .then((response) => response);
+
+      let bindingPaused = false;
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const lockAvailable = await db.transaction(async (tx) => {
+          const [result] = await tx.execute<{ acquired: boolean }>(
+            sql`SELECT pg_try_advisory_lock(${advisoryLockKey}) AS acquired`,
+          );
+          if (result?.acquired) {
+            await tx.execute(sql`SELECT pg_advisory_unlock(${advisoryLockKey})`);
+          }
+          return result?.acquired ?? false;
+        });
+        if (!lockAvailable) {
+          bindingPaused = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(bindingPaused).toBe(true);
+
+      let rejectionFinished = false;
+      const rejectionPromise = request(createBoardApp(fixture))
+        .post(`/api/companies/${fixture.companyId}/secret-proposals/${secretProposal.body.id}/reject`)
+        .send({ reason: "Reject during binding creation" })
+        .then((response) => {
+          rejectionFinished = true;
+          return response;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(rejectionFinished).toBe(false);
+
+      const binding = await bindingPromise;
+      const rejection = await rejectionPromise;
+      expect(binding.status).toBe(201);
+      expect(rejection.status).toBe(200);
+    } finally {
+      await db.execute(sql.raw(`
+        DROP TRIGGER IF EXISTS paperclip_test_pause_binding_proposal ON company_secret_proposals;
+        DROP FUNCTION IF EXISTS paperclip_test_pause_binding_proposal();
+      `));
+    }
+
+    expect(await db.select().from(companySecretProposals)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: secretProposal.body.id, status: "rejected" }),
+      expect.objectContaining({
+        kind: "binding",
+        secretProposalId: secretProposal.body.id,
+        status: "rejected",
+        resolutionReason: `Dependent secret proposal ${secretProposal.body.id} was rejected`,
+      }),
+    ]));
   });
 
   it("cascade-rejects pending binding proposals when their secret proposal is withdrawn", async () => {

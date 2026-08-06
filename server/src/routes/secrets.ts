@@ -30,9 +30,11 @@ import {
   type IssueAssignmentWakeupDeps,
 } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { logger } from "../middleware/logger.js";
 
 type SecretRoutesDeps = {
   heartbeat?: IssueAssignmentWakeupDeps;
+  issues?: Pick<ReturnType<typeof issueService>, "getById" | "addComment">;
 };
 
 const DEFAULT_PROPOSAL_LIST_LIMIT = 100;
@@ -111,7 +113,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const svc = secretService(db);
   const proposals = createSecretProposalsService(db);
   const access = accessService(db);
-  const issues = issueService(db);
+  const issues = deps.issues ?? issueService(db);
   const heartbeat = deps.heartbeat ?? heartbeatService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
@@ -202,26 +204,40 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     reason?: string | null;
   }) {
     if (!input.proposal.originIssueId) return;
-    const issue = await issues.getById(input.proposal.originIssueId);
-    if (!issue) return;
-    const subject = input.proposal.kind === "secret"
-      ? `secret proposal \`${input.proposal.proposedName ?? "unnamed"}\``
-      : `binding proposal \`${input.proposal.configPath ?? "unknown"}\``;
-    const reason = input.reason ? `\n\nReason: ${input.reason}` : "";
-    await issues.addComment(
-      issue.id,
-      `Secret proposal resolution\n\n- Proposal: ${subject}\n- Status: **${input.status}**${reason}`,
-      { userId: input.userId },
-    );
-    await queueIssueAssignmentWakeup({
-      heartbeat,
-      issue,
-      reason: "secret_proposal_resolved",
-      mutation: `secret_proposal_${input.status}`,
-      contextSource: "secret.proposal.resolution",
-      requestedByActorType: "user",
-      requestedByActorId: input.userId,
-    });
+    try {
+      const issue = await issues.getById(input.proposal.originIssueId);
+      if (!issue) return;
+      const subject = input.proposal.kind === "secret"
+        ? `secret proposal \`${input.proposal.proposedName ?? "unnamed"}\``
+        : `binding proposal \`${input.proposal.configPath ?? "unknown"}\``;
+      const reason = input.reason ? `\n\nReason: ${input.reason}` : "";
+      try {
+        await issues.addComment(
+          issue.id,
+          `Secret proposal resolution\n\n- Proposal: ${subject}\n- Status: **${input.status}**${reason}`,
+          { userId: input.userId },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, issueId: issue.id, proposalStatus: input.status },
+          "failed to post secret proposal resolution comment",
+        );
+      }
+      await queueIssueAssignmentWakeup({
+        heartbeat,
+        issue,
+        reason: "secret_proposal_resolved",
+        mutation: `secret_proposal_${input.status}`,
+        contextSource: "secret.proposal.resolution",
+        requestedByActorType: "user",
+        requestedByActorId: input.userId,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, issueId: input.proposal.originIssueId, proposalStatus: input.status },
+        "failed to notify origin issue about secret proposal resolution",
+      );
+    }
   }
 
   router.post("/agents/me/secret-proposals", async (req, res) => {
