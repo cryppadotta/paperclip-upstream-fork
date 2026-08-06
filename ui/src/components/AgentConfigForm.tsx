@@ -71,6 +71,7 @@ import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } 
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 import { agentConfigValuesEqual, buildAgentConfigChanges, originalValue, revertAgentConfigChange, type AgentConfigChange } from "../lib/agent-config-changeset";
+import { copyTextToClipboard } from "../lib/clipboard";
 
 /* ---- Create mode values ---- */
 
@@ -3048,7 +3049,7 @@ function LegacyBootstrapRow({ value, onMove }: { value: string; onMove: () => vo
   const charCount = value.trim().length;
   async function handleMove() {
     try {
-      await navigator.clipboard?.writeText(value);
+      await copyTextToClipboard(value);
     } catch {
       // Clipboard may be blocked (permissions/headless); still migrate off.
     }
