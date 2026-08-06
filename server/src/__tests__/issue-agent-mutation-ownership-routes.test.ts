@@ -1652,6 +1652,21 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
+    expect(mockIssueService.update.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockHeartbeatService.cancelRun.mock.invocationCallOrder[0]!,
+    );
+
+    mockIssueService.update.mockClear();
+    mockIssueService.update.mockRejectedValueOnce(new Error("cleanup write failed"));
+    mockHeartbeatService.cancelRun.mockClear();
+    mockIssueService.addComment.mockClear();
+    const failedRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled", comment: "This cleanup transaction must roll back." });
+
+    expect(failedRes.status, JSON.stringify(failedRes.body)).toBe(500);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("rejects cleanup when the manager run terminates between authorization and mutation", async () => {

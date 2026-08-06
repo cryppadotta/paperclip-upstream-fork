@@ -9036,42 +9036,30 @@ export function issueRoutes(
       }, postCommitActivityPublications);
     };
     let issueGraphCleanupComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
-    let issueGraphCleanupCancelledRun: Awaited<ReturnType<typeof heartbeat.cancelRun>> | null = null;
-    let issueGraphCleanupCancellationError: unknown = null;
+    const lockRunningIssueGraphCleanupRun = async (tx: NonNullable<Parameters<typeof svc.update>[2]>) => {
+      if (!issueGraphCleanupRunId) return true;
+      const lockedRun = await tx
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.id, issueGraphCleanupRunId),
+          eq(heartbeatRuns.companyId, existing.companyId),
+          eq(heartbeatRuns.agentId, actor.agentId!),
+          eq(heartbeatRuns.status, "running"),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      return Boolean(lockedRun);
+    };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if ((transition.decision && decisionId) || shouldRelayStop || issueGraphCleanupRunId) {
         issue = await db.transaction(async (tx) => {
-          if (issueGraphCleanupRunId) {
-            const lockedRun = await tx
-              .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
-              .from(heartbeatRuns)
-              .where(and(
-                eq(heartbeatRuns.id, issueGraphCleanupRunId),
-                eq(heartbeatRuns.companyId, existing.companyId),
-                eq(heartbeatRuns.agentId, actor.agentId!),
-                eq(heartbeatRuns.status, "running"),
-              ))
-              .for("update")
-              .then((rows) => rows[0] ?? null);
-            if (!lockedRun) {
-              throw forbidden("Issue graph cleanup run is no longer active", {
-                code: "issue_graph_cleanup_run_not_running",
-                runId: issueGraphCleanupRunId,
-              });
-            }
-
-            // Cancel before updating the issue row. cancelRun may release the
-            // target run's issue lock through its own transaction; doing that
-            // after updateIssue(tx) would make the nested transaction wait on
-            // this transaction's issue-row lock.
-            if (runToCancelForCancelledStatus) {
-              try {
-                issueGraphCleanupCancelledRun = await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
-              } catch (err) {
-                issueGraphCleanupCancellationError = err;
-              }
-            }
+          if (issueGraphCleanupRunId && !(await lockRunningIssueGraphCleanupRun(tx))) {
+            throw forbidden("Issue graph cleanup run is no longer active", {
+              code: "issue_graph_cleanup_run_not_running",
+              runId: issueGraphCleanupRunId,
+            });
           }
 
           const updated = await updateIssue(tx);
@@ -9182,9 +9170,16 @@ export function issueRoutes(
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
-        if (issueGraphCleanupCancellationError) throw issueGraphCleanupCancellationError;
         const cancelled = issueGraphCleanupRunId
-          ? issueGraphCleanupCancelledRun
+          ? await db.transaction(async (tx) => {
+            if (!(await lockRunningIssueGraphCleanupRun(tx))) {
+              throw forbidden("Issue graph cleanup run is no longer active", {
+                code: "issue_graph_cleanup_run_not_running",
+                runId: issueGraphCleanupRunId,
+              });
+            }
+            return heartbeat.cancelRun(runToCancelForCancelledStatus.id);
+          })
           : await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
