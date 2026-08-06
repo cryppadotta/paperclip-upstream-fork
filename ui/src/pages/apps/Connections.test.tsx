@@ -11,6 +11,8 @@ const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listAppsAttentionMock = vi.hoisted(() => vi.fn());
 const listProfilesMock = vi.hoisted(() => vi.fn());
+const archiveConnectionMock = vi.hoisted(() => vi.fn());
+const pushToastMock = vi.hoisted(() => vi.fn());
 const mockNavigate = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/tools", () => ({
@@ -20,6 +22,7 @@ vi.mock("@/api/tools", () => ({
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listAppsAttention: (companyId: string) => listAppsAttentionMock(companyId),
     listProfiles: (companyId: string) => listProfilesMock(companyId),
+    archiveConnection: (connectionId: string) => archiveConnectionMock(connectionId),
   },
 }));
 
@@ -39,6 +42,10 @@ vi.mock("@/context/CompanyContext", () => ({
 
 vi.mock("@/context/BreadcrumbContext", () => ({
   useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+
+vi.mock("@/context/ToastContext", () => ({
+  useToast: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -147,6 +154,7 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
     listProfilesMock.mockResolvedValue({ profiles: [] });
+    archiveConnectionMock.mockResolvedValue(connection({ id: "c-deleted", status: "archived" }));
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -321,5 +329,44 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     expect(button?.textContent).toBe("Open");
     button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     expect(mockNavigate).toHaveBeenCalledWith("/apps/c-healthy");
+  });
+
+  it("deletes a connection only after trash-can confirmation", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [connection({ id: "c-github", applicationId: "app-github", name: "GitHub" })],
+    });
+
+    await renderApps();
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete GitHub connection"]',
+    );
+    expect(deleteButton).toBeTruthy();
+
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(archiveConnectionMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Delete GitHub connection?");
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github");
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Connection deleted", tone: "success" }),
+    );
   });
 });

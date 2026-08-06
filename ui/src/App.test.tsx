@@ -242,3 +242,11 @@ describe("Skill Studio routes", () => {
     expect(createIndexes[1]).toBeLessThan(detailIndexes[1]!);
   });
 });
+
+describe("Apps routes", () => {
+  it("uses browse as the Apps landing page and gives connections a canonical URL", () => {
+    expect(appSource).toContain('<Route path="apps" element={<Browse />} />');
+    expect(appSource).toContain('<Route path="apps/browse" element={<Browse />} />');
+    expect(appSource).toContain('<Route path="apps/connections" element={<Connections />} />');
+  });
+});

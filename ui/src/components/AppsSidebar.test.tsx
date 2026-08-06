@@ -128,10 +128,10 @@ describe("AppsSidebar", () => {
 
     // Three peer consumer doors: Browse (store) · Connections · Review (PAP-13254).
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps/browse", label: "Browse" }),
+      expect.objectContaining({ to: "/apps/browse", label: "Browse", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "/apps", label: "Connections", end: true }),
+      expect.objectContaining({ to: "/apps/connections", label: "Connections", end: true }),
     );
     expect(sidebarNavItemMock).toHaveBeenCalledWith(
       expect.objectContaining({ to: "/apps/review", label: "Review" }),

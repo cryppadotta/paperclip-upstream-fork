@@ -261,7 +261,7 @@ export function AppDetail() {
         body: `${appName} no longer has access. You can connect it again any time.`,
         tone: "success",
       });
-      navigate("/apps");
+      navigate("/apps/connections");
     },
     onError: (error) =>
       pushToast({
@@ -325,7 +325,7 @@ export function AppDetail() {
     });
 
   if (!connectionId || !activeTab) {
-    return <Navigate replace to={connectionId ? appTabHref(connectionId, "setup") : "/apps"} />;
+    return <Navigate replace to={connectionId ? appTabHref(connectionId, "setup") : "/apps/connections"} />;
   }
 
   if (!selectedCompanyId) {
@@ -344,7 +344,7 @@ export function AppDetail() {
     return (
       <div className="max-w-3xl p-6">
         <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
+        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps/connections")}>
           Back to apps
         </Button>
       </div>

@@ -71,8 +71,8 @@ export function AppsSidebar() {
           Apps
         </div>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps/browse" label="Browse" icon={Store} />
-          <SidebarNavItem to="/apps" label="Connections" icon={AppWindow} end />
+          <SidebarNavItem to="/apps/browse" label="Browse" icon={Store} end />
+          <SidebarNavItem to="/apps/connections" label="Connections" icon={AppWindow} end />
           <SidebarNavItem
             to="/apps/review"
             label="Review"
