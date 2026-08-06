@@ -40,7 +40,7 @@ import {
 import { useReviewCount } from "./useReviewCount";
 import { AdvancedToolsLink } from "./store-cards";
 
-const BROWSE_HREF = "/apps/browse";
+const BROWSE_HREF = "/apps";
 
 type StatusFilter = "all" | "attention";
 

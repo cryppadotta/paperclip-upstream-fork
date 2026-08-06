@@ -493,7 +493,7 @@ describe("Sidebar", () => {
     const enabledRoot = await renderSidebar();
 
     const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Apps");
-    expect(link?.getAttribute("href")).toBe("/apps/browse");
+    expect(link?.getAttribute("href")).toBe("/apps");
 
     flushSync(() => {
       enabledRoot.unmount();

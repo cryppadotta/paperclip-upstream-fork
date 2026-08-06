@@ -517,7 +517,7 @@ export function AppsConnect() {
               ? { name: "Zapier", logoUrl: zapierEntry?.branding.logoUrl ?? null }
               : undefined
           }
-          onCancel={() => navigate(zapierSource ? "/apps/browse" : "/apps")}
+          onCancel={() => navigate("/apps")}
         />
       )}
 
@@ -625,7 +625,7 @@ export function AppsConnect() {
           link={linkUrl}
           onLinkChange={setLinkUrl}
           submitting={connectMutation.isPending}
-          onBack={() => navigate("/apps/browse")}
+          onBack={() => navigate("/apps")}
           onConnect={() => connectMutation.mutate(undefined)}
         />
       )}
@@ -685,7 +685,7 @@ export function AppsConnect() {
           access={access}
           installMode={installMode}
           installCount={installAgentIds.size}
-          onDone={() => navigate("/apps")}
+          onDone={() => navigate("/apps/connections")}
         />
       )}
     </div>
