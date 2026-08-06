@@ -1353,9 +1353,27 @@ Terminal states: `done`, `cancelled`
 
 #### Agent secret proposals
 
-**Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow, send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
+**Never paste a credential into a comment, document, file, or transcript.** When a credential is supplied to an agent or returned by a secure flow — pasted by a user, returned by an OAuth flow, delivered by email, or obtained from another secure source — send it directly to `POST /api/agents/me/secret-proposals` using the current run-bound agent JWT. Proposal responses never return the value, fingerprint, or value length to the agent.
 
-Propose a secret:
+Keep the credential in memory or pass it directly from the secure source; do not place the literal value in the command text or echo it. The example assumes `PROPOSED_SECRET_VALUE` is already populated without printing it:
+
+```bash
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+jq -n \
+  --arg name "integrations/vendor/api-token" \
+  --arg value "$PROPOSED_SECRET_VALUE" \
+  --arg justification "Credential supplied for the current task" \
+  '{kind:"secret", name:$name, value:$value, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
+unset PROPOSED_SECRET_VALUE
+```
+
+Full request body fields for a secret proposal:
 
 ```json
 {
@@ -1369,22 +1387,26 @@ Propose a secret:
 
 `name` is a slash-separated path without whitespace or empty segments. The value is limited to 64 KiB. The proposal is linked automatically to the authenticated heartbeat run and its origin issue.
 
-Propose a binding to the proposing agent by omitting `targetAgentId`:
+The response omits the credential. Use the returned proposal `id` to propose a binding; a binding to the proposing agent omits `targetAgentId`:
 
-```json
-{
-  "kind": "binding",
-  "secretProposalId": "proposal-id",
-  "configPath": "env.VENDOR_API_TOKEN",
-  "justification": "Inject the approved credential into my adapter environment"
-}
+```bash
+jq -n \
+  --arg secretProposalId "$SECRET_PROPOSAL_ID" \
+  --arg configPath "env.VENDOR_API_TOKEN" \
+  --arg justification "Inject the approved credential into my adapter environment" \
+  '{kind:"binding", secretProposalId:$secretProposalId, configPath:$configPath, justification:$justification}' |
+curl -s -X POST \
+  -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @- \
+  "$PAPERCLIP_API_BASE/api/agents/me/secret-proposals"
 ```
 
 A binding must specify exactly one of `secretProposalId` or `secretId`. `configPath` accepts `env.<KEY>` for environment injection or `access.<ALIAS>` for API-only access. Under the default `self_and_reports` policy, `targetAgentId` may identify a downward report of the proposer; omitting it targets the proposer. Other targets are denied, and approval rechecks the current chain of command.
 
 `GET /api/agents/me/secret-proposals` returns `{ "proposals": [...] }` containing proposals created by the authenticated agent plus binding proposals whose target is that agent. Secret values, value fingerprints, and value lengths are omitted. `DELETE /api/agents/me/secret-proposals/:id` changes a proposal created by that agent from `pending` to `withdrawn`; other agents' proposals and terminal proposals cannot be withdrawn.
 
-Agents may have at most 20 pending proposals and may create at most 20 proposals per minute. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes.
+Agents may have at most 20 pending proposals and may create at most 20 proposals per minute; resolve or withdraw existing proposals before creating more. Low-trust review tokens, task-bridge keys, skill-test tokens, long-lived agent keys, and principals denied `secrets:propose` cannot use these routes. Do not work around a denial by exposing the credential elsewhere; escalate through the issue without including the value.
 
 Board approval creates a secret through the normal secret service. Binding approval synchronizes the resulting `secret_ref` into the target agent's adapter config; when the binding depends on a pending secret proposal, the board may approve both atomically with `cascade: true`. Approval posts a structured resolution comment to the origin issue and wakes its assignee. Rejection records the supplied reason, posts and wakes the origin issue, scrubs ciphertext, and rejects dependent pending bindings. Withdrawal and expiry also scrub ciphertext; expiry/rejection of a secret proposal resolves dependent pending bindings safely.
 
