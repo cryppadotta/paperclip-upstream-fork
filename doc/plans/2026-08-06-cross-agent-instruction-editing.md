@@ -80,7 +80,17 @@ Add an `agent_instruction_revisions` table with:
 - source and optional `rolled_back_from_revision_id`; and
 - creation timestamp with indexes for company/agent/path/history queries.
 
-Write the revision and its corresponding activity entry atomically with each API-mediated mutation. Content that exceeds the inline limit should use an immutable artifact/blob reference rather than a non-restorable diff alone.
+Content that exceeds the inline limit should use an immutable artifact/blob reference rather than a non-restorable diff alone.
+
+Filesystem writes and PostgreSQL commits cannot share one transaction, so API mutations need a durable intent protocol rather than an impossible atomicity claim:
+
+1. serialize mutations for one bundle, capture the current bytes/hash, and stage the requested bytes in a same-directory temporary file;
+2. commit a database mutation intent containing a unique mutation ID, operation, path, before/after hashes, and restorable before/after content, with status `pending`;
+3. apply the filesystem change with an atomic same-filesystem rename and `fsync` the file and parent directory; deletes first rename the old file to a mutation-scoped tombstone instead of unlinking it;
+4. finalize the intent, revision, file-head state, and activity entry in one database transaction; and
+5. remove staged/tombstone files only after finalization and the configured recovery window.
+
+The API reports success only after finalization. A startup/read-path reconciler resumes pending intents idempotently: an on-disk after-hash finalizes the database records, a before-hash aborts the intent and removes staging, and any third state restores the recorded before image or marks the bundle blocked for operator recovery. Each step is keyed by the mutation ID, so retrying cannot create a second revision or activity event. Tests must inject failure after each boundary, including database failure after the filesystem rename.
 
 Expose company-scoped list/get/restore endpoints. Restore creates a new revision instead of mutating history.
 
@@ -93,7 +103,16 @@ Apply the new direct permission only to managed bundles. Keep external bundles u
 3. updates bundle mode only after the copy succeeds; and
 4. records an auditable adoption event.
 
-On managed-bundle reads and run materialization, compare current file hashes with the latest known revision. When they diverge, record an `external_edit` revision with unknown actor attribution and the observed content. Detection makes drift visible; it must not claim attribution that Paperclip cannot prove.
+On managed-bundle reads and run materialization, reconcile a stable snapshot of the complete normalized path-to-hash map, not only files that still exist. Serialize reconciliation with API mutations for the bundle, retry a scan if its path set changes while hashing, and compare the final manifest with persisted file-head rows. One observation must record:
+
+- `create` entries for new paths;
+- `update` entries for changed hashes;
+- `delete` entries for missing paths, retaining the previous content as the before image; and
+- a shared observation ID for matching delete/create hashes so a likely rename is visible without claiming certainty.
+
+Store a bundle generation and manifest fingerprint. The reconciliation transaction locks the bundle head, inserts the observation under a unique `(agent_id, baseline_generation, manifest_fingerprint)` key, writes every per-path `external_edit` revision, and advances the generation and file heads together. Concurrent readers that lose the uniqueness race reload the head and become a no-op or reconcile again against the new generation. This captures deletions and both sides of renames while preventing duplicate revisions for one observed state.
+
+Detection makes drift visible; it must not claim actor attribution that Paperclip cannot prove.
 
 ### 5. Surface cross-agent edits
 
@@ -117,8 +136,8 @@ The consent hardening can proceed in parallel with the early schema design. API 
 - Protected-agent rules cannot be bypassed by the new grant.
 - Cross-company targets, grants, revisions, and restores are denied.
 - External bundles cannot be mutated through standing cross-agent authority.
-- Every API-mediated create, update, delete, adoption, and restore has a content-level revision and activity record.
-- Out-of-band managed-file changes become visible as unattributed `external_edit` revisions.
+- Every API-mediated create, update, delete, adoption, and restore has a content-level revision and activity record, including recovery after failure at each filesystem/database boundary.
+- Out-of-band managed-file creates, updates, deletes, and likely renames become visible as deduplicated, unattributed `external_edit` observations.
 - Operators can inspect a diff and restore a prior revision without rewriting history.
 - Large-file handling remains restorable, bounded, and free of secrets in logs or activity metadata.
 
