@@ -420,21 +420,25 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeClaudeAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatClaudeAcpFallbackMessage(`Claude ACP startup failed: ${reason}`),
-      );
+  const requestedChatCommand = readChatCommandInvocation(ctx.context);
+  const shouldHandleGoalChatCommand = requestedChatCommand?.name === "goal";
+  if (!shouldHandleGoalChatCommand) {
+    const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
+    if (engineSelection.engine === "acp") {
+      try {
+        return await executeClaudeAcp(ctx);
+      } catch (err) {
+        if (engineSelection.explicit) throw err;
+        const reason = err instanceof Error ? err.message : String(err);
+        await ctx.onLog(
+          "stderr",
+          formatClaudeAcpFallbackMessage(`Claude ACP startup failed: ${reason}`),
+        );
+      }
     }
-  }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
+    if (!engineSelection.explicit && engineSelection.fallbackReason) {
+      await ctx.onLog("stderr", formatClaudeAcpFallbackMessage(engineSelection.fallbackReason));
+    }
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onSpawn, authToken } = ctx;
@@ -453,7 +457,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effort = asString(config.effort, "");
   const chrome = asBoolean(config.chrome, false);
   const claudeGoalConfig = readClaudeGoalConfig(config);
-  const chatCommand = readChatCommandInvocation(context);
+  const chatCommand = requestedChatCommand;
   const claudeGoalChatCommand = chatCommand?.name === "goal" ? parseClaudeGoalChatCommand(chatCommand.args) : null;
   if (claudeGoalChatCommand && !claudeGoalConfig.enabled) {
     return {

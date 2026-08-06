@@ -190,13 +190,20 @@ export class CodexAppServerTransport {
     }
     const id = this.nextId++;
     const payload = params === undefined ? { id, method } : { id, method, params };
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
     return await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(String(id));
         reject(new Error(`Timed out waiting for ${method}`));
       }, timeoutMs);
       this.pending.set(String(id), { method, resolve, reject, timer });
+      this.child?.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+        if (!error) return;
+        const pending = this.pending.get(String(id));
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.pending.delete(String(id));
+        pending.reject(error);
+      });
     });
   }
 
