@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
+const listApplicationsMock = vi.hoisted(() => vi.fn());
+const listConnectionsMock = vi.hoisted(() => vi.fn());
 const connectAppMock = vi.hoisted(() => vi.fn());
+const startOAuthMock = vi.hoisted(() => vi.fn());
 const finishAppMock = vi.hoisted(() => vi.fn());
 const putConnectionInstallsMock = vi.hoisted(() => vi.fn());
 const listAgentsMock = vi.hoisted(() => vi.fn());
@@ -24,7 +27,10 @@ const GOOGLE_SHEETS = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "go
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
+    listApplications: (companyId: string) => listApplicationsMock(companyId),
+    listConnections: (companyId: string) => listConnectionsMock(companyId),
     connectApp: (companyId: string, input: unknown) => connectAppMock(companyId, input),
+    startOAuth: (connectionId: string) => startOAuthMock(connectionId),
     finishApp: (companyId: string, connectionId: string, input: unknown) =>
       finishAppMock(companyId, connectionId, input),
     putConnectionInstalls: (connectionId: string, installs: unknown) =>
@@ -135,6 +141,14 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         ZAPIER,
       ],
     });
+    listApplicationsMock.mockResolvedValue({ applications: [] });
+    listConnectionsMock.mockResolvedValue({ connections: [] });
+    startOAuthMock.mockResolvedValue({
+      connectionId: "conn-notion",
+      provider: "notion",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=resumed",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
     finishAppMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
     connectAppMock.mockResolvedValue({
@@ -235,6 +249,79 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).toContain("Preparing secure sign-in");
     expect(container.textContent).toContain("Preparing…");
     expect(connectAppMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes an existing Notion OAuth connection instead of creating another draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock.mockResolvedValueOnce({
+      applications: [{
+        id: "app-notion",
+        status: "draft",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    listConnectionsMock.mockResolvedValueOnce({
+      connections: [{
+        id: "conn-existing",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        status: "draft",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+    startOAuthMock.mockResolvedValueOnce({
+      connectionId: "conn-existing",
+      provider: "notion",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=existing",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await render();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-existing");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=existing",
+    );
+  });
+
+  it("retries OAuth on the prepared connection without creating another draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: "conn-prepared",
+      application: { id: "app-notion", name: "Notion" },
+      connection: { id: "conn-prepared" },
+      actions: { readOnly: [], canMakeChanges: [] },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: null },
+    });
+    startOAuthMock
+      .mockRejectedValueOnce(new Error("Provider unavailable"))
+      .mockResolvedValueOnce({
+        connectionId: "conn-prepared",
+        provider: "notion",
+        authorizationUrl: "https://mcp.notion.com/authorize?state=retry",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      });
+
+    await render();
+
+    expect(container.textContent).toContain("Provider unavailable");
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(startOAuthMock).toHaveBeenCalledTimes(2);
+    expect(startOAuthMock).toHaveBeenLastCalledWith("conn-prepared");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=retry",
+    );
   });
 
   it("keeps non-allowlisted OAuth apps blocked", async () => {

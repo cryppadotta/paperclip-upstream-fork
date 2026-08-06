@@ -17,6 +17,8 @@ import type {
   Agent,
   AppDefinition,
   ConnectToolAppResult,
+  ToolApplication,
+  ToolConnection,
   ToolAppConnectionActionSummary,
 } from "@paperclipai/shared";
 import { credentialConfigPath, getAppDefinitionForUrl, getAvailableConnectionMethod } from "@paperclipai/shared";
@@ -89,6 +91,36 @@ function askFirstLevelsFrom(result: ConnectToolAppResult): string[] {
 
 function isGoogleSheetsEntry(entry: AppDefinition | null): boolean {
   return entry?.slug === "google-sheets";
+}
+
+function appSourceSlug(application: ToolApplication): string | null {
+  const metadata = application.metadata;
+  if (!metadata) return null;
+  const source = metadata.sourceTemplateKey ?? metadata.galleryKey;
+  return typeof source === "string" ? source : null;
+}
+
+function connectionSourceSlug(connection: ToolConnection): string | null {
+  const source = connection.config?.sourceTemplateKey ?? connection.transportConfig.sourceTemplateKey;
+  return typeof source === "string" ? source : null;
+}
+
+function reusableOAuthConnection(
+  sourceSlug: string | null,
+  applications: ToolApplication[],
+  connections: ToolConnection[],
+): ToolConnection | null {
+  if (!sourceSlug) return null;
+  const matchingApplicationIds = new Set(
+    applications
+      .filter((application) => application.status !== "archived" && appSourceSlug(application) === sourceSlug)
+      .map((application) => application.id),
+  );
+  return connections.find((connection) =>
+    connection.status !== "archived" &&
+    connection.authKind === "oauth" &&
+    (matchingApplicationIds.has(connection.applicationId) || connectionSourceSlug(connection) === sourceSlug)
+  ) ?? null;
 }
 
 export function AppsConnect() {
@@ -166,6 +198,24 @@ export function AppsConnect() {
     queryFn: () => toolsApi.listGallery(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const applicationsQuery = useQuery({
+    queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listApplications(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!directOAuthSource,
+  });
+  const connectionsQuery = useQuery({
+    queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
+    queryFn: () => toolsApi.listConnections(selectedCompanyId!),
+    enabled: !!selectedCompanyId && !!directOAuthSource,
+  });
+  const existingOAuthConnection = useMemo(
+    () => reusableOAuthConnection(
+      directOAuthSource,
+      applicationsQuery.data?.applications ?? [],
+      connectionsQuery.data?.connections ?? [],
+    ),
+    [applicationsQuery.data, connectionsQuery.data, directOAuthSource],
+  );
 
   const directOAuthEntry = entry &&
     getAvailableConnectionMethod(entry)?.auth === "oauth" &&
@@ -177,6 +227,28 @@ export function AppsConnect() {
     setStep(nextStep);
     if (entry) navigate(appConnectHref(entry.slug, nextStep));
   };
+
+  const oauthStartMutation = useMutation({
+    mutationFn: (connectionId: string) => toolsApi.startOAuth(connectionId),
+    onSuccess: ({ authorizationUrl }) => {
+      setOAuthPhase("redirecting");
+      navigateTopLevel(authorizationUrl);
+    },
+    onError: (error) => {
+      const details = error instanceof ApiError && error.body && typeof error.body === "object"
+        ? (error.body as { details?: { code?: unknown } }).details
+        : null;
+      setOAuthPhase("error");
+      setOAuthError(
+        details?.code === "invalid_grant"
+          ? "Your authorization expired or was revoked. Reconnect to continue."
+          : error instanceof Error
+            ? error.message
+            : "Paperclip couldn’t start secure sign-in. Try again.",
+      );
+    },
+  });
+  const startOAuth = oauthStartMutation.mutate;
 
   const connectMutation = useMutation({
     mutationFn: (entryOverride?: AppDefinition) => {
@@ -203,10 +275,11 @@ export function AppsConnect() {
     },
     onSuccess: (result) => {
       if (result.auth?.kind === "oauth") {
+        setConnectResult(result);
         const startUrl = result.auth.startUrl?.trim();
         if (!startUrl) {
-          setOAuthPhase("error");
-          setOAuthError("Paperclip prepared the connection, but the provider did not return a sign-in URL. Try again.");
+          setOAuthPhase("starting");
+          startOAuth(result.connectionId);
           return;
         }
         setOAuthPhase("redirecting");
@@ -281,13 +354,37 @@ export function AppsConnect() {
     setInstallAgentIds(new Set());
     setStep("key");
 
+    if (directOAuth && (applicationsQuery.isLoading || connectionsQuery.isLoading)) return;
+    if (directOAuth && (applicationsQuery.isError || connectionsQuery.isError)) {
+      setOAuthPhase("error");
+      setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
+      return;
+    }
+
     if (directOAuth && !directOAuthStartedRef.current) {
       directOAuthStartedRef.current = true;
       setOAuthError(null);
       setOAuthPhase("starting");
-      connectApp(requestedEntry);
+      if (existingOAuthConnection) {
+        startOAuth(existingOAuthConnection.id);
+      } else {
+        connectApp(requestedEntry);
+      }
     }
-  }, [connectApp, entry?.slug, galleryQuery.data, galleryQuery.isLoading, navigate, requestedAppKey]);
+  }, [
+    applicationsQuery.isError,
+    applicationsQuery.isLoading,
+    connectApp,
+    connectionsQuery.isError,
+    connectionsQuery.isLoading,
+    entry?.slug,
+    existingOAuthConnection,
+    galleryQuery.data,
+    galleryQuery.isLoading,
+    navigate,
+    requestedAppKey,
+    startOAuth,
+  ]);
 
   const finishMutation = useMutation({
     mutationFn: async () => {
@@ -338,7 +435,16 @@ export function AppsConnect() {
         onRetry={() => {
           setOAuthError(null);
           setOAuthPhase("starting");
-          connectMutation.mutate(undefined);
+          if (applicationsQuery.isError || connectionsQuery.isError) {
+            void Promise.all([applicationsQuery.refetch(), connectionsQuery.refetch()]);
+            return;
+          }
+          const connectionId = connectResult?.connectionId ?? existingOAuthConnection?.id;
+          if (connectionId) {
+            startOAuth(connectionId);
+          } else {
+            connectMutation.mutate(undefined);
+          }
         }}
         onCancel={() => navigate("/apps/browse")}
       />
