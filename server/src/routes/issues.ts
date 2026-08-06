@@ -9178,9 +9178,20 @@ export function issueRoutes(
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
+        // Assignment happens inside the transaction callback above, which
+        // TypeScript does not include in its outer control-flow analysis.
+        const preparedCleanupCancellation = preparedIssueGraphCleanupCancellation as Awaited<
+          ReturnType<typeof heartbeat.prepareRunCancellationInTransaction>
+        > | null;
         const cancelled = issueGraphCleanupRunId
-          ? preparedIssueGraphCleanupCancellation
-            ? await heartbeat.finalizePreparedRunCancellation(preparedIssueGraphCleanupCancellation)
+          ? preparedCleanupCancellation
+            ? await heartbeat.finalizePreparedRunCancellation({
+                ...preparedCleanupCancellation,
+                // The database PID/PGID may already have been recycled if the
+                // server-owned child exited before this post-commit finalizer.
+                // Only an entry still owned in runningProcesses is safe to signal.
+                allowPersistedProcessIdentifiers: false,
+              })
             : null
           : await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {

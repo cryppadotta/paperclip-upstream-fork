@@ -1666,7 +1666,10 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       targetRunId,
     );
-    expect(mockHeartbeatService.finalizePreparedRunCancellation).toHaveBeenCalledWith(preparedCancellation);
+    expect(mockHeartbeatService.finalizePreparedRunCancellation).toHaveBeenCalledWith({
+      ...preparedCancellation,
+      allowPersistedProcessIdentifiers: false,
+    });
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
@@ -1710,7 +1713,10 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(finalizationFailedRes.status, JSON.stringify(finalizationFailedRes.body)).toBe(500);
     expect(mockHeartbeatService.prepareRunCancellationInTransaction).toHaveBeenCalled();
-    expect(mockHeartbeatService.finalizePreparedRunCancellation).toHaveBeenCalledWith(preparedCancellation);
+    expect(mockHeartbeatService.finalizePreparedRunCancellation).toHaveBeenCalledWith({
+      ...preparedCancellation,
+      allowPersistedProcessIdentifiers: false,
+    });
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalled();
   });
