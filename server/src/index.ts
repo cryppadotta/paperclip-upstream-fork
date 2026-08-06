@@ -6,7 +6,7 @@
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -338,6 +338,7 @@ export async function startServer(): Promise<StartedServer> {
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
   let adoptedEmbeddedPostgresPid: number | null = null;
   let readRunningEmbeddedPostgresPid: (() => number | null) | null = null;
+  let isExpectedEmbeddedPostgresProcess: ((pid: number) => boolean) | null = null;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
   let resolvedEmbeddedPostgresPort: number | null = null;
@@ -437,11 +438,37 @@ export async function startServer(): Promise<StartedServer> {
         return null;
       }
     };
+    const isManagedPostgresProcess = (pid: number): boolean => {
+      // KillMode=process is a Linux systemd feature. Re-read the live command
+      // line before signalling an adopted PID so a stale postmaster.pid plus
+      // PID reuse can never target an unrelated process.
+      if (process.platform !== "linux") return false;
+      try {
+        const args = readFileSync(`/proc/${pid}/cmdline`)
+          .toString("utf8")
+          .split("\0")
+          .filter(Boolean);
+        if (basename(args[0] ?? "") !== "postgres") return false;
+        const dataDirFlag = args.indexOf("-D");
+        const processDataDir = dataDirFlag >= 0 ? args[dataDirFlag + 1] : null;
+        return typeof processDataDir === "string" && resolve(processDataDir) === resolve(dataDir);
+      } catch {
+        return false;
+      }
+    };
     readRunningEmbeddedPostgresPid = getRunningPid;
+    isExpectedEmbeddedPostgresProcess = isManagedPostgresProcess;
   
     const runningPid = getRunningPid();
     if (runningPid) {
-      adoptedEmbeddedPostgresPid = runningPid;
+      if (isManagedPostgresProcess(runningPid)) {
+        adoptedEmbeddedPostgresPid = runningPid;
+      } else {
+        logger.warn(
+          { pid: runningPid },
+          "Reusing embedded PostgreSQL without adopting process ownership because its command identity could not be verified",
+        );
+      }
       logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
@@ -1500,6 +1527,7 @@ export async function startServer(): Promise<StartedServer> {
             instance: embeddedPostgres,
             adoptedPid: adoptedEmbeddedPostgresPid,
             readRunningPid: readRunningEmbeddedPostgresPid ?? (() => null),
+            isExpectedProcess: isExpectedEmbeddedPostgresProcess ?? (() => false),
           });
         } catch (err) {
           logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");

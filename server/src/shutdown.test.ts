@@ -16,6 +16,7 @@ describe("stopManagedEmbeddedPostgres", () => {
       instance: { stop },
       adoptedPid: null,
       readRunningPid: () => null,
+      isExpectedProcess: () => false,
       signalProcess,
     });
 
@@ -33,6 +34,7 @@ describe("stopManagedEmbeddedPostgres", () => {
       instance: null,
       adoptedPid: 4242,
       readRunningPid: () => runningPid,
+      isExpectedProcess: (pid) => pid === 4242,
       signalProcess,
       pollIntervalMs: 0,
     });
@@ -47,8 +49,22 @@ describe("stopManagedEmbeddedPostgres", () => {
       instance: null,
       adoptedPid: 4242,
       readRunningPid: () => 5252,
+      isExpectedProcess: () => true,
       signalProcess,
     })).rejects.toThrow("no longer matches postmaster.pid (5252)");
+    expect(signalProcess).not.toHaveBeenCalled();
+  });
+
+  it("refuses a reused pid whose command no longer identifies the postmaster", async () => {
+    const signalProcess = vi.fn();
+
+    await expect(stopManagedEmbeddedPostgres({
+      instance: null,
+      adoptedPid: 4242,
+      readRunningPid: () => 4242,
+      isExpectedProcess: () => false,
+      signalProcess,
+    })).rejects.toThrow("no longer matches the managed postmaster command");
     expect(signalProcess).not.toHaveBeenCalled();
   });
 });

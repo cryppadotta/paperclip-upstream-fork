@@ -17,6 +17,7 @@ type StopManagedEmbeddedPostgresInput = {
   instance: EmbeddedPostgresStopTarget | null;
   adoptedPid: number | null;
   readRunningPid: () => number | null;
+  isExpectedProcess: (pid: number) => boolean;
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   timeoutMs?: number;
   pollIntervalMs?: number;
@@ -44,6 +45,12 @@ export async function stopManagedEmbeddedPostgres(
     throw new Error(
       `Refusing to stop embedded PostgreSQL: adopted pid ${input.adoptedPid} ` +
         `no longer matches postmaster.pid (${currentPid})`,
+    );
+  }
+  if (!input.isExpectedProcess(currentPid)) {
+    throw new Error(
+      `Refusing to stop embedded PostgreSQL: pid ${currentPid} no longer matches ` +
+        "the managed postmaster command",
     );
   }
 
