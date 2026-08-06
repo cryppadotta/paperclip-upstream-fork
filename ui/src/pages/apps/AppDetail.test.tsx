@@ -376,6 +376,40 @@ describe("AppDetail", () => {
     ).toBe(true);
   });
 
+  it("matches connected Notion guidance to the reconnect action", async () => {
+    getConnectionMock.mockResolvedValue(connection({
+      name: "Notion",
+      config: {
+        sourceTemplateKey: "notion",
+        oauth: {
+          provider: "notion",
+          connectedAt: "2026-08-06T20:00:00.000Z",
+        },
+      },
+    }));
+    listGalleryMock.mockResolvedValue({
+      apps: [{
+        key: "notion",
+        name: "Notion",
+        logoUrl: "https://example.com/notion.png",
+        tagline: "Search and update your Notion workspace.",
+        description: "Give agents governed access to Notion.",
+        authKind: "oauth",
+        transportTemplate: { transport: "mcp_remote", url: "https://mcp.notion.com/mcp" },
+        credentialFields: [],
+        recommendedDefaults: {},
+        urlPatterns: [],
+      }],
+    });
+
+    await renderAppDetail();
+
+    expect(container.textContent).toContain(
+      "Your workspace authorization is active. Reconnect any time to replace it.",
+    );
+    expect(container.textContent).not.toContain("Sign in again any time");
+  });
+
   it("lets Google Sheets connections add spreadsheet links from setup", async () => {
     mockParams.tab = "setup";
     getConnectionMock.mockResolvedValue(connection({

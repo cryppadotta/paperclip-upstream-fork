@@ -781,7 +781,7 @@ export function OAuthConnectStateScreen({
             <Button type="button" onClick={onRetry}>Try again</Button>
           ) : (
             <Button type="button" disabled>
-              {phase === "entry" ? "Starting…" : phase === "starting" ? "Preparing…" : `Opening ${entry.name}…`}
+              {phase === "redirecting" ? `Opening ${entry.name}…` : "Preparing…"}
             </Button>
           )}
           <Button type="button" variant="ghost" onClick={onCancel}>Back to apps</Button>

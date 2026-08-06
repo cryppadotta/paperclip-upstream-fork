@@ -76,7 +76,7 @@ function OAuthConnectionSection({
           </h2>
           <p className="mt-0.5 text-sm text-muted-foreground">
             {connected
-              ? "Your workspace authorization is active. Sign in again any time to replace it."
+              ? "Your workspace authorization is active. Reconnect any time to replace it."
               : "Open the provider's consent page to finish connecting this app."}
           </p>
         </div>
