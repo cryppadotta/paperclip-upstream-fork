@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "@/lib/queryKeys";
 import { AppsConnect } from "./AppsConnect";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
@@ -170,12 +171,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     vi.clearAllMocks();
   });
 
-  async function render() {
+  async function render(queryClient?: QueryClient) {
     const root = createRoot(container);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const client = queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
       root.render(
-        <QueryClientProvider client={queryClient}>
+        <QueryClientProvider client={client}>
           <AppsConnect />
         </QueryClientProvider>,
       );
@@ -285,6 +286,51 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(navigateTopLevelMock).toHaveBeenCalledWith(
       "https://mcp.notion.com/authorize?state=existing",
     );
+  });
+
+  it("waits for fresh connection data before creating a Notion OAuth draft", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.tools.applications("company-1"), { applications: [] });
+    queryClient.setQueryData(queryKeys.tools.connections("company-1"), { connections: [] });
+
+    let resolveApplications!: (value: unknown) => void;
+    let resolveConnections!: (value: unknown) => void;
+    listApplicationsMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveApplications = resolve;
+    }));
+    listConnectionsMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveConnections = resolve;
+    }));
+
+    await render(queryClient);
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+
+    resolveApplications({
+      applications: [{
+        id: "app-notion",
+        status: "draft",
+        metadata: { sourceTemplateKey: "notion" },
+      }],
+    });
+    resolveConnections({
+      connections: [{
+        id: "conn-refreshed",
+        applicationId: "app-notion",
+        authKind: "oauth",
+        status: "draft",
+        config: { sourceTemplateKey: "notion" },
+        transportConfig: {},
+      }],
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-refreshed");
   });
 
   it("retries OAuth on the prepared connection without creating another draft", async () => {

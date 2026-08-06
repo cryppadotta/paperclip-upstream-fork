@@ -202,11 +202,13 @@ export function AppsConnect() {
     queryKey: queryKeys.tools.applications(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listApplications(selectedCompanyId!),
     enabled: !!selectedCompanyId && !!directOAuthSource,
+    refetchOnMount: "always",
   });
   const connectionsQuery = useQuery({
     queryKey: queryKeys.tools.connections(selectedCompanyId ?? "__none__"),
     queryFn: () => toolsApi.listConnections(selectedCompanyId!),
     enabled: !!selectedCompanyId && !!directOAuthSource,
+    refetchOnMount: "always",
   });
   const existingOAuthConnection = useMemo(
     () => reusableOAuthConnection(
@@ -354,7 +356,10 @@ export function AppsConnect() {
     setInstallAgentIds(new Set());
     setStep("key");
 
-    if (directOAuth && (applicationsQuery.isLoading || connectionsQuery.isLoading)) return;
+    if (directOAuth && (
+      !applicationsQuery.isFetchedAfterMount ||
+      !connectionsQuery.isFetchedAfterMount
+    )) return;
     if (directOAuth && (applicationsQuery.isError || connectionsQuery.isError)) {
       setOAuthPhase("error");
       setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
@@ -373,10 +378,10 @@ export function AppsConnect() {
     }
   }, [
     applicationsQuery.isError,
-    applicationsQuery.isLoading,
+    applicationsQuery.isFetchedAfterMount,
     connectApp,
     connectionsQuery.isError,
-    connectionsQuery.isLoading,
+    connectionsQuery.isFetchedAfterMount,
     entry?.slug,
     existingOAuthConnection,
     galleryQuery.data,
