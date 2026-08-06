@@ -192,6 +192,7 @@ export const NeedsDisposition: Story = {
     successfulRunHandoff: {
       state: "required",
       required: true,
+      hasLiveContinuation: false,
       sourceRunId: "run-x",
       correctiveRunId: null,
       assigneeAgentId: "coder-1",
