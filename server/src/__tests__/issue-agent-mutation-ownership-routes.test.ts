@@ -1692,7 +1692,7 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ status: "cancelled", comment: "Ordinary manager task attempted cleanup." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.details.code).toBe("issue_write_not_visible");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
@@ -1743,7 +1743,7 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ status: "cancelled" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.details.code).toBe("issue_write_not_visible");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
@@ -1792,7 +1792,7 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ status: "cancelled" });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.details.code).toBe("issue_write_actor_class_excluded");
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockAccessService.decide).not.toHaveBeenCalledWith(
       expect.objectContaining({ action: "tasks:manage_active_checkouts" }),
