@@ -1,10 +1,10 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { QueryClientContext, useQuery } from "@tanstack/react-query";
 import { buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { companySkillsApi } from "../api/companySkills";
 import { routinesApi } from "../api/routines";
-import { useCompany } from "./CompanyContext";
+import { useOptionalCompany } from "./CompanyContext";
 import { queryKeys } from "../lib/queryKeys";
 
 export interface SkillCommandOption {
@@ -52,14 +52,12 @@ interface EditorAutocompleteContextValue {
   slashCommands: SlashCommandOption[];
 }
 
-const EditorAutocompleteContext = createContext<EditorAutocompleteContextValue>({
+const EMPTY_EDITOR_AUTOCOMPLETE_VALUE: EditorAutocompleteContextValue = {
   slashCommands: [],
-});
+};
+const EditorAutocompleteContext = createContext<EditorAutocompleteContextValue>(EMPTY_EDITOR_AUTOCOMPLETE_VALUE);
 
-export function EditorAutocompleteProvider({
-  children,
-  assigneeAgentId = null,
-}: {
+interface EditorAutocompleteProviderProps {
   children: ReactNode;
   /**
    * When set, the assignee agent's advertised chat commands (e.g. Codex
@@ -67,8 +65,41 @@ export function EditorAutocompleteProvider({
    * so `/` lists commands addressed to the issue's assignee.
    */
   assigneeAgentId?: string | null;
-}) {
-  const { selectedCompanyId } = useCompany();
+  /** Explicit company scope for provider-less embedded and test surfaces. */
+  companyId?: string | null;
+}
+
+export function EditorAutocompleteProvider({
+  children,
+  assigneeAgentId = null,
+  companyId = null,
+}: EditorAutocompleteProviderProps) {
+  const queryClient = useContext(QueryClientContext);
+  if (!queryClient) {
+    return (
+      <EditorAutocompleteContext.Provider value={EMPTY_EDITOR_AUTOCOMPLETE_VALUE}>
+        {children}
+      </EditorAutocompleteContext.Provider>
+    );
+  }
+
+  return (
+    <EditorAutocompleteQueries
+      assigneeAgentId={assigneeAgentId}
+      companyId={companyId}
+    >
+      {children}
+    </EditorAutocompleteQueries>
+  );
+}
+
+function EditorAutocompleteQueries({
+  children,
+  assigneeAgentId = null,
+  companyId = null,
+}: EditorAutocompleteProviderProps) {
+  const company = useOptionalCompany();
+  const selectedCompanyId = companyId ?? company?.selectedCompanyId ?? null;
   const { data: companySkills = [] } = useQuery({
     queryKey: selectedCompanyId
       ? queryKeys.companySkills.list(selectedCompanyId)

@@ -410,6 +410,7 @@ export interface IssueChatComposerHandle {
 }
 
 interface IssueChatComposerProps {
+  companyId?: string | null;
   onImageUpload?: (file: File) => Promise<string>;
   onAttachImage?: (file: File) => Promise<IssueAttachment | void>;
   draftKey?: string;
@@ -3696,6 +3697,7 @@ function areIssueChatMessageRowPropsEqual(
 }
 
 const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerProps>(function IssueChatComposer({
+  companyId,
   onImageUpload,
   onAttachImage,
   draftKey,
@@ -4103,7 +4105,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         </div>
       ) : null}
 
-      <EditorAutocompleteProvider assigneeAgentId={composerAssigneeAgentId}>
+      <EditorAutocompleteProvider
+        assigneeAgentId={composerAssigneeAgentId}
+        companyId={companyId}
+      >
         <MarkdownEditor
           ref={editorRef}
           value={body}
@@ -5214,6 +5219,7 @@ export function IssueChatThread({
           >
             <IssueChatComposer
               ref={composerRef}
+              companyId={companyId}
               onImageUpload={imageUploadHandler}
               onAttachImage={onAttachImage}
               draftKey={draftKey}
