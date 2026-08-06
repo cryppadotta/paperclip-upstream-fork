@@ -18461,6 +18461,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventMessage: string;
     eventPayload?: Record<string, unknown>;
     finalizationId?: string;
+    allowPersistedProcessIdentifiers?: boolean;
   };
 
   const PENDING_CANCELLATION_FINALIZATION_KEY = "pendingCancellationFinalization";
@@ -18603,23 +18604,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       failedSteps.push(step);
     };
     const running = runningProcesses.get(run.id);
-    try {
-      await retryStep("terminate_process", async () => {
-        if (running) {
-          await terminateHeartbeatRunProcess({
-            pid: running.child.pid ?? run.processPid,
-            processGroupId: running.processGroupId ?? run.processGroupId,
-            graceMs: Math.max(1, running.graceSec) * 1000,
-          });
-        } else if (run.processPid || run.processGroupId) {
-          await terminateHeartbeatRunProcess({
-            pid: run.processPid,
-            processGroupId: run.processGroupId,
-          });
-        }
-      });
-    } finally {
+    await retryStep("terminate_process", async () => {
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (
+        prepared.allowPersistedProcessIdentifiers !== false &&
+        (run.processPid || run.processGroupId)
+      ) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+    });
+    if (!failedSteps.includes("terminate_process")) {
       runningProcesses.delete(run.id);
+    } else if (!running) {
+      logger.error(
+        { runId: run.id },
+        "prepared cancellation could not terminate process and has no live process ownership for retry",
+      );
     }
 
     clearHeartbeatRunRuntimeStatus(run.id);
@@ -18729,6 +18737,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eventMessage: pending.eventMessage,
           ...(pending.eventPayload ? { eventPayload: pending.eventPayload } : {}),
           finalizationId: pending.id,
+          // Persisted PIDs and process-group IDs may have been recycled by the OS.
+          // A delayed sweep may terminate only a child still owned in memory.
+          allowPersistedProcessIdentifiers: false,
         });
         reconciled += 1;
       } catch (err) {
