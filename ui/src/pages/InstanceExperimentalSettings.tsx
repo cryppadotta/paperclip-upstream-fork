@@ -379,6 +379,8 @@ export function InstanceExperimentalSettings() {
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
+  const enableSimplifiedEnglishInteractions =
+    experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
@@ -746,6 +748,18 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableServerInfoDebugView}
         ariaLabel="Toggle server info debug view experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Simplified English Interactions"
+        description="Instruct agents to write user interactions (plan confirmations, questions, suggested tasks, checkbox prompts) in ASD-STE100 Simplified Technical English, with brief context on what information the decision needs and what happens for each choice."
+        checked={enableSimplifiedEnglishInteractions}
+        onCheckedChange={(checked) =>
+          toggleMutation.mutate({ enableSimplifiedEnglishInteractions: checked })
+        }
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableSimplifiedEnglishInteractions}
+        ariaLabel="Toggle simplified english interactions experimental setting"
       />
 
       <ExperimentalToggleCard
