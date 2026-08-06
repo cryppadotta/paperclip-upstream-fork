@@ -222,6 +222,62 @@ exit 0
   assert.match(seen, /^AWS_PROFILE=<unset>$/m);
 });
 
+test("credential values never pass through an external env command's argv", () => {
+  const siteDir = createSite();
+  const binDir = mkdtempSync(join(tmpdir(), "paperclip-page-bin-"));
+  tempDirs.add(binDir);
+  const envArgvDump = join(binDir, "env-argv.txt");
+
+  writeExecutable(
+    join(binDir, "aws"),
+    `#!/usr/bin/env bash
+set -euo pipefail
+while [[ "$1" == "--region" || "$1" == "--profile" ]]; do
+  shift 2
+done
+if [[ "$1" == "s3api" ]]; then
+  echo "None"
+  exit 0
+fi
+if [[ "$1" == "s3" && "$2" == "sync" ]]; then
+  exit 0
+fi
+echo "unexpected aws call: $*" >&2
+exit 1
+`,
+  );
+  writeExecutable(
+    join(binDir, "curl"),
+    `#!/usr/bin/env bash
+exit 0
+`,
+  );
+  // Shim env: record every argv it is invoked with, then behave normally.
+  // Credentials in that argv would be world-readable via /proc/<pid>/cmdline.
+  writeExecutable(
+    join(binDir, "env"),
+    `#!/bin/bash
+printf '%s\\n' "$@" >>"${envArgvDump}"
+exec /usr/bin/env "$@"
+`,
+  );
+
+  const result = runPublish([siteDir, "--slug", "demo-page"], {
+    AWS_REGION: "us-east-1",
+    PATH: `${binDir}:${process.env.PATH}`,
+    PAPERCLIP_PAGE_AWS_ACCESS_KEY_ID: "AKIAPAGEUPLOADER",
+    PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY: "page-secret-argv-canary",
+    PAPERCLIP_PAGE_AWS_SESSION_TOKEN: "page-session-argv-canary",
+  });
+
+  assert.equal(result.status, 0);
+
+  const argvSeen = existsSync(envArgvDump) ? readFileSync(envArgvDump, "utf8") : "";
+  assert.doesNotMatch(argvSeen, /page-secret-argv-canary/);
+  assert.doesNotMatch(argvSeen, /page-session-argv-canary/);
+  assert.doesNotMatch(argvSeen, /AKIAPAGEUPLOADER/);
+});
+
 test("PAPERCLIP_PAGE_AWS_PROFILE strips ambient static credentials", () => {
   const siteDir = createSite();
   const binDir = mkdtempSync(join(tmpdir(), "paperclip-page-bin-"));
