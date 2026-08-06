@@ -5177,7 +5177,6 @@ export function IssueChatThread({
             data-testid="issue-chat-composer-dock"
             className="sticky bottom-(--sz-calc-8) z-20 space-y-2 bg-gradient-to-t from-background via-background/95 to-background/0 pt-6"
           >
-            <ScrollToBottom placement="composer" />
             <IssueChatComposer
               ref={composerRef}
               onImageUpload={imageUploadHandler}
@@ -5198,6 +5197,7 @@ export function IssueChatThread({
               issueWorkMode={issueWorkMode}
               onWorkModeChange={onWorkModeChange}
             />
+            <ScrollToBottom placement="composer" />
           </div>
         ) : null}
       </div>
