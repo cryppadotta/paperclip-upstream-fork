@@ -90,6 +90,31 @@ describeEmbeddedPostgres("execution lock orphan cleanup", () => {
   }
 
   describe("heartbeat run finalization", () => {
+    it("rolls back a prepared cancellation with the caller transaction", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent(companyId, "Cleanup owner");
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "running",
+        contextSnapshot: {},
+      });
+
+      const heartbeat = heartbeatService(db);
+      await expect(db.transaction(async (tx) => {
+        await heartbeat.prepareRunCancellationInTransaction(tx as any, runId);
+        const [inside] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+        expect(inside?.status).toBe("cancelled");
+        throw new Error("force caller rollback");
+      })).rejects.toThrow("force caller rollback");
+
+      const [afterRollback] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(afterRollback?.status).toBe("running");
+    });
+
     it("clears execution_run_id on every issue that references the finalized run, not just the run's contextSnapshot issue", async () => {
       // Regression test for the "stale execution lock" bug:
       //

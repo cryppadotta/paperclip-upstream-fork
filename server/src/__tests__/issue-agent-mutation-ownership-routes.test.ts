@@ -106,6 +106,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  prepareRunCancellationInTransaction: vi.fn(async () => null),
+  finalizePreparedRunCancellation: vi.fn(async () => null),
 }));
 const mockExternalObjectService = vi.hoisted(() => ({
   getIssueSummaries: vi.fn(async () => new Map()),
@@ -519,6 +521,10 @@ describe("agent issue mutation checkout ownership", () => {
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockHeartbeatService.prepareRunCancellationInTransaction.mockReset();
+    mockHeartbeatService.prepareRunCancellationInTransaction.mockResolvedValue(null);
+    mockHeartbeatService.finalizePreparedRunCancellation.mockReset();
+    mockHeartbeatService.finalizePreparedRunCancellation.mockResolvedValue(null);
     mockIssueApprovalService.link.mockReset();
     mockIssueApprovalService.unlink.mockReset();
     mockIssueApprovalService.listApprovalsForIssue.mockReset();
@@ -1620,7 +1626,19 @@ describe("agent issue mutation checkout ownership", () => {
       status: "running",
       contextSnapshot: { issueId },
     });
-    mockHeartbeatService.cancelRun.mockResolvedValue({
+    const preparedCancellation = {
+      run: {
+        id: targetRunId,
+        companyId,
+        agentId: ownerAgentId,
+        status: "cancelled",
+      },
+      cancelled: true,
+      wasFirstHeartbeat: false,
+      eventMessage: "run cancelled",
+    };
+    mockHeartbeatService.prepareRunCancellationInTransaction.mockResolvedValue(preparedCancellation);
+    mockHeartbeatService.finalizePreparedRunCancellation.mockResolvedValue({
       id: targetRunId,
       companyId,
       agentId: ownerAgentId,
@@ -1644,7 +1662,12 @@ describe("agent issue mutation checkout ownership", () => {
       }),
       expect.any(Object),
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(targetRunId);
+    expect(mockHeartbeatService.prepareRunCancellationInTransaction).toHaveBeenCalledWith(
+      expect.any(Object),
+      targetRunId,
+    );
+    expect(mockHeartbeatService.finalizePreparedRunCancellation).toHaveBeenCalledWith(preparedCancellation);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
       "Duplicate sibling closed by cleanup reconciliation.",
@@ -1652,19 +1675,25 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
+    expect(mockHeartbeatService.prepareRunCancellationInTransaction.mock.invocationCallOrder[0]!).toBeLessThan(
+      mockIssueService.update.mock.invocationCallOrder[0]!,
+    );
     expect(mockIssueService.update.mock.invocationCallOrder[0]!).toBeLessThan(
-      mockHeartbeatService.cancelRun.mock.invocationCallOrder[0]!,
+      mockHeartbeatService.finalizePreparedRunCancellation.mock.invocationCallOrder[0]!,
     );
 
     mockIssueService.update.mockClear();
     mockIssueService.update.mockRejectedValueOnce(new Error("cleanup write failed"));
-    mockHeartbeatService.cancelRun.mockClear();
+    mockHeartbeatService.prepareRunCancellationInTransaction.mockClear();
+    mockHeartbeatService.finalizePreparedRunCancellation.mockClear();
     mockIssueService.addComment.mockClear();
     const failedRes = await request(app)
       .patch(`/api/issues/${issueId}`)
       .send({ status: "cancelled", comment: "This cleanup transaction must roll back." });
 
     expect(failedRes.status, JSON.stringify(failedRes.body)).toBe(500);
+    expect(mockHeartbeatService.prepareRunCancellationInTransaction).toHaveBeenCalled();
+    expect(mockHeartbeatService.finalizePreparedRunCancellation).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
@@ -1751,6 +1780,8 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.details.code).toBe("issue_graph_cleanup_run_not_running");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.prepareRunCancellationInTransaction).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.finalizePreparedRunCancellation).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });

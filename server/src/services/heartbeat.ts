@@ -18454,6 +18454,135 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     eventPayload?: Record<string, unknown>;
   };
 
+  type PreparedRunCancellation = {
+    run: typeof heartbeatRuns.$inferSelect;
+    cancelled: boolean;
+    wasFirstHeartbeat: boolean;
+    eventMessage: string;
+    eventPayload?: Record<string, unknown>;
+  };
+
+  async function prepareRunCancellationInTransaction(
+    tx: Db,
+    runId: string,
+    reason = "Cancelled by control plane",
+    options: CancelRunOptions = {},
+  ): Promise<PreparedRunCancellation> {
+    const run = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!run) throw notFound("Heartbeat run not found");
+
+    const wasFirstHeartbeat = Boolean(timerClaimWasFirstHeartbeat(run));
+    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number])) {
+      return {
+        run,
+        cancelled: false,
+        wasFirstHeartbeat,
+        eventMessage: options.eventMessage ?? "run cancelled",
+        ...(options.eventPayload ? { eventPayload: options.eventPayload } : {}),
+      };
+    }
+
+    const agent = await tx
+      .select()
+      .from(agents)
+      .where(eq(agents.id, run.agentId))
+      .then((rows) => rows[0] ?? null);
+    const errorCode = options.errorCode ?? "cancelled";
+    const resultJson = agent
+      ? {
+          ...mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode,
+            errorMessage: reason,
+          }),
+          ...(options.resultJson ?? {}),
+        }
+      : options.resultJson;
+    const finishedAt = new Date();
+    const cancelled = await tx
+      .update(heartbeatRuns)
+      .set({
+        status: "cancelled",
+        finishedAt,
+        error: reason,
+        errorCode,
+        ...(resultJson ? { resultJson } : {}),
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, run.id))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!cancelled) throw notFound("Heartbeat run not found");
+
+    if (run.wakeupRequestId) {
+      await tx
+        .update(agentWakeupRequests)
+        .set({
+          status: "cancelled",
+          finishedAt,
+          error: reason,
+          updatedAt: finishedAt,
+        })
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId));
+    }
+
+    return {
+      run: cancelled,
+      cancelled: true,
+      wasFirstHeartbeat,
+      eventMessage: options.eventMessage ?? "run cancelled",
+      ...(options.eventPayload ? { eventPayload: options.eventPayload } : {}),
+    };
+  }
+
+  async function finalizePreparedRunCancellation(prepared: PreparedRunCancellation) {
+    if (!prepared.cancelled) return prepared.run;
+    const run = prepared.run;
+    const running = runningProcesses.get(run.id);
+    try {
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+    } finally {
+      runningProcesses.delete(run.id);
+    }
+
+    clearHeartbeatRunRuntimeStatus(run.id);
+    publishLiveEvent({
+      companyId: run.companyId,
+      type: "heartbeat.run.status",
+      payload: buildHeartbeatRunStatusLiveEventPayload(run),
+    });
+    publishRunLifecyclePluginEvent(run);
+    await appendRunEvent(run, 1, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: prepared.eventMessage,
+      ...(prepared.eventPayload ? { payload: prepared.eventPayload } : {}),
+    });
+    await releaseIssueExecutionAndPromote(run);
+    await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+      wasFirstHeartbeat: prepared.wasFirstHeartbeat,
+    });
+    await startNextQueuedRunForAgent(run.agentId);
+    return run;
+  }
+
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
     const run = await getRun(runId);
     if (!run) throw notFound("Heartbeat run not found");
@@ -19024,6 +19153,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+    prepareRunCancellationInTransaction: (
+      tx: Db,
+      runId: string,
+      reason?: string,
+      options?: CancelRunOptions,
+    ) => prepareRunCancellationInTransaction(tx, runId, reason, options),
+    finalizePreparedRunCancellation,
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the

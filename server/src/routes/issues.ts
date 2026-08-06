@@ -9036,6 +9036,9 @@ export function issueRoutes(
       }, postCommitActivityPublications);
     };
     let issueGraphCleanupComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    let preparedIssueGraphCleanupCancellation: Awaited<
+      ReturnType<typeof heartbeat.prepareRunCancellationInTransaction>
+    > | null = null;
     const lockRunningIssueGraphCleanupRun = async (tx: NonNullable<Parameters<typeof svc.update>[2]>) => {
       if (!issueGraphCleanupRunId) return true;
       const lockedRuns = await tx
@@ -9059,6 +9062,12 @@ export function issueRoutes(
               code: "issue_graph_cleanup_run_not_running",
               runId: issueGraphCleanupRunId,
             });
+          }
+          if (issueGraphCleanupRunId && runToCancelForCancelledStatus) {
+            preparedIssueGraphCleanupCancellation = await heartbeat.prepareRunCancellationInTransaction(
+              tx as unknown as Db,
+              runToCancelForCancelledStatus.id,
+            );
           }
 
           const updated = await updateIssue(tx);
@@ -9084,9 +9093,9 @@ export function issueRoutes(
             stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           }
 
-          // Keep the actor-run row locked across every mutation granted only by
-          // the cleanup override. A concurrent terminal transition must wait
-          // until the issue write, target-run cancellation, and comment finish.
+          // The actor-run lock and the prepared target-run cancellation stay in
+          // this transaction through every mutation granted only by the cleanup
+          // override. A failure rolls all database state back together.
           if (issueGraphCleanupRunId && commentBody) {
             issueGraphCleanupComment = await svc.addComment(
               id,
@@ -9170,15 +9179,9 @@ export function issueRoutes(
     if (runToCancelForCancelledStatus) {
       try {
         const cancelled = issueGraphCleanupRunId
-          ? await db.transaction(async (tx) => {
-            if (!(await lockRunningIssueGraphCleanupRun(tx))) {
-              throw forbidden("Issue graph cleanup run is no longer active", {
-                code: "issue_graph_cleanup_run_not_running",
-                runId: issueGraphCleanupRunId,
-              });
-            }
-            return heartbeat.cancelRun(runToCancelForCancelledStatus.id);
-          })
+          ? preparedIssueGraphCleanupCancellation
+            ? await heartbeat.finalizePreparedRunCancellation(preparedIssueGraphCleanupCancellation)
+            : null
           : await heartbeat.cancelRun(runToCancelForCancelledStatus.id);
         if (cancelled) {
           cancelledStatusRunId = cancelled.id;
