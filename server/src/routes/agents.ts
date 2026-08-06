@@ -2348,7 +2348,7 @@ export function agentRoutes(
   router.get("/agents/:id/chat-commands", async (req, res) => {
     const id = req.params.id as string;
     const agent = await svc.getById(id);
-    if (!agent) {
+    if (!agent || !hasCompanyAccess(req, agent.companyId)) {
       res.status(404).json({ error: "Agent not found" });
       return;
     }
