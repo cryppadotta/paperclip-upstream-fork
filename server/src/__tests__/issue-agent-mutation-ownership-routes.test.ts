@@ -1696,6 +1696,23 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockHeartbeatService.finalizePreparedRunCancellation).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+
+    mockIssueService.update.mockClear();
+    mockHeartbeatService.prepareRunCancellationInTransaction.mockClear();
+    mockHeartbeatService.finalizePreparedRunCancellation.mockClear();
+    mockHeartbeatService.finalizePreparedRunCancellation.mockRejectedValueOnce(
+      new Error("cleanup cancellation finalization failed"),
+    );
+    mockIssueService.addComment.mockClear();
+    const finalizationFailedRes = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled", comment: "This cleanup must report finalization failure." });
+
+    expect(finalizationFailedRes.status, JSON.stringify(finalizationFailedRes.body)).toBe(500);
+    expect(mockHeartbeatService.prepareRunCancellationInTransaction).toHaveBeenCalled();
+    expect(mockHeartbeatService.finalizePreparedRunCancellation).toHaveBeenCalledWith(preparedCancellation);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
   });
 
   it("rejects cleanup when the manager run terminates between authorization and mutation", async () => {

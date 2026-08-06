@@ -9214,6 +9214,7 @@ export function issueRoutes(
           issueId: existing.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
+        if (issueGraphCleanupRunId) throw err;
       }
     }
 

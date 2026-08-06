@@ -18543,20 +18543,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function finalizePreparedRunCancellation(prepared: PreparedRunCancellation) {
     if (!prepared.cancelled) return prepared.run;
     const run = prepared.run;
+    const failedSteps: string[] = [];
+    const retryStep = async (step: string, action: () => Promise<unknown>) => {
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          await action();
+          return;
+        } catch (err) {
+          logger.warn(
+            { err, runId: run.id, step, attempt, maxAttempts: 3 },
+            "prepared run cancellation finalization step failed",
+          );
+        }
+      }
+      failedSteps.push(step);
+    };
     const running = runningProcesses.get(run.id);
     try {
-      if (running) {
-        await terminateHeartbeatRunProcess({
-          pid: running.child.pid ?? run.processPid,
-          processGroupId: running.processGroupId ?? run.processGroupId,
-          graceMs: Math.max(1, running.graceSec) * 1000,
-        });
-      } else if (run.processPid || run.processGroupId) {
-        await terminateHeartbeatRunProcess({
-          pid: run.processPid,
-          processGroupId: run.processGroupId,
-        });
-      }
+      await retryStep("terminate_process", async () => {
+        if (running) {
+          await terminateHeartbeatRunProcess({
+            pid: running.child.pid ?? run.processPid,
+            processGroupId: running.processGroupId ?? run.processGroupId,
+            graceMs: Math.max(1, running.graceSec) * 1000,
+          });
+        } else if (run.processPid || run.processGroupId) {
+          await terminateHeartbeatRunProcess({
+            pid: run.processPid,
+            processGroupId: run.processGroupId,
+          });
+        }
+      });
     } finally {
       runningProcesses.delete(run.id);
     }
@@ -18568,18 +18585,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: buildHeartbeatRunStatusLiveEventPayload(run),
     });
     publishRunLifecyclePluginEvent(run);
-    await appendRunEvent(run, 1, {
-      eventType: "lifecycle",
-      stream: "system",
-      level: "warn",
-      message: prepared.eventMessage,
-      ...(prepared.eventPayload ? { payload: prepared.eventPayload } : {}),
-    });
-    await releaseIssueExecutionAndPromote(run);
-    await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
-      wasFirstHeartbeat: prepared.wasFirstHeartbeat,
-    });
-    await startNextQueuedRunForAgent(run.agentId);
+    await retryStep("append_lifecycle_event", () =>
+      appendRunEvent(run, 1, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: prepared.eventMessage,
+        ...(prepared.eventPayload ? { payload: prepared.eventPayload } : {}),
+      }),
+    );
+    await retryStep("release_issue_execution", () => releaseIssueExecutionAndPromote(run));
+    await retryStep("finalize_agent_status", () =>
+      finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+        wasFirstHeartbeat: prepared.wasFirstHeartbeat,
+      }),
+    );
+    await retryStep("start_next_queued_run", () => startNextQueuedRunForAgent(run.agentId));
+    if (failedSteps.length > 0) {
+      throw new Error(`Prepared run cancellation finalization failed: ${failedSteps.join(", ")}`);
+    }
     return run;
   }
 
