@@ -13,6 +13,14 @@ import {
 } from "@/lib/workspace-file-availability";
 
 type QueuedRef = readonly [key: string, ref: WorkspaceFileAvailabilityRef];
+type QueuedBatch = {
+  chunk: QueuedRef[];
+  issueId: string;
+  generation: number;
+};
+
+/** Matches the server's per-actor, per-issue availability concurrency limit. */
+const WORKSPACE_FILE_AVAILABILITY_MAX_CONCURRENT = 2;
 
 export interface WorkspaceFileAvailabilityRegistry {
   /**
@@ -46,8 +54,11 @@ export function useWorkspaceFileAvailability(issueId: string): WorkspaceFileAvai
   const resultsRef = useRef<Map<string, WorkspaceFileAvailability>>(new Map());
   const queueRef = useRef<Map<string, WorkspaceFileAvailabilityRef>>(new Map());
   const inFlightRef = useRef<Set<string>>(new Set());
+  const batchQueueRef = useRef<QueuedBatch[]>([]);
+  const activeBatchCountRef = useRef(0);
   const flushHandleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeRef = useRef(true);
+  const generationRef = useRef(0);
   const clientRef = useRef<QueryClient>(queryClient);
   clientRef.current = queryClient;
 
@@ -57,9 +68,15 @@ export function useWorkspaceFileAvailability(issueId: string): WorkspaceFileAvai
   const issueIdRef = useRef(issueId);
   if (issueIdRef.current !== issueId) {
     issueIdRef.current = issueId;
+    generationRef.current += 1;
+    if (flushHandleRef.current !== null) {
+      clearTimeout(flushHandleRef.current);
+      flushHandleRef.current = null;
+    }
     resultsRef.current.clear();
     queueRef.current.clear();
     inFlightRef.current.clear();
+    batchQueueRef.current = [];
   }
 
   const bump = useCallback(() => {
@@ -68,16 +85,17 @@ export function useWorkspaceFileAvailability(issueId: string): WorkspaceFileAvai
   }, []);
 
   const runBatch = useCallback(
-    async (chunk: QueuedRef[]) => {
+    async ({ chunk, issueId: batchIssueId, generation }: QueuedBatch) => {
       // Sorted keys give identical batches one cache entry regardless of the
       // order the refs happened to be rendered in.
       const refKeys = chunk.map(([key]) => key).sort();
       try {
         const response = await clientRef.current.fetchQuery({
-          queryKey: queryKeys.issues.fileResourceAvailability(issueId, refKeys),
-          queryFn: () => fileResourcesApi.availability(issueId, chunk.map(([, ref]) => ref)),
+          queryKey: queryKeys.issues.fileResourceAvailability(batchIssueId, refKeys),
+          queryFn: () => fileResourcesApi.availability(batchIssueId, chunk.map(([, ref]) => ref)),
           staleTime: WORKSPACE_FILE_AVAILABILITY_STALE_MS,
         });
+        if (generation !== generationRef.current) return;
         const byKey = new Map(
           response.results.map((result) => [
             workspaceFileAvailabilityKey(result.query),
@@ -92,14 +110,29 @@ export function useWorkspaceFileAvailability(issueId: string): WorkspaceFileAvai
         }
         bump();
       } catch {
+        if (generation !== generationRef.current) return;
         // Fail closed: the refs stay unresolved and render as plain inline code.
         // Releasing them from the in-flight set lets a later render burst retry
         // without looping, since a failure never triggers a re-render itself.
         for (const [key] of chunk) inFlightRef.current.delete(key);
       }
     },
-    [bump, issueId],
+    [bump],
   );
+
+  const drainBatchQueue = useCallback(() => {
+    while (
+      activeBatchCountRef.current < WORKSPACE_FILE_AVAILABILITY_MAX_CONCURRENT
+      && batchQueueRef.current.length > 0
+    ) {
+      const batch = batchQueueRef.current.shift()!;
+      activeBatchCountRef.current += 1;
+      void runBatch(batch).finally(() => {
+        activeBatchCountRef.current -= 1;
+        drainBatchQueue();
+      });
+    }
+  }, [runBatch]);
 
   const flush = useCallback(() => {
     flushHandleRef.current = null;
@@ -108,10 +141,15 @@ export function useWorkspaceFileAvailability(issueId: string): WorkspaceFileAvai
     const fresh = queued.filter(([key]) => !inFlightRef.current.has(key) && !resultsRef.current.has(key));
     if (fresh.length === 0) return;
     for (const [key] of fresh) inFlightRef.current.add(key);
-    for (const chunk of chunkWorkspaceFileAvailabilityRefs(fresh)) {
-      void runBatch(chunk);
-    }
-  }, [runBatch]);
+    batchQueueRef.current.push(
+      ...chunkWorkspaceFileAvailabilityRefs(fresh).map((chunk) => ({
+        chunk,
+        issueId,
+        generation: generationRef.current,
+      })),
+    );
+    drainBatchQueue();
+  }, [drainBatchQueue, issueId]);
 
   const check = useCallback<WorkspaceFileAvailabilityRegistry["check"]>(
     (ref) => {

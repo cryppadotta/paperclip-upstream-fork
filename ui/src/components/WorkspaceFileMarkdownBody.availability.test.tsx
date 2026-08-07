@@ -222,6 +222,45 @@ describe("WorkspaceFileMarkdownBody availability gating", () => {
     await waitForExpectation(() => expect(chips()).toHaveLength(150));
   });
 
+  it("runs at most two availability chunks concurrently", async () => {
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const resolveRequests: Array<() => void> = [];
+    mockAvailability.mockImplementation((_issueId: string, queries: FileResourceQuery[]) => {
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+      return new Promise<WorkspaceFileAvailabilityResponse>((resolve) => {
+        resolveRequests.push(() => {
+          activeRequests -= 1;
+          resolve(respondWith(queries.map((query) => openable(query.path))));
+        });
+      });
+    });
+    const paths = Array.from({ length: 250 }, (_, index) => `ui/src/file-${index}.ts`);
+
+    render(
+      <WorkspaceFileMarkdownBody>
+        {paths.map((path) => `\`${path}\``).join(" ")}
+      </WorkspaceFileMarkdownBody>,
+    );
+
+    await waitForExpectation(() => expect(mockAvailability).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(maxActiveRequests).toBe(2);
+
+    act(() => resolveRequests[0]!());
+    await waitForExpectation(() => expect(mockAvailability).toHaveBeenCalledTimes(3));
+    expect(activeRequests).toBe(2);
+    expect(maxActiveRequests).toBe(2);
+
+    act(() => {
+      resolveRequests[1]!();
+      resolveRequests[2]!();
+    });
+    await waitForExpectation(() => expect(chips()).toHaveLength(250));
+    expect(maxActiveRequests).toBe(2);
+  });
+
   it("checks only unseen references when a new comment arrives", async () => {
     mockAvailability.mockImplementation(echoOpenable);
 
