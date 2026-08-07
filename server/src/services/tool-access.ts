@@ -4536,7 +4536,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
           .where(and(
             eq(toolConnections.id, latest.id),
             eq(toolConnections.companyId, latest.companyId),
-            eq(toolConnections.updatedAt, latest.updatedAt),
+            sql`${toolConnections.config} = ${JSON.stringify(latest.config)}::jsonb`,
             sql`${toolConnections.config} #>> '{oauth,refreshLease,id}' is null`,
           ))
           .returning();
