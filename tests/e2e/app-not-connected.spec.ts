@@ -86,7 +86,7 @@ test.describe.serial("not-connected app page", () => {
     applicationId = body.application.id as string;
 
     // Archive the connection (Remove app), then resurrect the application so
-    // it shows on /apps as "Not connected" — the state in Dotta's screenshot.
+    // it shows on /apps/connections as "Not connected" — the state in Dotta's screenshot.
     const archive = await request.delete(`/api/tool-connections/${connectionId}`);
     expect(archive.ok(), `archive failed ${archive.status()}: ${await archive.text()}`).toBe(true);
     const revive = await request.patch(`/api/tool-applications/${applicationId}`, {
@@ -100,7 +100,7 @@ test.describe.serial("not-connected app page", () => {
   });
 
   test("not-connected row opens the app page, not the generic wizard", async ({ page }) => {
-    await page.goto(`/${seed.prefix}/apps`);
+    await page.goto(`/${seed.prefix}/apps/connections`);
     const row = page.locator("tbody tr", { hasText: "Bla" });
     await expect(row).toBeVisible({ timeout: 30_000 });
     await expect(row.getByText("Not connected")).toBeVisible();
@@ -147,7 +147,7 @@ test.describe.serial("not-connected app page", () => {
     await page.goto(`/${seed.prefix}/apps/app/${applicationId}`);
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/${connectionId}/setup$`), { timeout: 20_000 });
 
-    await page.goto(`/${seed.prefix}/apps`);
+    await page.goto(`/${seed.prefix}/apps/connections`);
     const row = page.locator("tbody tr", { hasText: "Bla" });
     await expect(row).toBeVisible({ timeout: 30_000 });
     await expect(row.getByRole("button", { name: /Open|Review/ })).toBeVisible();

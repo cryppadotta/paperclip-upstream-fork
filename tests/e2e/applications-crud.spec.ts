@@ -57,7 +57,7 @@ async function createConnection(
 }
 
 async function gotoApps(page: Page, prefix: string) {
-  await page.goto(`/${prefix}/apps`);
+  await page.goto(`/${prefix}/apps/connections`);
   await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible({ timeout: 30_000 });
 }
 
@@ -145,6 +145,7 @@ test.describe.serial("applications lifecycle", () => {
     await page.getByRole("button", { name: "Yes, remove it" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: renamed })).toHaveCount(0);
   });
 
@@ -160,6 +161,7 @@ test.describe.serial("applications lifecycle", () => {
     await page.getByRole("button", { name: "Yes, remove it" }).click();
     await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: cleanAppName })).toHaveCount(0);
   });
 });
