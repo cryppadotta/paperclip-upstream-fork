@@ -52,6 +52,7 @@ type AppStatus = {
 type AppRow = {
   application: ToolApplication;
   primaryConnection: ToolConnection | null;
+  connectionCount: number;
   status: AppStatus;
   actionCount: number;
   lastUsedAt: Date | string | null;
@@ -103,6 +104,7 @@ export function Connections() {
   const [connectionToDelete, setConnectionToDelete] = useState<{
     id: string;
     appName: string;
+    remainingConnectionCount: number;
   } | null>(null);
 
   useEffect(() => {
@@ -136,7 +138,7 @@ export function Connections() {
   });
 
   const deleteConnection = useMutation({
-    mutationFn: (target: { id: string; appName: string }) =>
+    mutationFn: (target: { id: string; appName: string; remainingConnectionCount: number }) =>
       toolsApi.archiveConnection(target.id),
     onSuccess: (_connection, target) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
@@ -144,7 +146,9 @@ export function Connections() {
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
         title: "Connection deleted",
-        body: `${target.appName} is no longer available to agents. You can connect it again later.`,
+        body: target.remainingConnectionCount > 0
+          ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
+          : `${target.appName} is no longer available to agents. You can connect it again later.`,
         tone: "success",
       });
       setConnectionToDelete(null);
@@ -214,6 +218,7 @@ export function Connections() {
       return {
         application,
         primaryConnection,
+        connectionCount: appConnections.length,
         status: statusFor(application, appConnections),
         actionCount,
         lastUsedAt,
@@ -405,6 +410,7 @@ export function Connections() {
                                 setConnectionToDelete({
                                   id: primaryConnection.id,
                                   appName: application.name,
+                                  remainingConnectionCount: row.connectionCount - 1,
                                 });
                               }}
                             >
@@ -441,7 +447,9 @@ export function Connections() {
               Delete {connectionToDelete?.appName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              Agents will lose access immediately. You can connect it again later.
+              {connectionToDelete && connectionToDelete.remainingConnectionCount > 0
+                ? `This connection will be removed. Agents can still use ${connectionToDelete.appName} through ${connectionToDelete.remainingConnectionCount} other active ${connectionToDelete.remainingConnectionCount === 1 ? "connection" : "connections"}.`
+                : "Agents will lose access immediately. You can connect it again later."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

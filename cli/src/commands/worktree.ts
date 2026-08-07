@@ -2219,7 +2219,8 @@ async function closeDb(db: ClosableDb): Promise<void> {
 }
 
 export function resolveCurrentWorktreeEndpoint(): ResolvedWorktreeEndpoint {
-  const rootPath = path.resolve(process.cwd());
+  const cwd = path.resolve(process.cwd());
+  const rootPath = detectGitWorkspaceInfo(cwd)?.root ?? cwd;
   const localConfigPath = path.join(rootPath, ".paperclip", "config.json");
   return {
     rootPath,

@@ -366,7 +366,53 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
 
     expect(archiveConnectionMock).toHaveBeenCalledWith("c-github");
     expect(pushToastMock).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Connection deleted", tone: "success" }),
+      expect.objectContaining({
+        title: "Connection deleted",
+        body: "GitHub is no longer available to agents. You can connect it again later.",
+        tone: "success",
+      }),
+    );
+  });
+
+  it("reports the remaining active connections after deleting one", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "c-github-primary", applicationId: "app-github", name: "GitHub" }),
+        connection({ id: "c-github-secondary", applicationId: "app-github", name: "GitHub Team" }),
+      ],
+    });
+
+    await renderApps();
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete GitHub connection"]',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain(
+      "Agents can still use GitHub through 1 other active connection.",
+    );
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(archiveConnectionMock).toHaveBeenCalledWith("c-github-primary");
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Connection deleted",
+        body: "GitHub still has 1 active connection available to agents.",
+        tone: "success",
+      }),
     );
   });
 });
