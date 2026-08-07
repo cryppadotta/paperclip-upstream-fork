@@ -430,6 +430,54 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it("recovers a response-lost Notion draft before retrying creation", async () => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    listApplicationsMock
+      .mockResolvedValueOnce({ applications: [] })
+      .mockResolvedValueOnce({
+        applications: [{
+          id: "app-response-lost",
+          status: "draft",
+          metadata: { sourceTemplateKey: "notion" },
+        }],
+      });
+    listConnectionsMock
+      .mockResolvedValueOnce({ connections: [] })
+      .mockResolvedValueOnce({
+        connections: [{
+          id: "conn-response-lost",
+          applicationId: "app-response-lost",
+          authKind: "oauth",
+          status: "draft",
+          config: { sourceTemplateKey: "notion" },
+          transportConfig: {},
+        }],
+      });
+    connectAppMock.mockRejectedValueOnce(new Error("Response lost"));
+    startOAuthMock.mockResolvedValueOnce({
+      connectionId: "conn-response-lost",
+      provider: "notion",
+      authorizationUrl: "https://mcp.notion.com/authorize?state=recovered",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
+
+    await render();
+
+    expect(container.textContent).toContain("Response lost");
+    await act(async () => {
+      buttonByText("Try again")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await flushReact();
+
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-response-lost");
+    expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      "https://mcp.notion.com/authorize?state=recovered",
+    );
+  });
+
   it("keeps non-allowlisted OAuth apps blocked", async () => {
     const slack = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "slack")!;
     mockParams.appKey = "slack";

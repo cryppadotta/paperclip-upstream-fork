@@ -442,38 +442,39 @@ export function AppsConnect() {
         onRetry={async () => {
           setOAuthError(null);
           setOAuthPhase("starting");
-          if (applicationsQuery.isError || connectionsQuery.isError) {
-            directOAuthRetryingRef.current = true;
-            try {
-              const [applicationsResult, connectionsResult] = await Promise.all([
-                applicationsQuery.refetch(),
-                connectionsQuery.refetch(),
-              ]);
-              if (applicationsResult.isError || connectionsResult.isError) {
-                setOAuthPhase("error");
-                setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
-                return;
-              }
-              const refreshedConnection = reusableOAuthConnection(
-                directOAuthSource,
-                applicationsResult.data?.applications ?? [],
-                connectionsResult.data?.connections ?? [],
-              );
-              if (refreshedConnection) {
-                startOAuth(refreshedConnection.id);
-              } else {
-                connectMutation.mutate(directOAuthEntry);
-              }
-            } finally {
-              directOAuthRetryingRef.current = false;
-            }
-            return;
-          }
           const connectionId = connectResult?.connectionId ?? existingOAuthConnection?.id;
           if (connectionId) {
             startOAuth(connectionId);
-          } else {
-            connectMutation.mutate(undefined);
+            return;
+          }
+
+          // The create request may have reached the server even when its
+          // response did not reach the browser. Re-read both resources before
+          // creating again so Retry resumes that durable draft instead of
+          // duplicating it.
+          directOAuthRetryingRef.current = true;
+          try {
+            const [applicationsResult, connectionsResult] = await Promise.all([
+              applicationsQuery.refetch(),
+              connectionsQuery.refetch(),
+            ]);
+            if (applicationsResult.isError || connectionsResult.isError) {
+              setOAuthPhase("error");
+              setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
+              return;
+            }
+            const refreshedConnection = reusableOAuthConnection(
+              directOAuthSource,
+              applicationsResult.data?.applications ?? [],
+              connectionsResult.data?.connections ?? [],
+            );
+            if (refreshedConnection) {
+              startOAuth(refreshedConnection.id);
+            } else {
+              connectMutation.mutate(directOAuthEntry);
+            }
+          } finally {
+            directOAuthRetryingRef.current = false;
           }
         }}
         onCancel={() => navigate("/apps/browse")}
