@@ -1232,23 +1232,63 @@ function verbMatches(toolName: string, verbs: string): boolean {
   return new RegExp(`\\b(${verbs})\\b|(^|[:._-])(${verbs})([:._-]|$)`).test(normalized);
 }
 
-export function classifyRisk(tool: McpToolDescriptor): ToolRiskLevel {
+const NOTION_READ_TOOLS = new Set([
+  "notion-fetch",
+  "notion-get-async-task",
+  "notion-get-comments",
+  "notion-get-teams",
+  "notion-get-users",
+  "notion-query-data-sources",
+  "notion-query-database-view",
+  "notion-query-meeting-notes",
+  "notion-search",
+]);
+
+const NOTION_WRITE_TOOLS = new Set([
+  "notion-convert-page-to-skill",
+  "notion-create-comment",
+  "notion-create-database",
+  "notion-create-folder",
+  "notion-create-pages",
+  "notion-create-view",
+  "notion-duplicate-page",
+  "notion-move-pages",
+  "notion-update-data-source",
+  "notion-update-page",
+  "notion-update-view",
+]);
+
+function normalizedProviderToolName(toolName: string): string {
+  return toolName
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .replace(/[:._-]+/g, "-");
+}
+
+export function classifyRisk(tool: McpToolDescriptor, sourceTemplateKey?: string | null): ToolRiskLevel {
   const annotations = tool.annotations ?? {};
   if (annotations.destructiveHint === true || annotations.destructive === true) return "destructive";
+  const normalizedToolName = normalizedProviderToolName(tool.name);
+  // Notion's hosted MCP catalog contains mutations whose names do not use one
+  // of the generic create/update/delete verbs (move, duplicate, and convert).
+  // Keep all reviewed tools explicit so provider changes are visible in code,
+  // while an annotation may still escalate a known read to a write.
+  if (sourceTemplateKey === "notion" && NOTION_WRITE_TOOLS.has(normalizedToolName)) return "write";
   if (annotations.readOnlyHint === false || annotations.writeHint === true) return "write";
+  if (sourceTemplateKey === "notion" && NOTION_READ_TOOLS.has(normalizedToolName)) return "read";
   if (verbMatches(tool.name, "delete|remove|destroy|unpublish")) return "destructive";
   if (verbMatches(tool.name, "create|update|write|set|send|publish|post|mutate|mark|archive")) return "write";
   return "read";
 }
 
-function descriptorHash(tool: McpToolDescriptor): string {
+function descriptorHash(tool: McpToolDescriptor, riskLevel: ToolRiskLevel): string {
   return stableHash({
     name: tool.name,
     title: tool.title ?? null,
     description: tool.description ?? null,
     inputSchema: tool.inputSchema ?? {},
     annotations: tool.annotations ?? {},
-    riskLevel: classifyRisk(tool),
+    riskLevel,
   });
 }
 
@@ -2982,9 +3022,12 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     let quarantinedCount = 0;
     const quarantineOnRefresh = shouldQuarantineNewEntries(connection) && connection.status === "active";
     const safeDefault = asRecord(connection.config).safeDefault === true;
+    const sourceTemplateKey = typeof asRecord(connection.config).sourceTemplateKey === "string"
+      ? String(asRecord(connection.config).sourceTemplateKey)
+      : null;
     for (const descriptor of descriptors) {
-      const riskLevel = classifyRisk(descriptor);
-      const hash = descriptorHash(descriptor);
+      const riskLevel = classifyRisk(descriptor, sourceTemplateKey);
+      const hash = descriptorHash(descriptor, riskLevel);
       const schemaHash = stableHash(descriptor.inputSchema ?? {});
       const existing = existingByName.get(descriptor.name);
       const changed = existing && (existing.versionHash !== hash || existing.schemaHash !== schemaHash);

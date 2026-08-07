@@ -4863,6 +4863,99 @@ describeEmbeddedPostgres("tool access service", () => {
     });
   });
 
+  it("resolves Notion reads as allowed, mutations as ask-first, and denies cross-company use", async () => {
+    const company = await createCompany(db);
+    const otherCompany = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const service = toolAccessService(db);
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `app-gallery:notion:${randomUUID()}`,
+      name: "Notion workspace",
+      type: "mcp_http",
+      status: "draft",
+      metadata: { sourceTemplateKey: "notion", galleryKey: "notion" },
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Notion workspace",
+      uid: `notion/${randomUUID()}`,
+      transport: "mcp_remote",
+      authKind: "oauth",
+      status: "draft",
+      enabled: false,
+      config: {
+        url: "https://mcp.notion.com/mcp",
+        sourceTemplateKey: "notion",
+        quarantineNewEntries: true,
+      },
+      transportConfig: { url: "https://mcp.notion.com/mcp" },
+      healthStatus: "ok",
+    }).returning();
+    mockToolsList([
+      { name: "notion-fetch", annotations: { readOnlyHint: true } },
+      // These two mutations do not contain a generic create/update verb.
+      { name: "notion-move-pages" },
+      { name: "notion-duplicate-page", annotations: { readOnlyHint: true } },
+    ]);
+
+    const refresh = await service.refreshCatalog(connection.id);
+    const fetchEntry = refresh.catalog.find((entry) => entry.toolName === "notion-fetch")!;
+    const moveEntry = refresh.catalog.find((entry) => entry.toolName === "notion-move-pages")!;
+    const duplicateEntry = refresh.catalog.find((entry) => entry.toolName === "notion-duplicate-page")!;
+    expect(refresh.catalog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: fetchEntry.id, riskLevel: "read", isReadOnly: true }),
+      expect.objectContaining({ id: moveEntry.id, riskLevel: "write", isWrite: true }),
+      expect.objectContaining({ id: duplicateEntry.id, riskLevel: "write", isWrite: true }),
+    ]));
+
+    await expect(service.finishGalleryAppConnection(otherCompany.id, connection.id, {
+      enabledCatalogEntryIds: [fetchEntry.id],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    })).rejects.toMatchObject({ status: 404 });
+
+    await service.finishGalleryAppConnection(company.id, connection.id, {
+      enabledCatalogEntryIds: [fetchEntry.id, moveEntry.id, duplicateEntry.id],
+      askFirstCatalogEntryIds: [moveEntry.id, duplicateEntry.id],
+      access: "all_agents",
+    });
+
+    const policyService = toolAccessPolicyService(db);
+    const decide = (catalogEntryId: string, toolName: string) => policyService.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agent.id },
+      request: { connectionId: connection.id, catalogEntryId, toolName, arguments: {} },
+    });
+    await expect(decide(fetchEntry.id, fetchEntry.toolName)).resolves.toMatchObject({
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
+    await expect(decide(moveEntry.id, moveEntry.toolName)).resolves.toMatchObject({
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+    });
+    await expect(decide(duplicateEntry.id, duplicateEntry.toolName)).resolves.toMatchObject({
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+    });
+
+    await expect(policyService.decide({
+      companyId: otherCompany.id,
+      actor: { actorType: "user", actorId: "other-board" },
+      request: {
+        connectionId: connection.id,
+        catalogEntryId: fetchEntry.id,
+        toolName: fetchEntry.toolName,
+        arguments: {},
+      },
+    })).resolves.toMatchObject({
+      decision: "deny",
+      reasonCode: "deny_missing_tool",
+    });
+  });
+
   it("rolls back gallery app finish when a later write fails after clearing profile state", async () => {
     const company = await createCompany(db);
     const service = toolAccessService(db);
@@ -6560,5 +6653,41 @@ describe("classifyRisk", () => {
     expect(risk("list_items", { destructiveHint: true })).toBe("destructive");
     expect(risk("list_items", { writeHint: true })).toBe("write");
     expect(risk("list_items", { readOnlyHint: false })).toBe("write");
+  });
+
+  it("classifies the reviewed Notion MCP catalog with provider-scoped defaults", () => {
+    const notionRisk = (name: string, annotations?: Record<string, unknown>) =>
+      classifyRisk({ name, annotations }, "notion");
+    const readTools = [
+      "notion-search",
+      "notion-fetch",
+      "notion-query-data-sources",
+      "notion-query-database-view",
+      "notion-query-meeting-notes",
+      "notion-get-comments",
+      "notion-get-teams",
+      "notion-get-users",
+      "notion-get-async-task",
+    ];
+    const writeTools = [
+      "notion-create-pages",
+      "notion-update-page",
+      "notion-convert-page-to-skill",
+      "notion-move-pages",
+      "notion-duplicate-page",
+      "notion-create-database",
+      "notion-create-folder",
+      "notion-update-data-source",
+      "notion-create-view",
+      "notion-update-view",
+      "notion-create-comment",
+    ];
+
+    for (const toolName of readTools) expect(notionRisk(toolName)).toBe("read");
+    for (const toolName of writeTools) {
+      expect(notionRisk(toolName, { readOnlyHint: true })).toBe("write");
+    }
+    expect(notionRisk("notion-delete-page")).toBe("destructive");
+    expect(classifyRisk({ name: "move_pages" })).toBe("read");
   });
 });
