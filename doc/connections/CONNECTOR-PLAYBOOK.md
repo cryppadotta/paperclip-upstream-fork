@@ -203,16 +203,22 @@ The broker implements this in `discoverOAuthEndpoints`
 unconditional. `oauthEndpointsForConnection` resolves endpoints in this
 order:
 
-1. Endpoints already stored on the connection's own OAuth config (or carried
-   in the 401 challenge hints) are used as-is — no `.well-known` fetch.
-2. If the manifest's method `defaults` ship a **complete** pair
-   (`authorizationEndpoint` **and** `tokenEndpoint`), those are used and
-   discovery is skipped entirely.
-3. Only for `mcp_remote` connections without a complete manifest pair does
-   the broker run the RFC 9728 → RFC 8414 discovery chain above.
+1. If the manifest's method `defaults` ship a **complete** pair
+   (`authorizationEndpoint` **and** `tokenEndpoint`), those are used
+   unconditionally. `discoverOAuthEndpoints` never runs in this case, so
+   endpoints stored on the connection's own OAuth config and 401 challenge
+   hints are **not consulted at all**.
+2. Otherwise, for `mcp_remote` connections, the broker calls
+   `discoverOAuthEndpoints`, which first checks endpoints already stored on
+   the connection's own OAuth config (falling back field-by-field to the 401
+   challenge hints); a complete stored/hinted pair is used as-is — no
+   `.well-known` fetch.
+3. Only when neither of the above yields a complete pair does the broker run
+   the RFC 9728 → RFC 8414 discovery chain above.
 
 Consequence: complete manifest endpoint hints are **authoritative, not
-hints** — if they go stale the broker keeps using them. For
+hints** — they override even endpoints that an earlier discovery persisted
+on the connection, and if they go stale the broker keeps using them. For
 discovery-capable vendors, ship only `serverUrl` in `defaults` (as
 `notion.json` does) so the broker discovers fresh endpoints at connect
 time; add explicit `authorizationEndpoint`/`tokenEndpoint` only for vendors
