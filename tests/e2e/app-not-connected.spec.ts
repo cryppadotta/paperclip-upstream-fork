@@ -173,8 +173,9 @@ test.describe.serial("not-connected app page", () => {
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/apps-nav-w6-04-app-page-danger.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/connections$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: "Doomed app" })).toHaveCount(0);
   });
 });

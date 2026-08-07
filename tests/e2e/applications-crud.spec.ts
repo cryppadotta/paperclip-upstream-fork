@@ -143,9 +143,9 @@ test.describe.serial("applications lifecycle", () => {
     await expect(page.getByRole("button", { name: "Yes, remove it" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-connected.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/connections$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: renamed })).toHaveCount(0);
   });
 
@@ -159,9 +159,9 @@ test.describe.serial("applications lifecycle", () => {
     await page.getByRole("button", { name: "Remove app", exact: true }).click();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-remove-not-connected.png`, fullPage: true });
     await page.getByRole("button", { name: "Yes, remove it" }).click();
-    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps$`), { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`/${seed.prefix}/apps/connections$`), { timeout: 20_000 });
     await expect(page.getByText("App removed").first()).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole("heading", { name: "Browse" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Connections" })).toBeVisible();
     await expect(page.locator("tbody tr", { hasText: cleanAppName })).toHaveCount(0);
   });
 });
