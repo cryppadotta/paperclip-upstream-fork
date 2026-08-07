@@ -128,6 +128,11 @@ type ActorInfo = {
 const ACTIVE_BROKER_RUN_STATUSES = new Set(["running"]);
 const REMOTE_HTTP_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REMOTE_HTTP_REDIRECTS = 5;
+const MAX_OAUTH_DCR_CLIENT_ID_LENGTH = 4_096;
+const MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH = 16_384;
+const OAUTH_REFRESH_LEASE_MS = 120_000;
+const OAUTH_REFRESH_LEASE_WAIT_MS = 30_000;
+const OAUTH_REFRESH_LEASE_POLL_MS = 25;
 
 type OAuthProviderEndpoints = {
   provider: string;
@@ -141,7 +146,6 @@ type OAuthProviderEndpoints = {
   metadataUrl?: string | null;
 };
 
-const oauthRefreshFlights = new Map<string, Promise<unknown>>();
 const oauthRegistrationFlights = new Map<string, Promise<unknown>>();
 
 async function oauthSingleFlight<T>(
@@ -1316,6 +1320,17 @@ function sanitizeHttpFailure(error: unknown): { status: ToolConnectionHealthStat
         code: "oauth_reauthorization_required",
       };
     }
+    if (
+      code === "oauth_refresh_in_progress"
+      || code === "oauth_refresh_superseded"
+      || code === "oauth_refresh_outcome_unknown"
+    ) {
+      return {
+        status: "error",
+        message: error.message,
+        code,
+      };
+    }
     if (code === "binding_missing" || code === "secret_deleted" || code === "secret_inactive" || code === "version_missing") {
       return {
         status: "missing_secret",
@@ -1357,6 +1372,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
   const policySvc = toolAccessPolicyService(db);
   const now = options.now ?? (() => new Date());
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
+  // This map only removes duplicate work inside one service instance. The
+  // database refresh lease below is the cross-process serialization boundary.
+  const oauthRefreshFlights = new Map<string, Promise<unknown>>();
 
   function allowPrivateRemoteEndpoints() {
     return options.deploymentMode !== "authenticated" || options.deploymentExposure !== "public";
@@ -3748,7 +3766,9 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       ? oauth.clientId.trim()
       : null;
     if (!clientId) return configured;
-    const clientSecretRef = connection.credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_secret");
+    const clientSecretRef = oauth.clientRegistrationSource === "dcr"
+      ? undefined
+      : connection.credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_secret");
     const clientSecret = clientSecretRef
       ? await secrets.resolveSecretValue(
           connection.companyId,
@@ -4133,6 +4153,63 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     );
   }
 
+  function invalidOAuthDcrResponse(field: string, reason: string): HttpError {
+    return new HttpError(502, "OAuth provider returned incompatible dynamic client metadata", {
+      code: "oauth_dcr_response_invalid",
+      field,
+      reason,
+    });
+  }
+
+  function parseOAuthDcrString(
+    record: Record<string, unknown>,
+    field: "client_id" | "client_secret",
+    input: { required: boolean; maxLength: number },
+  ): string | null {
+    const value = record[field];
+    if (value === undefined || value === null) {
+      if (input.required) throw invalidOAuthDcrResponse(field, "missing");
+      return null;
+    }
+    if (typeof value !== "string" || value.length === 0 || value.length > input.maxLength) {
+      throw invalidOAuthDcrResponse(field, "invalid_string");
+    }
+    if (field === "client_id" && value.trim() !== value) {
+      throw invalidOAuthDcrResponse(field, "invalid_string");
+    }
+    return value;
+  }
+
+  function assertOAuthDcrArray(
+    record: Record<string, unknown>,
+    field: "redirect_uris" | "grant_types" | "response_types",
+    expected: string[],
+  ) {
+    if (record[field] === undefined) throw invalidOAuthDcrResponse(field, "missing");
+    const value = record[field];
+    if (
+      !Array.isArray(value)
+      || value.length !== expected.length
+      || value.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > 2_048)
+    ) {
+      throw invalidOAuthDcrResponse(field, "invalid_array");
+    }
+    const actual = [...value].sort();
+    const required = [...expected].sort();
+    if (actual.some((entry, index) => entry !== required[index])) {
+      throw invalidOAuthDcrResponse(field, "registered_value_mismatch");
+    }
+  }
+
+  function parseOAuthDcrTimestamp(record: Record<string, unknown>, field: string): number | null {
+    const value = record[field];
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw invalidOAuthDcrResponse(field, "invalid_timestamp");
+    }
+    return value;
+  }
+
   async function registerOAuthClient(input: {
     connection: typeof toolConnections.$inferSelect;
     endpoints: OAuthProviderEndpoints;
@@ -4162,16 +4239,17 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
 
     const host = new URL(input.redirectUri).host;
+    const requestedMetadata = {
+      client_name: `Paperclip (${host})`,
+      redirect_uris: [input.redirectUri],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    };
     const response = await fetchRemoteHttpUrl(input.endpoints.registrationUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        client_name: `Paperclip (${host})`,
-        redirect_uris: [input.redirectUri],
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-        token_endpoint_auth_method: "none",
-      }),
+      body: JSON.stringify(requestedMetadata),
     });
     const record = asRecord(await response.json().catch(() => ({})) as unknown);
     if (!response.ok) {
@@ -4185,17 +4263,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         status: response.status,
       });
     }
-    const clientId = typeof record.client_id === "string" && record.client_id.trim()
-      ? record.client_id.trim()
-      : null;
-    if (!clientId) {
-      throw new HttpError(502, "OAuth provider did not return a client id", {
-        code: "oauth_dcr_client_id_missing",
-      });
+    const clientId = parseOAuthDcrString(record, "client_id", {
+      required: true,
+      maxLength: MAX_OAUTH_DCR_CLIENT_ID_LENGTH,
+    })!;
+    const clientSecret = parseOAuthDcrString(record, "client_secret", {
+      required: false,
+      maxLength: MAX_OAUTH_DCR_CLIENT_SECRET_LENGTH,
+    });
+    assertOAuthDcrArray(record, "redirect_uris", requestedMetadata.redirect_uris);
+    assertOAuthDcrArray(record, "grant_types", requestedMetadata.grant_types);
+    assertOAuthDcrArray(record, "response_types", requestedMetadata.response_types);
+    if (
+      record.token_endpoint_auth_method !== requestedMetadata.token_endpoint_auth_method
+    ) {
+      throw invalidOAuthDcrResponse("token_endpoint_auth_method", "registered_value_mismatch");
     }
-    const clientSecret = typeof record.client_secret === "string" && record.client_secret
-      ? record.client_secret
-      : null;
+    const clientIdIssuedAt = parseOAuthDcrTimestamp(record, "client_id_issued_at");
+    const clientSecretExpiresAt = parseOAuthDcrTimestamp(record, "client_secret_expires_at");
+    if (clientSecretExpiresAt !== null && clientSecret === null) {
+      throw invalidOAuthDcrResponse("client_secret_expires_at", "client_secret_missing");
+    }
     const existingClientSecretRef = oauthSecretRef(input.connection, "oauth.client_secret");
     const nextCredentialSecretRefs = input.connection.credentialSecretRefs.filter(
       (ref) => ref.configPath !== "oauth.client_secret",
@@ -4229,9 +4317,10 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         tokenEndpointAuthMethodsSupported: input.endpoints.tokenEndpointAuthMethodsSupported ?? [],
         clientId,
         clientRegistrationSource: "dcr",
+        clientTokenEndpointAuthMethod: "none",
         clientRedirectUri: input.redirectUri,
-        clientIdIssuedAt: record.client_id_issued_at ?? null,
-        clientSecretExpiresAt: record.client_secret_expires_at ?? null,
+        clientIdIssuedAt,
+        clientSecretExpiresAt,
       },
     };
     const [updated] = await db
@@ -4374,8 +4463,111 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     };
   }
 
+  function withoutOAuthRefreshLease(oauth: Record<string, unknown>) {
+    const { refreshLease: _refreshLease, ...rest } = oauth;
+    return rest;
+  }
+
+  function oauthRefreshLeaseId(connection: typeof toolConnections.$inferSelect): string | null {
+    const lease = asRecord(oauthConfig(connection).refreshLease);
+    return typeof lease.id === "string" && lease.id ? lease.id : null;
+  }
+
+  async function clearOAuthRefreshLease(
+    connection: typeof toolConnections.$inferSelect,
+    leaseId: string,
+  ) {
+    const latest = await getConnectionRow(connection.id, connection.companyId);
+    if (oauthRefreshLeaseId(latest) !== leaseId) return latest;
+    const nextConfig = {
+      ...latest.config,
+      oauth: withoutOAuthRefreshLease(oauthConfig(latest)),
+    };
+    const [updated] = await db
+      .update(toolConnections)
+      .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: now() })
+      .where(and(
+        eq(toolConnections.id, latest.id),
+        eq(toolConnections.companyId, latest.companyId),
+        sql`${toolConnections.config} -> 'oauth' -> 'refreshLease' ->> 'id' = ${leaseId}`,
+      ))
+      .returning();
+    return updated ?? getConnectionRow(connection.id, connection.companyId);
+  }
+
+  async function acquireOAuthRefreshLease(
+    connection: typeof toolConnections.$inferSelect,
+  ): Promise<{ connection: typeof toolConnections.$inferSelect; leaseId: string | null }> {
+    const waitDeadline = Date.now() + OAUTH_REFRESH_LEASE_WAIT_MS;
+    while (true) {
+      const latest = await getConnectionRow(connection.id, connection.companyId);
+      const latestExpiresAtMs = oauthExpiresAtMs(latest);
+      if (latestExpiresAtMs && latestExpiresAtMs > Date.now() + 60_000) {
+        return { connection: latest, leaseId: null };
+      }
+
+      const oauth = oauthConfig(latest);
+      const currentLease = asRecord(oauth.refreshLease);
+      const currentLeaseExpiresAt = typeof currentLease.expiresAt === "string"
+        ? Date.parse(currentLease.expiresAt)
+        : Number.NaN;
+      const currentLeaseId = typeof currentLease.id === "string" && currentLease.id
+        ? currentLease.id
+        : null;
+      const leaseIsActive = currentLeaseId !== null
+        && Number.isFinite(currentLeaseExpiresAt)
+        && currentLeaseExpiresAt > Date.now();
+      if (!currentLeaseId) {
+        const leaseId = randomUUID();
+        const claimedAt = now();
+        const nextConfig = {
+          ...latest.config,
+          oauth: {
+            ...withoutOAuthRefreshLease(oauth),
+            refreshLease: {
+              id: leaseId,
+              expiresAt: new Date(Date.now() + OAUTH_REFRESH_LEASE_MS).toISOString(),
+            },
+          },
+        };
+        const [claimed] = await db
+          .update(toolConnections)
+          .set({ config: nextConfig, transportConfig: nextConfig, updatedAt: claimedAt })
+          .where(and(
+            eq(toolConnections.id, latest.id),
+            eq(toolConnections.companyId, latest.companyId),
+            eq(toolConnections.updatedAt, latest.updatedAt),
+            sql`${toolConnections.config} #>> '{oauth,refreshLease,id}' is null`,
+          ))
+          .returning();
+        if (claimed) return { connection: claimed, leaseId };
+      }
+
+      if (currentLeaseId && !leaseIsActive) {
+        throw new HttpError(422, "The previous OAuth refresh did not finish. Reconnect this app before retrying.", {
+          code: "oauth_refresh_outcome_unknown",
+          setupUrl: connectionSetupUrl(latest),
+          reconnectUrl: connectionReconnectUrl(latest),
+        });
+      }
+
+      if (Date.now() >= waitDeadline) {
+        throw conflict("OAuth credential refresh is already in progress", {
+          code: "oauth_refresh_in_progress",
+          retryable: true,
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, OAUTH_REFRESH_LEASE_POLL_MS));
+    }
+  }
+
   async function markOAuthReauthorizationRequired(
     connection: typeof toolConnections.$inferSelect,
+    guard: {
+      leaseId: string;
+      refreshSecretId: string;
+      refreshTokenVersion: number;
+    },
   ) {
     const oauth = oauthConfig(connection);
     const nextCredentialSecretRefs = connection.credentialSecretRefs.filter(
@@ -4385,7 +4577,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const nextConfig = {
       ...connection.config,
       oauth: {
-        ...oauth,
+        ...withoutOAuthRefreshLease(oauth),
         expiresAt: null,
         reauthorizationRequiredAt: now().toISOString(),
       },
@@ -4404,14 +4596,25 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         credentialRefs: nextCredentialRefs,
         updatedAt: now(),
       })
-      .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
+      .where(and(
+        eq(toolConnections.id, connection.id),
+        eq(toolConnections.companyId, connection.companyId),
+        sql`${toolConnections.config} -> 'oauth' -> 'refreshLease' ->> 'id' = ${guard.leaseId}`,
+        sql`exists (
+          select 1 from ${companySecrets}
+          where ${companySecrets.id} = ${guard.refreshSecretId}
+            and ${companySecrets.companyId} = ${connection.companyId}
+            and ${companySecrets.latestVersion} = ${guard.refreshTokenVersion}
+        )`,
+      ))
       .returning();
     if (updated) await syncCredentialBindings(updated);
-    return updated ?? connection;
+    return updated ?? null;
   }
 
   async function refreshOAuthCredentials(
     connection: typeof toolConnections.$inferSelect,
+    leaseId: string,
     actor?: ActorInfo,
     accessContext?: {
       actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
@@ -4436,8 +4639,19 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     }
     const client = await oauthClientForConnection(connection, oauth.provider, actor);
     if (!client.clientId) throw unprocessable(`OAuth client id is not configured for ${oauth.provider}`);
-    const refreshToken = refreshRef
-      ? await secrets.resolveSecretValue(connection.companyId, refreshRef.secretId, refreshRef.versionSelector ?? "latest", {
+    const [refreshSecret] = refreshRef
+      ? await db
+          .select({ latestVersion: companySecrets.latestVersion })
+          .from(companySecrets)
+          .where(and(
+            eq(companySecrets.id, refreshRef.secretId),
+            eq(companySecrets.companyId, connection.companyId),
+          ))
+          .limit(1)
+      : [undefined];
+    const refreshTokenVersion = refreshSecret?.latestVersion ?? null;
+    const refreshToken = refreshRef && refreshTokenVersion !== null
+      ? await secrets.resolveSecretValue(connection.companyId, refreshRef.secretId, refreshTokenVersion, {
           consumerType: "tool_connection",
           consumerId: connection.id,
           configPath: "oauth.refresh_token",
@@ -4460,7 +4674,22 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
       });
     } catch (error) {
       if (error instanceof HttpError && asRecord(error.details).code === "oauth_reauthorization_required") {
-        await markOAuthReauthorizationRequired(connection);
+        const marked = refreshRef && refreshTokenVersion !== null
+          ? await markOAuthReauthorizationRequired(connection, {
+              leaseId,
+              refreshSecretId: refreshRef.secretId,
+              refreshTokenVersion,
+            })
+          : null;
+        if (!marked) {
+          const latest = await getConnectionRow(connection.id, connection.companyId);
+          const latestExpiresAtMs = oauthExpiresAtMs(latest);
+          if (latestExpiresAtMs && latestExpiresAtMs > Date.now() + 60_000) return latest;
+          throw conflict("OAuth credentials changed while refresh was in progress. Retry the request.", {
+            code: "oauth_refresh_superseded",
+            retryable: true,
+          });
+        }
         throw new HttpError(error.status, error.message, {
           ...asRecord(error.details),
           setupUrl: connectionSetupUrl(connection),
@@ -4503,7 +4732,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const nextConfig = {
       ...connection.config,
       oauth: {
-        ...oauth,
+        ...withoutOAuthRefreshLease(oauth),
         grantType: grantType === "client_credentials" ? grantType : oauth.grantType ?? "authorization_code",
         expiresAt,
         scope: token.scope ?? oauth.scope ?? null,
@@ -4538,9 +4767,27 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
         ],
         updatedAt: new Date(),
       })
-      .where(eq(toolConnections.id, connection.id))
+      .where(and(
+        eq(toolConnections.id, connection.id),
+        eq(toolConnections.companyId, connection.companyId),
+        sql`${toolConnections.config} -> 'oauth' -> 'refreshLease' ->> 'id' = ${leaseId}`,
+      ))
       .returning();
-    await syncCredentialBindings(updated);
+    if (!updated) {
+      throw conflict("OAuth credentials changed while refresh was in progress. Retry the request.", {
+        code: "oauth_refresh_superseded",
+        retryable: true,
+      });
+    }
+    const previousBindingKeys = new Set(connection.credentialSecretRefs.map(
+      (ref) => `${ref.secretId}:${ref.configPath}`,
+    ));
+    const nextBindingKeys = new Set(nextCredentialSecretRefs.map(
+      (ref) => `${ref.secretId}:${ref.configPath}`,
+    ));
+    const bindingsChanged = previousBindingKeys.size !== nextBindingKeys.size
+      || [...previousBindingKeys].some((key) => !nextBindingKeys.has(key));
+    if (bindingsChanged) await syncCredentialBindings(updated);
     return updated;
   }
 
@@ -4558,10 +4805,13 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const expiresAtMs = oauthExpiresAtMs(connection);
     if (expiresAtMs && expiresAtMs > Date.now() + 60_000) return connection;
     return oauthSingleFlight(oauthRefreshFlights, connection.id, async () => {
-      const latest = await getConnectionRow(connection.id, connection.companyId);
-      const latestExpiresAtMs = oauthExpiresAtMs(latest);
-      if (latestExpiresAtMs && latestExpiresAtMs > Date.now() + 60_000) return latest;
-      return refreshOAuthCredentials(latest, actor, accessContext);
+      const lease = await acquireOAuthRefreshLease(connection);
+      if (!lease.leaseId) return lease.connection;
+      try {
+        return await refreshOAuthCredentials(lease.connection, lease.leaseId, actor, accessContext);
+      } finally {
+        await clearOAuthRefreshLease(lease.connection, lease.leaseId).catch(() => undefined);
+      }
     });
   }
 
@@ -5447,7 +5697,7 @@ export function toolAccessService(db: Db, options: ToolAccessServiceOptions = {}
     const nextConfig = {
       ...connection.config,
       oauth: {
-        ...oauthConfig(connection),
+        ...withoutOAuthRefreshLease(oauthConfig(connection)),
         provider: endpoints.provider,
         authorizationUrl: endpoints.authorizationUrl,
         tokenUrl: endpoints.tokenUrl,

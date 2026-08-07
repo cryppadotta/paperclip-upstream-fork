@@ -3277,6 +3277,9 @@ describeEmbeddedPostgres("tool access service", () => {
         return mcpHttpResponse({
           client_id: "notion-dcr-client",
           client_secret: "notion-dcr-secret",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
           token_endpoint_auth_method: "none",
         });
       }
@@ -3319,6 +3322,7 @@ describeEmbeddedPostgres("tool access service", () => {
         provider: "notion",
         clientId: "notion-dcr-client",
         clientRegistrationSource: "dcr",
+        clientTokenEndpointAuthMethod: "none",
         clientRedirectUri: redirectUri,
         registrationUrl: "https://mcp.notion.com/register",
       },
@@ -3327,6 +3331,90 @@ describeEmbeddedPostgres("tool access service", () => {
       expect.objectContaining({ configPath: "oauth.client_secret", required: false }),
     ]);
     expect(JSON.stringify(connection.config)).not.toContain("notion-dcr-secret");
+  });
+
+  it.each([
+    [
+      "a confidential token endpoint auth method",
+      { client_id: "notion-dcr-client", token_endpoint_auth_method: "client_secret_basic" },
+      "token_endpoint_auth_method",
+    ],
+    [
+      "a different redirect URI",
+      { client_id: "notion-dcr-client", redirect_uris: ["https://attacker.example/callback"] },
+      "redirect_uris",
+    ],
+    [
+      "a reduced grant set",
+      { client_id: "notion-dcr-client", grant_types: ["authorization_code"] },
+      "grant_types",
+    ],
+    [
+      "missing response types",
+      { client_id: "notion-dcr-client", response_types: undefined },
+      "response_types",
+    ],
+    [
+      "an oversized client id",
+      { client_id: "x".repeat(4_097) },
+      "client_id",
+    ],
+  ])("rejects DCR responses that return %s", async (_label, registrationResponse, field) => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_NOTION_CLIENT_SECRET", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_ID", "");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_CLIENT_SECRET", "");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, {
+      galleryKey: "notion",
+      name: `Notion invalid DCR ${field}`,
+    });
+    const redirectUri = "https://paperclip-dev.tail29c1aa.ts.net/api/tools/oauth/callback";
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp") {
+        return mcpHttpResponse({ authorization_servers: ["https://mcp.notion.com"] });
+      }
+      if (href === "https://mcp.notion.com/.well-known/oauth-authorization-server") {
+        return mcpHttpResponse({
+          authorization_endpoint: "https://mcp.notion.com/authorize",
+          token_endpoint: "https://mcp.notion.com/token",
+          registration_endpoint: "https://mcp.notion.com/register",
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (href === "https://mcp.notion.com/register") {
+        return mcpHttpResponse({
+          client_id: "notion-dcr-client",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none",
+          ...registrationResponse,
+        });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await expect(service.startOAuth(company.id, connected.connectionId, {
+      redirectUri,
+      actor: { actorType: "user", actorId: "board" },
+    })).rejects.toMatchObject({
+      status: 502,
+      details: {
+        code: "oauth_dcr_response_invalid",
+        field,
+      },
+    });
+
+    const [connection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connected.connectionId));
+    expect(connection.ownership).not.toBe("dcr");
+    expect((connection.config.oauth as Record<string, unknown> | undefined)?.clientId).toBeUndefined();
   });
 
   it("fails fast when Notion DCR is attempted from a non-loopback HTTP origin", async () => {
@@ -3354,11 +3442,12 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("single-flights rotating OAuth refresh tokens before concurrent remote app calls", async () => {
+  it("leases rotating OAuth refresh tokens across service instances before concurrent remote app calls", async () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
     const company = await createCompany(db);
     const service = toolAccessService(db);
+    const concurrentService = toolAccessService(db);
 
     const connect = await service.connectGalleryApp(company.id, { galleryKey: "slack", name: "Slack refresh" });
     const start = await service.startOAuth(company.id, connect.connectionId, {
@@ -3430,7 +3519,7 @@ describeEmbeddedPostgres("tool access service", () => {
 
     const [health, concurrentHealth] = await Promise.all([
       service.checkHealth(connect.connectionId),
-      service.checkHealth(connect.connectionId),
+      concurrentService.checkHealth(connect.connectionId),
     ]);
 
     expect(health.connection.healthStatus).toBe("ok");
@@ -3547,6 +3636,140 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(reauthorizationRequired.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.access_token");
     expect(reauthorizationRequired.credentialSecretRefs.map((ref) => ref.configPath)).not.toContain("oauth.refresh_token");
     expect(reauthorizationRequired.credentialRefs.map((ref) => ref.name)).not.toContain("oauth.access_token");
+  });
+
+  it("does not disable a connection when invalid_grant used a superseded refresh-token version", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connect = await service.connectGalleryApp(company.id, {
+      galleryKey: "slack",
+      name: "Slack stale invalid grant",
+    });
+    const start = await service.startOAuth(company.id, connect.connectionId, {
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const state = new URL(start.authorizationUrl).searchParams.get("state")!;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        return mcpHttpResponse({
+          ok: true,
+          access_token: "expired-access-token",
+          refresh_token: "submitted-refresh-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+        });
+      }
+      if (href === "https://mcp.slack.com/mcp") {
+        return mcpHttpResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools: [] } });
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+    await service.completeOAuthCallback({
+      state,
+      code: "oauth-code",
+      redirectUri: "http://paperclip.test/api/tools/oauth/callback",
+      actor: { actorType: "user", actorId: "board" },
+    });
+    const [connected] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connect.connectionId));
+    const refreshRef = connected.credentialSecretRefs.find((ref) => ref.configPath === "oauth.refresh_token")!;
+    await db.update(toolConnections).set({
+      config: {
+        ...connected.config,
+        oauth: {
+          ...(connected.config.oauth as Record<string, unknown>),
+          expiresAt: "2000-01-01T00:00:00.000Z",
+        },
+      },
+    }).where(eq(toolConnections.id, connect.connectionId));
+
+    fetchMock.mockImplementation(async (url, init) => {
+      const href = String(url);
+      if (href === "https://slack.com/api/oauth.v2.access") {
+        const body = init?.body as URLSearchParams;
+        expect(body.get("refresh_token")).toBe("submitted-refresh-token");
+        await secretService(db).rotate(refreshRef.secretId, { value: "newer-refresh-token" });
+        return {
+          ok: false,
+          status: 400,
+          headers: { get: () => null },
+          json: async () => ({ error: "invalid_grant" }),
+        } as unknown as Response;
+      }
+      throw new Error(`unexpected fetch ${href}`);
+    });
+
+    await expect(service.checkHealth(connect.connectionId)).rejects.toMatchObject({
+      status: 502,
+      details: expect.objectContaining({ code: "oauth_refresh_superseded" }),
+    });
+    const [preserved] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connect.connectionId));
+    expect(preserved).toMatchObject({ status: "active", enabled: false });
+    expect(preserved.credentialSecretRefs.map((ref) => ref.configPath)).toEqual(expect.arrayContaining([
+      "oauth.access_token",
+      "oauth.refresh_token",
+    ]));
+    expect((preserved.config.oauth as Record<string, unknown>).refreshLease).toBeUndefined();
+  });
+
+  it("fails closed instead of replaying a refresh token after an abandoned lease", async () => {
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "slack-client-id");
+    vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "slack-client-secret");
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const fixture = await createOAuthConnection(db, company.id);
+    const refreshSecret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `OAuth refresh ${randomUUID()}`,
+      key: `oauth.refresh.${randomUUID()}`,
+      value: "possibly-consumed-refresh-token",
+    });
+    await db.insert(companySecretBindings).values({
+      companyId: company.id,
+      secretId: refreshSecret.id,
+      targetType: "tool_connection",
+      targetId: fixture.connection.id,
+      configPath: "oauth.refresh_token",
+    });
+    await db.update(toolConnections).set({
+      config: {
+        ...fixture.connection.config,
+        oauth: {
+          ...(fixture.connection.config.oauth as Record<string, unknown>),
+          expiresAt: "2000-01-01T00:00:00.000Z",
+          refreshLease: {
+            id: "abandoned-refresh",
+            expiresAt: "2000-01-01T00:00:00.000Z",
+          },
+        },
+      },
+      credentialSecretRefs: [
+        ...fixture.connection.credentialSecretRefs,
+        {
+          secretId: refreshSecret.id,
+          versionSelector: "latest",
+          configPath: "oauth.refresh_token",
+          required: false,
+          label: "OAuth refresh token",
+        },
+      ],
+    }).where(eq(toolConnections.id, fixture.connection.id));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(service.checkHealth(fixture.connection.id)).rejects.toMatchObject({
+      status: 502,
+      details: expect.objectContaining({ code: "oauth_refresh_outcome_unknown" }),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("uses OAuth client credentials for shared machine-to-machine MCP connections", async () => {
