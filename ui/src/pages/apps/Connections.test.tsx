@@ -415,4 +415,48 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
       }),
     );
   });
+
+  it("does not count disabled connections as available after deletion", async () => {
+    listApplicationsMock.mockResolvedValue({
+      applications: [application({ id: "app-github", name: "GitHub" })],
+    });
+    listConnectionsMock.mockResolvedValue({
+      connections: [
+        connection({ id: "c-github-primary", applicationId: "app-github", name: "GitHub" }),
+        connection({
+          id: "c-github-disabled",
+          applicationId: "app-github",
+          name: "GitHub Disabled",
+          status: "disabled",
+          enabled: false,
+        }),
+      ],
+    });
+
+    await renderApps();
+
+    const deleteButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Delete GitHub connection"]',
+    );
+    await act(async () => {
+      deleteButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(document.body.textContent).toContain("Agents will lose access immediately.");
+    expect(document.body.textContent).not.toContain("Agents can still use GitHub");
+
+    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Delete connection",
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(pushToastMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: "GitHub is no longer available to agents. You can connect it again later.",
+      }),
+    );
+  });
 });

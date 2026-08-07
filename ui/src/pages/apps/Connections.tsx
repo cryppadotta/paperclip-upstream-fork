@@ -52,7 +52,7 @@ type AppStatus = {
 type AppRow = {
   application: ToolApplication;
   primaryConnection: ToolConnection | null;
-  connectionCount: number;
+  agentAvailableConnectionCount: number;
   status: AppStatus;
   actionCount: number;
   lastUsedAt: Date | string | null;
@@ -218,7 +218,9 @@ export function Connections() {
       return {
         application,
         primaryConnection,
-        connectionCount: appConnections.length,
+        agentAvailableConnectionCount: appConnections.filter(
+          (connection) => connection.status === "active" && connection.enabled,
+        ).length,
         status: statusFor(application, appConnections),
         actionCount,
         lastUsedAt,
@@ -410,7 +412,11 @@ export function Connections() {
                                 setConnectionToDelete({
                                   id: primaryConnection.id,
                                   appName: application.name,
-                                  remainingConnectionCount: row.connectionCount - 1,
+                                  remainingConnectionCount: Math.max(
+                                    0,
+                                    row.agentAvailableConnectionCount -
+                                      (primaryConnection.status === "active" && primaryConnection.enabled ? 1 : 0),
+                                  ),
                                 });
                               }}
                             >
