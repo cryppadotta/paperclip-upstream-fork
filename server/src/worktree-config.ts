@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import type { PaperclipConfig } from "@paperclipai/shared";
+import { isDeepStrictEqual } from "node:util";
+import {
+  mergePaperclipConfig,
+  paperclipConfigSchema,
+  type PaperclipConfig,
+} from "@paperclipai/shared";
 import { updateEnvFileContents, writeEnvFileAtomicallyIfChanged } from "@paperclipai/shared/env-file";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 
@@ -247,9 +252,60 @@ function resolveWorktreeRuntimeContext(
   };
 }
 
-function writeConfigFile(configPath: string, config: PaperclipConfig): void {
+function atomicWriteFile(filePath: string, contents: string): void {
+  let attempt = 0;
+
+  while (true) {
+    const temporaryPath = `${filePath}.tmp-${process.pid}-${attempt}`;
+    attempt += 1;
+    let fileDescriptor: number | null = null;
+    try {
+      fileDescriptor = fs.openSync(temporaryPath, "wx", 0o600);
+      fs.writeFileSync(fileDescriptor, contents, "utf8");
+      fs.fsyncSync(fileDescriptor);
+      fs.closeSync(fileDescriptor);
+      fileDescriptor = null;
+      fs.renameSync(temporaryPath, filePath);
+      let directoryDescriptor: number | null = null;
+      try {
+        directoryDescriptor = fs.openSync(path.dirname(filePath), "r");
+        fs.fsyncSync(directoryDescriptor);
+      } catch (error) {
+        const code = error instanceof Error && "code" in error ? error.code : null;
+        if (
+          process.platform !== "win32" ||
+          !["EACCES", "EINVAL", "EISDIR", "ENOTSUP", "EPERM"].includes(String(code))
+        ) {
+          throw error;
+        }
+      } finally {
+        if (directoryDescriptor !== null) fs.closeSync(directoryDescriptor);
+      }
+      return;
+    } catch (error) {
+      if (fileDescriptor !== null) fs.closeSync(fileDescriptor);
+      fs.rmSync(temporaryPath, { force: true });
+      const code = error instanceof Error && "code" in error ? error.code : null;
+      if (code === "EEXIST") continue;
+      throw error;
+    }
+  }
+}
+
+function writeConfigFile(configPath: string, config: PaperclipConfig): boolean {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+  const update = paperclipConfigSchema.parse(config);
+  const source = fs.existsSync(configPath)
+    ? paperclipConfigSchema.parse(JSON.parse(fs.readFileSync(configPath, "utf8")))
+    : null;
+  const nextConfig = source
+    ? paperclipConfigSchema.parse(mergePaperclipConfig(source, update))
+    : update;
+
+  if (source && isDeepStrictEqual(source, nextConfig)) return false;
+
+  atomicWriteFile(configPath, JSON.stringify(nextConfig, null, 2) + "\n");
+  return true;
 }
 
 function resolveRepoManagedWorktreesRoot(worktreeRoot: string): string | null {
