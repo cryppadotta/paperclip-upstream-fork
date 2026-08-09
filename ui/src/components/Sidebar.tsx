@@ -22,7 +22,6 @@ import {
   AppWindow,
   MessagesSquare,
   GanttChartSquare,
-  ScrollText,
   LayoutGrid,
 } from "lucide-react";
 import { useState } from "react";
@@ -279,8 +278,8 @@ export function Sidebar() {
           {showApps ? <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} /> : null}
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+          {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/audit" label="Audit" icon={ScrollText} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 

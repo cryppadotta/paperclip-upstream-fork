@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Check,
   ChevronsUpDown,
@@ -37,6 +37,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useCompanyOrder } from "@/hooks/useCompanyOrder";
+import { useSignOut } from "@/hooks/useSignOut";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { cloudStackCreateUrl, cloudStackEnterUrl } from "@/lib/cloudLinks";
 import { queryKeys } from "@/lib/queryKeys";
@@ -71,6 +72,29 @@ function WorkspaceIcon({ company }: { company: Company }) {
  */
 function StackIcon({ displayName }: { displayName: string }) {
   return <CompanyPatternIcon companyName={displayName} className={WORKSPACE_ICON_CLASS} />;
+}
+
+/**
+ * The switcher trigger on a Cloud instance. A Cloud tenant holds exactly one
+ * company and the harness pushes the stack's uploaded workspace icon into
+ * that company's branding, so the company logo is the stack logo here.
+ * The stack rows keep the monogram treatment above.
+ */
+function CurrentStackIcon({
+  displayName,
+  company,
+}: {
+  displayName: string;
+  company: Company | null;
+}) {
+  return (
+    <CompanyPatternIcon
+      companyName={displayName}
+      logoUrl={company?.logoUrl}
+      brandColor={company?.brandColor}
+      className={WORKSPACE_ICON_CLASS}
+    />
+  );
 }
 
 function CloudStackItem({
@@ -175,7 +199,6 @@ function SortableCompanyItem({
 export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps = {}) {
   const [internalOpen, setInternalOpen] = useState(false);
   const [isEditingOrder, setIsEditingOrder] = useState(false);
-  const queryClient = useQueryClient();
   const { companies, selectedCompany, setSelectedCompanyId } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
@@ -234,15 +257,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
     ? currentStack?.displayName ?? cloud?.stackDisplayName ?? cloud?.stackSlug ?? null
     : selectedCompany?.name ?? null;
 
-  const signOutMutation = useMutation({
-    mutationFn: () => authApi.signOut(),
-    onSuccess: async () => {
-      setOpen(false);
-      if (isMobile) setSidebarOpen(false);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
-      await queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    },
-  });
+  const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
 
   function handleOpenChange(nextOpen: boolean) {
     if (!nextOpen) setIsEditingOrder(false);
@@ -336,7 +351,7 @@ export function SidebarCompanyMenu({ open: controlledOpen, onOpenChange }: Sideb
         >
           <span className="flex min-w-0 flex-1 items-center gap-2">
             {isCloud
-              ? currentName ? <StackIcon displayName={currentName} /> : null
+              ? currentName ? <CurrentStackIcon displayName={currentName} company={selectedCompany} /> : null
               : selectedCompany ? <WorkspaceIcon company={selectedCompany} /> : null}
             {/* The header has room for ~110px of name beside the collapse
                 control (~142px on mobile, which hides it) — search moved to
