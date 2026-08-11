@@ -1,4 +1,25 @@
 export {
+  decisionEffectStalenessSchema,
+  decisionOptionStyleSchema,
+  commentOnIssueDecisionEffectSchema,
+  createIssueDecisionEffectSchema,
+  updateIssueStatusDecisionEffectSchema,
+  assignIssueDecisionEffectSchema,
+  cancelIssueTreeDecisionEffectSchema,
+  resolveBlockerDecisionEffectSchema,
+  decisionEffectSchema,
+  decisionInputSchema,
+  decisionOptionSchema,
+  decisionOptionsSchema,
+  decisionInputsSchema,
+  decisionSpecSchema,
+  type DecisionEffectInput,
+  type DecisionOptionInput,
+  type DecisionInputInput,
+  type DecisionSpecInput,
+} from "./decision.js";
+
+export {
   instanceSettingsSchema,
   instanceGeneralSettingsSchema,
   patchInstanceGeneralSettingsSchema,
@@ -38,6 +59,7 @@ export {
 
 export {
   createCompanySchema,
+  interactionResolverGovernanceSchema,
   updateCompanySchema,
   updateCompanyBrandingSchema,
   type CreateCompany,
@@ -164,6 +186,9 @@ export {
   companySkillAuditResultSchema,
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
+  companySkillProjectBrowseRequestSchema,
+  companySkillProjectBrowseEntrySchema,
+  companySkillProjectBrowseResultSchema,
   companySkillProjectScanSkippedSchema,
   companySkillProjectScanConflictSchema,
   companySkillProjectScanResultSchema,
@@ -197,6 +222,7 @@ export {
   type CompanySkillImport,
   type CompanySkillListQuery,
   type CompanySkillProjectScan,
+  type CompanySkillProjectBrowse,
   type CompanySkillCreate,
   type CompanySkillFileUpdate,
   type CompanySkillTestInputCreate,
@@ -256,6 +282,7 @@ export {
 export {
   agentSkillStateSchema,
   agentSkillSyncModeSchema,
+  agentSkillAssignmentModeSchema,
   agentDesiredSkillEntrySchema,
   agentDesiredSkillSelectionSchema,
   agentSkillEntrySchema,
@@ -287,6 +314,8 @@ export {
   trustPresetSchema,
   lowTrustBoundarySchema,
   lowTrustReviewPresetPolicySchema,
+  assignmentAuthorizationPolicySchema,
+  protectedAgentAuthorizationPolicySchema,
   trustAuthorizationPolicySchema,
   sourceTrustArtifactKindSchema,
   sourceTrustMetadataSchema,
@@ -381,6 +410,7 @@ export {
   issueBlockedInboxSeveritySchema,
   issueBlockedInboxStateSchema,
   updateIssueSchema,
+  stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
@@ -439,6 +469,7 @@ export {
   type CreateAcceptedPlanDecomposition,
   type CreateIssueLabel,
   type UpdateIssue,
+  type StalledReviewDecision,
   type IssueExecutionWorkspaceSettings,
   type IssueRecoveryActionReadModel,
   type ResolveIssueRecoveryAction,
@@ -519,6 +550,7 @@ export {
   reconcileExecutionWorkspaceBranchSchema,
   updateExecutionWorkspaceSchema,
   workspaceOverviewQuerySchema,
+  executionWorkspaceDeliveryStateSchema,
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,
@@ -532,7 +564,11 @@ export {
 } from "./execution-workspace.js";
 
 export {
+  normalizedWorkspaceFileAvailabilityQuerySchema,
   resolvedWorkspaceResourceSchema,
+  workspaceFileAvailabilityRequestSchema,
+  workspaceFileAvailabilityResponseSchema,
+  workspaceFileAvailabilityResultSchema,
   workspaceFileListModeSchema,
   workspaceFileListQuerySchema,
   workspaceFileContentSchema,
@@ -542,6 +578,7 @@ export {
   workspaceFileResourceQuerySchema,
   workspaceFileSelectorSchema,
   workspaceFileWorkspaceKindSchema,
+  type WorkspaceFileAvailabilityRequestInput,
   type WorkspaceFileListQuery,
   type WorkspaceFileResourceQuery,
 } from "./workspace-file-resource.js";

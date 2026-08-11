@@ -4,6 +4,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { visualizer } from "rollup-plugin-visualizer";
 import { createUiDevWatchOptions } from "./src/lib/vite-watch";
+import { createApiProxy } from "./src/lib/vite-api-proxy";
+
+const apiProxy = createApiProxy();
 
 // The issue page (IssueDetail) is the perf-critical route. Route
 // splitting via React.lazy carves every page into its own chunk, but that would
@@ -97,11 +100,12 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5173,
     watch: createUiDevWatchOptions(process.cwd()),
-    proxy: {
-      "/api": {
-        target: "http://localhost:3100",
-        ws: true,
-      },
-    },
+    proxy: apiProxy,
+  },
+  preview: {
+    port: 3101,
+    host: "0.0.0.0",
+    allowedHosts: true,
+    proxy: apiProxy,
   },
 }));

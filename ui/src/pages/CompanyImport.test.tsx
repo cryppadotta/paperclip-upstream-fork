@@ -11,14 +11,19 @@ import { CompanyImport } from "./CompanyImport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   importPreview: vi.fn(),
+  importPreviewPackage: vi.fn(),
   importBundle: vi.fn(),
   importBundleAsync: vi.fn(),
+  importBundlePackageAsync: vi.fn(),
   getImportJob: vi.fn(),
   get: vi.fn(),
 }));
 const mockAgentsApi = vi.hoisted(() => ({
   list: vi.fn(),
   resume: vi.fn(),
+}));
+const mockAdaptersApi = vi.hoisted(() => ({
+  list: vi.fn(),
 }));
 const mockRoutinesApi = vi.hoisted(() => ({
   update: vi.fn(),
@@ -50,6 +55,10 @@ vi.mock("../lib/zip", () => ({
 
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
+}));
+
+vi.mock("../api/adapters", () => ({
+  adaptersApi: mockAdaptersApi,
 }));
 
 vi.mock("../api/routines", () => ({
@@ -154,10 +163,49 @@ function buildPreviewResult(): CompanyPortabilityPreviewResult {
   } as unknown as CompanyPortabilityPreviewResult;
 }
 
+/** Preview whose manifest mixes adapters: one claude_local agent and one codex_local agent. */
+function buildMixedAdapterPreviewResult(): CompanyPortabilityPreviewResult {
+  return {
+    include: { company: true, agents: true, projects: true, issues: true },
+    targetCompanyId: null,
+    targetCompanyName: null,
+    collisionStrategy: "rename",
+    selectedAgentSlugs: ["coder", "researcher"],
+    plan: {
+      companyAction: "create",
+      agentPlans: [
+        { slug: "coder", action: "create", plannedName: "Coder", existingAgentId: null, reason: null },
+        { slug: "researcher", action: "create", plannedName: "Researcher", existingAgentId: null, reason: null },
+      ],
+      projectPlans: [],
+      issuePlans: [],
+    },
+    manifest: {
+      agents: [
+        { slug: "coder", name: "Coder", path: "agents/coder/AGENTS.md", adapterType: "claude_local" },
+        { slug: "researcher", name: "Researcher", path: "agents/researcher/AGENTS.md", adapterType: "codex_local" },
+      ],
+      projects: [],
+      issues: [],
+      skills: [],
+      company: null,
+    },
+    files: {
+      ".paperclip.yaml": 'schema: "paperclip/v1"\n',
+      "agents/coder/AGENTS.md": "---\nname: Coder\n---\n\nYou write code.\n",
+      "agents/researcher/AGENTS.md": "---\nname: Researcher\n---\n\nYou research.\n",
+    },
+    envInputs: [],
+    warnings: [],
+    errors: [],
+  } as unknown as CompanyPortabilityPreviewResult;
+}
+
 function buildImportResult(): CompanyPortabilityImportResult {
   return {
     company: { id: "company-2", name: "Imported Test", action: "created" },
     agents: [{ slug: "coder", id: "agent-1", action: "created", name: "Coder", reason: null }],
+    skills: [],
     projects: [],
     routines: [{ slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly Report", status: "paused" }],
     envInputs: [],
@@ -183,12 +231,18 @@ describe("CompanyImport", () => {
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAgentsApi.list.mockResolvedValue([]);
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "codex_local", disabled: false },
+    ]);
     mockAgentsApi.resume.mockResolvedValue({ id: "agent-1", status: "idle" });
     mockRoutinesApi.update.mockResolvedValue({ id: "routine-1", status: "active" });
     mockCompaniesApi.importPreview.mockResolvedValue(buildPreviewResult());
+    mockCompaniesApi.importPreviewPackage.mockResolvedValue(buildPreviewResult());
     // Default async flow: the submit is accepted (202) and the first poll finds
     // the job already finished with the full result. Individual tests override.
     mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+    mockCompaniesApi.importBundlePackageAsync.mockResolvedValue(buildAccepted());
     mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
     mockCompaniesApi.get.mockResolvedValue({ id: "company-2", name: "Imported Test", issuePrefix: "IMP" });
     mockSidebarPreferencesApi.updateProjectOrder.mockResolvedValue(undefined);
@@ -303,9 +357,10 @@ describe("CompanyImport", () => {
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
   });
 
-  it("blocks oversized local packages and sends the declared file count once attachments are dropped", async () => {
-    // A synthetic parsed package: the base64 blob payload alone exceeds the
-    // inline import limit, so no real 60MB zip needs to be built.
+  it("uploads a local .zip as a multipart package and never blocks on inline size", async () => {
+    // Even a package whose inflated inline JSON would blow past the old browser
+    // limit uploads fine now: the raw compressed zip goes up as multipart and is
+    // unzipped server-side, so the inline-size ceiling no longer gates it.
     mockReadZipArchive.mockResolvedValue({
       rootPath: "big-package",
       files: {
@@ -325,7 +380,7 @@ describe("CompanyImport", () => {
 
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     expect(fileInput).toBeTruthy();
-    const file = new File(["stub"], "big-package.zip", { type: "application/zip" });
+    const file = new File(["stub-zip-bytes"], "big-package.zip", { type: "application/zip" });
     Object.defineProperty(file, "arrayBuffer", { value: async () => new ArrayBuffer(0) });
     Object.defineProperty(fileInput!, "files", { value: [file] });
     await act(async () => {
@@ -333,32 +388,33 @@ describe("CompanyImport", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("CLI folder import");
-    expect(container.textContent).toContain("Package too large for browser import");
-    expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
-
-    await clickButton((text) => text === "Continue without attachments");
-
-    expect(container.textContent).not.toContain("CLI folder import");
+    // The inline preflight no longer blocks the zip path.
     expect(container.textContent).not.toContain("Package too large for browser import");
+    expect(container.textContent).not.toContain("CLI folder import");
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
 
     await clickButton((text) => text === "Preview import");
-    // The button label reflects the preview's file count (3); the sent source
-    // is the local package, which is down to two files after the blob is
-    // dropped.
+    // The preview goes up as a multipart package (the raw File), not inline JSON.
+    expect(mockCompaniesApi.importPreviewPackage).toHaveBeenCalledTimes(1);
+    expect(mockCompaniesApi.importPreview).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.importPreviewPackage.mock.calls[0]![0]).toBe(file);
+
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();
 
-    expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledTimes(1);
-    const request = mockCompaniesApi.importBundleAsync.mock.calls[0]![0] as {
-      source: { type: string; files: Record<string, unknown>; expectedFileCount?: number };
-    };
-    expect(request.source.type).toBe("inline");
-    expect(Object.keys(request.source.files).sort()).toEqual([".paperclip.yaml", "COMPANY.md"]);
-    // The client declares the file count so the server can reject a truncated
-    // upload instead of importing a fragment.
-    expect(request.source.expectedFileCount).toBe(2);
+    // The apply also uploads the raw File as a multipart async job — never the
+    // inflated inline body that truncated in transit.
+    expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.importBundlePackageAsync).toHaveBeenCalledTimes(1);
+    const [sentFile, meta] = mockCompaniesApi.importBundlePackageAsync.mock.calls[0]! as [
+      File,
+      { pauseAutomations: boolean; target: { mode: string } },
+    ];
+    expect(sentFile).toBe(file);
+    expect(sentFile.name).toBe("big-package.zip");
+    expect(meta.pauseAutomations).toBe(true);
+    // The bundle itself is never expanded into the request; only the raw zip travels.
+    expect(meta).not.toHaveProperty("source");
   });
 
   it("explains the disabled preview button until a package is chosen", async () => {
@@ -413,7 +469,7 @@ describe("CompanyImport", () => {
     await flushReact();
 
     expect(container.textContent).toContain("Preview failed: stream disconnected");
-    expect(container.textContent).toContain("Retry, or use the CLI folder import");
+    expect(container.textContent).toContain("Retry, or re-export the package without large attachments");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
 
     // Changing the package supersedes the failed request: the error panel resets.
@@ -653,6 +709,87 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import complete");
   });
 
+  it("treats a server-confirmed success without a full result as a soft success and refreshes the company list", async () => {
+    // The server reports the job `succeeded` but retains only the compact
+    // summary (a cloud tenant job, or a board job whose full in-memory result
+    // aged out): status is a confirmed success, `importResult` is gone, and the
+    // summary still carries the company id. That is a success we can no longer
+    // fully read — never a scary failure.
+    mockCompaniesApi.getImportJob.mockResolvedValue({
+      job: { id: "job-1", status: "succeeded", result: { companyId: "company-2" } },
+    });
+
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await renderPageAndImport();
+
+      // Success-leaning panel, not the failure panel.
+      expect(container.textContent).toContain("Import completed");
+      expect(container.textContent).toContain("open it to view it");
+      expect(container.textContent).not.toContain("Import failed");
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
+      // The company list is refreshed so the new company appears in the switcher.
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
+      // The summary's company id still drives navigation into the import.
+      expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2");
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
+
+  it("surfaces a first-poll 404 as an error because the job never existed", async () => {
+    // A 404 on the very first poll — before the client ever saw the job
+    // running — means the id never existed. That stays a hard error.
+    mockCompaniesApi.getImportJob.mockRejectedValue(
+      new ApiError("Import job not found", 404, { error: "Import job not found" }),
+    );
+
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(container.textContent).toContain("Import failed:");
+    expect(container.textContent).toContain("it may have restarted while the import ran");
+    expect(container.textContent).not.toContain("Import completed");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("surfaces a running-then-gone job as an error because the server restarted mid-import", async () => {
+    // The first poll finds the job running; the next poll 404s. A running job is
+    // never dropped by the retention sweep (only settled jobs age out), so its
+    // disappearance means the server restarted mid-import — the import never
+    // reached a confirmed success and may not have finished. Report that
+    // honestly instead of masking a possibly-incomplete import as completed.
+    mockCompaniesApi.getImportJob
+      .mockResolvedValueOnce({ job: { id: "job-1", status: "running" } })
+      .mockRejectedValue(new ApiError("Import job not found", 404, { error: "Import job not found" }));
+
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(container.textContent).toContain("Import failed:");
+    expect(container.textContent).toContain("it may have restarted while the import ran");
+    expect(container.textContent).not.toContain("Import completed");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("refreshes the company list on a full import success", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await renderPageAndImport();
+
+      expect(container.textContent).toContain("Import complete");
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
+
   it("resumes watching a stored import job on mount", async () => {
     // A previous page load persisted a running job; reloading must resume
     // watching it rather than showing the stale form.
@@ -686,5 +823,112 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import complete");
     // The stored entry is cleared once the job settles.
     expect(sessionStorage.getItem("paperclip:company-import-job:company-1:acme/starter")).toBeNull();
+  });
+
+  /** Adapter selects in the picker list, in manifest order (excludes the target/collision selects). */
+  function findAdapterSelects() {
+    return Array.from(container.querySelectorAll("select"))
+      .filter((select) => select.value !== "new" && select.value !== "existing" && select.value !== "rename");
+  }
+
+  async function previewMixedAdapterPackage() {
+    mockCompaniesApi.importPreview.mockResolvedValue(buildMixedAdapterPreviewResult());
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+  }
+
+  function lastImportMeta() {
+    const call = mockCompaniesApi.importBundleAsync.mock.calls.at(-1);
+    expect(call).toBeTruthy();
+    return call![0] as { adapterOverrides?: Record<string, { adapterType: string }> };
+  }
+
+  it("keeps manifest adapters and sends no overrides when the user touches nothing", async () => {
+    await previewMixedAdapterPackage();
+
+    // The picker shows each agent's source adapter, not a coerced CEO default.
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "codex_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    // Untouched agents flow through with no override at all, so the server
+    // applies each agent's manifest adapterType.
+    expect(lastImportMeta().adapterOverrides).toBeUndefined();
+  });
+
+  it("sends an override only for the agent whose adapter the user changed", async () => {
+    await previewMixedAdapterPackage();
+
+    const coderSelect = findAdapterSelects()[0];
+    expect(coderSelect?.value).toBe("claude_local");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+      setter.call(coderSelect!, "codex_local");
+      coderSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(lastImportMeta().adapterOverrides).toEqual({
+      coder: { adapterType: "codex_local" },
+    });
+  });
+
+  it("falls back to the CEO adapter with a visible warning when a manifest adapter is not installed", async () => {
+    // The destination has no codex_local adapter; the CEO fallback (an empty
+    // agent list defaults to claude_local) takes over — never silently.
+    mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", disabled: false }]);
+    await previewMixedAdapterPackage();
+
+    expect(container.textContent).toContain("source adapter codex_local is not installed here");
+    expect(container.textContent).toContain("will use Claude Code");
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "claude_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    // Only the unavailable agent is overridden; the claude_local agent still
+    // carries no override and keeps its manifest adapter.
+    expect(lastImportMeta().adapterOverrides).toEqual({
+      researcher: { adapterType: "claude_local" },
+    });
+  });
+
+  it("picks an installed adapter as the fallback when the CEO adapter is itself unavailable", async () => {
+    // Neither codex_local nor the CEO fallback (claude_local) is installed;
+    // the fallback must be an adapter that actually exists on the
+    // destination, never an unavailable type the server would reject.
+    mockAdaptersApi.list.mockResolvedValue([{ type: "gemini_local", disabled: false }]);
+    await previewMixedAdapterPackage();
+
+    expect(container.textContent).toContain("source adapter codex_local is not installed here");
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["gemini_local", "gemini_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(lastImportMeta().adapterOverrides).toEqual({
+      researcher: { adapterType: "gemini_local" },
+      coder: { adapterType: "gemini_local" },
+    });
+  });
+
+  it("fails open to manifest adapters when the adapter list cannot be read", async () => {
+    // Unknown availability must never coerce: with no adapter list, every
+    // agent keeps its manifest adapter and no fallback warning renders.
+    mockAdaptersApi.list.mockRejectedValue(new ApiError("adapters unavailable", 500, null));
+    await previewMixedAdapterPackage();
+
+    expect(container.textContent).not.toContain("is not installed here");
+    expect(findAdapterSelects().map((select) => select.value)).toEqual(["claude_local", "codex_local"]);
+
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(lastImportMeta().adapterOverrides).toBeUndefined();
   });
 });
