@@ -129,6 +129,15 @@ export async function fetchIssueDetail(
   }));
   const view = options ? await issuesApi.getView(issueRef, options) : await issuesApi.getView(issueRef);
   const refs = collectIssueRefs(issueRef, view.detail);
+  const invalidatedLiveIssue = refs
+    .map((ref) => {
+      const queryKey = queryKeys.issues.detail(ref);
+      const data = queryClient.getQueryData<Issue>(queryKey);
+      return queryClient.getQueryState(queryKey)?.isInvalidated && isCompleteIssueSnapshot(data)
+        ? data
+        : null;
+    })
+    .find((data): data is Issue => data !== null);
   const freshestLiveIssue = refs
     .map((ref) => {
       const queryKey = queryKeys.issues.detail(ref);
@@ -142,9 +151,14 @@ export async function fetchIssueDetail(
     })
     .filter((entry): entry is { data: Issue; dataUpdatedAt: number } => entry !== null)
     .sort((left, right) => right.dataUpdatedAt - left.dataUpdatedAt)[0]?.data;
-  const issue = seedIssueDetailCache(queryClient, freshestLiveIssue ?? view.detail, { issueRef });
+  const issue = seedIssueDetailCache(
+    queryClient,
+    invalidatedLiveIssue ?? freshestLiveIssue ?? view.detail,
+    { issueRef },
+  );
   const hydrateIfNotUpdatedDuringRequest = <T>(queryKey: readonly unknown[], value: T) => {
-    if ((queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0) >= requestedAt) return;
+    const state = queryClient.getQueryState(queryKey);
+    if (state?.isInvalidated || (state?.dataUpdatedAt ?? 0) >= requestedAt) return;
     queryClient.setQueryData(queryKey, value);
   };
   for (const ref of refs) {
