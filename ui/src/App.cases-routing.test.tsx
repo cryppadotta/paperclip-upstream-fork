@@ -100,10 +100,16 @@ async function renderAppAt(container: HTMLElement, path: string) {
   return root;
 }
 
+// Route elements are code-split (PAP-15666), so a route commits only after its
+// dynamic import resolves — the first route touched in a file needs noticeably
+// more than a couple of macrotasks, while later ones resolve straight from the
+// module cache. Poll to a deadline rather than a fixed tick budget so the guard
+// reports a genuinely missing route instead of a chunk that had not landed yet.
 async function waitForRoute(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
     if (container.textContent?.includes(text)) return;
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await new Promise((resolve) => window.setTimeout(resolve, 5));
   }
   expect(container.textContent).toContain(text);
 }
