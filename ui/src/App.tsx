@@ -73,8 +73,6 @@ const CompanyActivity = lazyPage(() => import("./pages/audit/CompanyActivity"), 
 const Inbox = lazyPage(() => import("./pages/Inbox"), "Inbox");
 const WhatNeedsMe = lazyPage(() => import("./pages/WhatNeedsMe"), "WhatNeedsMe");
 const DecisionQueuePage = lazyPage(() => import("./pages/DecisionQueuePage"), "DecisionQueuePage");
-const TrainingInspector = lazyPage(() => import("./pages/Training"), "TrainingInspector");
-const TrainingLibrary = lazyPage(() => import("./pages/Training"), "TrainingLibrary");
 const BoardChat = lazyPage(() => import("./pages/BoardChat"), "BoardChat");
 const CompanySettings = lazyPage(() => import("./pages/CompanySettings"), "CompanySettings");
 const CompanyEnvironments = lazyPage(() => import("./pages/CompanyEnvironments"), "CompanyEnvironments");
@@ -314,10 +312,6 @@ function boardRoutes() {
       ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
-      <Route path="decisions/training" element={<TrainingLibrary />} />
-      <Route path="decisions/training/:id" element={<TrainingInspector />} />
-      <Route path="training" element={<Navigate to="/decisions/training" replace />} />
-      <Route path="training/:id" element={<LegacyTrainingRedirect />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -343,11 +337,6 @@ function AppsConnectEntryRoute() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
-}
-
-function LegacyTrainingRedirect() {
-  const { id } = useParams<{ id: string }>();
-  return <Navigate to={id ? `/decisions/training/${id}` : "/decisions/training"} replace />;
 }
 
 function LegacySkillStudioRedirect() {
