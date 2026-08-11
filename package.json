@@ -66,8 +66,7 @@
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
     "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
-    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs",
-    "perf:issue-detail": "npx playwright test --config tests/perf/issue-detail/playwright.config.ts"
+    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
