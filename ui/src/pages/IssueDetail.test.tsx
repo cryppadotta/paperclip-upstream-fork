@@ -1207,6 +1207,12 @@ describe("IssueDetail", () => {
       "with-routine-executions",
       "live-descendant-summary",
     ] as const;
+    const compactKey = [
+      ...queryKeys.issues.list("company-1"),
+      "compact",
+      "with-routine-executions",
+      "live-descendant-summary",
+    ] as const;
     const touchedKey = [
       ...queryKeys.issues.listTouchedByMe("company-1"),
       "with-routine-executions",
@@ -1214,6 +1220,7 @@ describe("IssueDetail", () => {
     ] as const;
     const unreadKey = queryKeys.issues.listUnreadTouchedByMe("company-1");
     queryClient.setQueryData<Issue[]>(mineKey, [issue, otherIssue]);
+    queryClient.setQueryData<Issue[]>(compactKey, [issue, otherIssue]);
     queryClient.setQueryData<Issue[]>(touchedKey, [issue, otherIssue]);
     queryClient.setQueryData<Issue[]>(unreadKey, [issue, otherIssue]);
 
@@ -1238,6 +1245,7 @@ describe("IssueDetail", () => {
 
     await waitForAssertion(() => {
       expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(compactKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-2"]);
       expect(mockNavigate).not.toHaveBeenCalled();
@@ -1264,8 +1272,14 @@ describe("IssueDetail", () => {
       queryKey: mineKey,
       queryFn: () => staleInboxFetch.promise,
     }).catch(() => undefined);
+    const staleCompactFetch = createDeferred<Issue[]>();
+    const staleCompactRequest = queryClient.fetchQuery({
+      queryKey: compactKey,
+      queryFn: () => staleCompactFetch.promise,
+    }).catch(() => undefined);
     await waitForAssertion(() => {
       expect(queryClient.isFetching({ queryKey: mineKey })).toBe(1);
+      expect(queryClient.isFetching({ queryKey: compactKey })).toBe(1);
     });
 
     await act(async () => {
@@ -1273,10 +1287,13 @@ describe("IssueDetail", () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
     staleInboxFetch.resolve([otherIssue]);
+    staleCompactFetch.resolve([otherIssue]);
     await staleInboxRequest;
+    await staleCompactRequest;
     await waitForAssertion(() => {
       expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
       expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
+      expect(queryClient.getQueryData<Issue[]>(compactKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(touchedKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
       expect(queryClient.getQueryData<Issue[]>(unreadKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
       expect(mockPushToast).toHaveBeenCalledWith({ title: "Task restored to inbox", tone: "success" });
