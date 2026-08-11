@@ -9412,4 +9412,625 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await heartbeat.getRun(runId))?.status).toBe("failed");
   });
 
+  it("reclaims a run that returns to queued between the initial claim and execution", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const requeueRace = tapMatchingQueryOnceAsync(
+      db,
+      /update "heartbeat_runs" set "status"/,
+      async () => {
+        await db
+          .update(heartbeatRuns)
+          .set({ status: "queued", startedAt: null })
+          .where(eq(heartbeatRuns.id, runId));
+      },
+    );
+    const heartbeat = heartbeatService(requeueRace.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(requeueRace.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains an adapter-managed runtime comment failure", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Runtime service was persisted despite the comment fault.",
+      provider: "test",
+      model: "test-model",
+      runtimeServices: [{
+        id: randomUUID(),
+        serviceName: "adapter-preview",
+        scopeType: "run",
+        status: "running",
+        url: "http://127.0.0.1:4322",
+      }],
+    });
+    const commentFault = rejectIssueCommentInsertOnce(
+      db,
+      new Error("synthetic adapter-managed runtime comment fault"),
+    );
+    const heartbeat = heartbeatService(commentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("contains a successful-run summary comment failure", async () => {
+    const { runId } = await seedQueuedIssueRunFixture();
+    const commentFault = rejectIssueCommentInsertOnce(
+      db,
+      new Error("synthetic successful-run summary comment fault"),
+    );
+    const heartbeat = heartbeatService(commentFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(commentFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+  });
+
+  it("records disabled-policy suppression after a max-turn adapter failure", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(agents)
+      .set({
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+            maxTurnContinuation: { enabled: false, maxAttempts: 3, delayMs: 0 },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "Maximum turns exhausted",
+      errorCode: "max_turns_exhausted",
+      resultJson: { stopReason: "max_turns_exhausted" },
+      summary: "Stopped at the configured turn limit.",
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+    const events = await db
+      .select({ message: heartbeatRunEvents.message })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId));
+    expect(events.some((event) => event.message.includes("policy is disabled"))).toBe(true);
+  });
+
+  it("refreshes an existing task session after an adapter rejection", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const taskKey = `adapter-rejection-${randomUUID()}`;
+    await db
+      .update(heartbeatRuns)
+      .set({ contextSnapshot: { issueId, taskId: issueId, taskKey } })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: "codex_local",
+      taskKey,
+      sessionParamsJson: { sessionId: "previous-session" },
+      sessionDisplayId: "previous-session",
+    });
+    mockAdapterExecute.mockRejectedValueOnce(new Error("synthetic rejection with prior session"));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+    const session = await db
+      .select()
+      .from(agentTaskSessions)
+      .where(and(eq(agentTaskSessions.agentId, agentId), eq(agentTaskSessions.taskKey, taskKey)))
+      .then((rows) => rows[0] ?? null);
+    expect(session).toMatchObject({ agentId, taskKey, adapterType: "codex_local" });
+  });
+
+  it("fails a deferred wake whose agent is no longer invokable", async () => {
+    const { companyId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredAgentId = randomUUID();
+    const deferredWakeId = randomUUID();
+    await db.insert(agents).values({
+      id: deferredAgentId,
+      companyId,
+      name: "PausedDeferredAgent",
+      role: "engineer",
+      status: "paused",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId: deferredAgentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake).toMatchObject({
+      status: "failed",
+      error: "Deferred wake could not be promoted: agent is not invokable",
+    });
+  });
+
+  it("cancels a deferred wake when a subtree pause hold activates mid-run", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_blockers_resolved" },
+      },
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.insert(issueTreeHolds).values({
+        companyId,
+        rootIssueId: issueId,
+        mode: "pause",
+        status: "active",
+        reason: "hold activated during execution",
+        releasePolicy: { strategy: "manual" },
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Hold activated before deferred promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const deferredWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake).toMatchObject({
+      status: "cancelled",
+      error: "Deferred wake suppressed by active subtree pause hold",
+    });
+  });
+
+  it("promotes a verified deferred comment wake through an active subtree pause hold", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredWakeId = randomUUID();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId,
+      issueId,
+      authorUserId: "board-user",
+      body: "Please respond while this hold is active.",
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+      payload: {
+        issueId,
+        commentId,
+        _paperclipWakeContext: {
+          issueId,
+          taskId: issueId,
+          commentId,
+          wakeCommentId: commentId,
+          wakeReason: "issue_commented",
+          source: "issue.comment",
+        },
+      },
+    });
+    let holdId: string | null = null;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      const [hold] = await db
+        .insert(issueTreeHolds)
+        .values({
+          companyId,
+          rootIssueId: issueId,
+          mode: "pause",
+          status: "active",
+          reason: "hold activated during execution",
+          releasePolicy: { strategy: "manual" },
+        })
+        .returning({ id: issueTreeHolds.id });
+      holdId = hold.id;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Hold activated before verified deferred promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const deferredWake = await db
+      .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.runId).toBeTruthy();
+    expect(deferredWake?.status).toBe("completed");
+    const promotedRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, deferredWake!.runId!))
+      .then((rows) => rows[0] ?? null);
+    expect(promotedRun?.contextSnapshot).toMatchObject({
+      treeHoldInteraction: true,
+      activeTreeHold: {
+        holdId,
+        rootIssueId: issueId,
+        mode: "pause",
+        interaction: true,
+      },
+    });
+  });
+
+  it("contains skill-test completion failure after result-based run finalization", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, issueId));
+    let adapterCompleted = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      adapterCompleted = true;
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Synthetic result-based skill-test failure",
+        summary: "Skill-test completion fault is contained.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const skillCompletionFault = rejectMatchingQueryWhen(
+      db,
+      /company_skill_test_runs/,
+      () => adapterCompleted,
+      new Error("synthetic successful skill-test completion fault"),
+    );
+    const heartbeat = heartbeatService(skillCompletionFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(skillCompletionFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains skill-test completion failure after an adapter rejection", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(issues).set({ workMode: "skill_test" }).where(eq(issues.id, issueId));
+    let adapterRejected = false;
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      adapterRejected = true;
+      throw new Error("synthetic skill-test adapter rejection");
+    });
+    const skillCompletionFault = rejectMatchingQueryWhen(
+      db,
+      /company_skill_test_runs/,
+      () => adapterRejected,
+      new Error("synthetic rejected skill-test completion fault"),
+    );
+    const heartbeat = heartbeatService(skillCompletionFault.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(skillCompletionFault.wasTriggered()).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains setup-failure interaction retry scheduling failure", async () => {
+    const { runId, issueId } = await seedQueuedIssueRunFixture();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        invocationSource: "automation",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_commented",
+          mutation: "interaction",
+          interactionId: randomUUID(),
+          interactionKind: "request_confirmation",
+          interactionStatus: "accepted",
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const setupFault = rejectMatchingQueryOnce(
+      db,
+      /insert into "agent_runtime_state"/,
+      new Error('Failed to start command "codex" before interaction retry scheduling'),
+    );
+    let retryFaultTriggered = false;
+    const retryFaultDb = new Proxy(setupFault.db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== "transaction" || typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const callStack = new Error().stack ?? "";
+          if (
+            setupFault.wasTriggered() &&
+            !retryFaultTriggered &&
+            callStack.includes("scheduleBoundedRetryForRun")
+          ) {
+            retryFaultTriggered = true;
+            return Promise.reject(new Error("synthetic setup interaction retry transaction fault"));
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    }) as ReturnType<typeof createDb>;
+    const heartbeat = heartbeatService(retryFaultDb);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(setupFault.wasTriggered()).toBe(true);
+    expect(retryFaultTriggered).toBe(true);
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+  });
+
+  it("contains unresolved responsible-user failure during deferred promotion", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const deferredWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      status: "deferred_issue_execution",
+      payload: {
+        issueId,
+        _paperclipWakeContext: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+      },
+    });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, companyId));
+      await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+      await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Responsible-user context was removed before promotion.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    const deferredWake = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId))
+      .then((rows) => rows[0] ?? null);
+    expect(deferredWake?.status).toBe("deferred_issue_execution");
+  });
+
+  it("rejects stranded recovery when no responsible user can own the retry", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+    });
+    await db.update(companies).set({ defaultResponsibleUserId: null }).where(eq(companies.id, companyId));
+    await db.update(issues).set({ responsibleUserId: null }).where(eq(issues.id, issueId));
+    await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    await expect(heartbeat.reconcileStrandedAssignedIssues()).rejects.toMatchObject({ status: 422 });
+  });
+
+  it("filters staged referenced-project failures from resolved additional workspaces", async () => {
+    const { companyId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const referencedProjectId = randomUUID();
+    const referencedWorkspaceId = randomUUID();
+    await db.insert(projects).values({
+      id: referencedProjectId,
+      companyId,
+      name: "Referenced execution project",
+      status: "active",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: referencedWorkspaceId,
+      companyId,
+      projectId: referencedProjectId,
+      name: "Primary",
+      cwd: process.cwd(),
+      isPrimary: true,
+    });
+    await db
+      .update(issues)
+      .set({ description: `Use [@Referenced](project://${referencedProjectId}) for context.` })
+      .where(eq(issues.id, issueId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Referenced workspace staging failure was recorded.",
+      provider: "test",
+      model: "test-model",
+      referencedProjectStagingFailures: [{ projectId: referencedProjectId }],
+    });
+    const previousSyncFlag = process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
+    process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC = "true";
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await waitForRunToSettle(heartbeat, runId);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      if (previousSyncFlag === undefined) delete process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC;
+      else process.env.PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC = previousSyncFlag;
+    }
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("succeeded");
+    expect(mockAdapterExecute.mock.calls.some(([input]) => {
+      const workspaces = (input as { context?: { paperclipWorkspaces?: Array<{ projectId?: string }> } })
+        .context?.paperclipWorkspaces ?? [];
+      return workspaces.some((workspace) => workspace.projectId === referencedProjectId);
+    })).toBe(true);
+  });
+
+  it("suppresses immediate review-participant recovery during agent cancellation", async () => {
+    const { agentId, runId, wakeupRequestId, issueId } = await seedInReviewParticipantRunFixture();
+    const startedAt = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "running", startedAt, updatedAt: startedAt })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "running", claimedAt: startedAt, updatedAt: startedAt })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.update(agents).set({ status: "running" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.cancelActiveForAgent(agentId, "operator cancelled reviewer run");
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("cancelled");
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({ status: "in_review", executionRunId: null });
+    const recoveryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(recoveryRuns).toHaveLength(1);
+  });
+
+  it("keeps a failed review-participant recovery issue in place", async () => {
+    const { companyId, agentId, runId, issueId } = await seedInReviewParticipantRunFixture({
+      wakeReason: "execution_review_participant_recovery",
+      retryReason: "execution_review_participant_recovery",
+    });
+    const sourceIssueId = randomUUID();
+    const sourceRunId = randomUUID();
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original review source",
+      status: "blocked",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+    });
+    await db
+      .update(issues)
+      .set({
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+        originRunId: sourceRunId,
+        originFingerprint: `stranded_issue_recovery:${companyId}:${sourceIssueId}:${sourceRunId}`,
+      })
+      .where(eq(issues.id, issueId));
+    mockAdapterExecute.mockRejectedValueOnce(new Error("synthetic in-place review recovery failure"));
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.drainActiveRunExecutions();
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "blocked",
+      originKind: "stranded_issue_recovery",
+      assigneeAgentId: agentId,
+    });
+    const nestedRecoveries = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originId, issueId)));
+    expect(nestedRecoveries).toHaveLength(0);
+  });
+
 });
