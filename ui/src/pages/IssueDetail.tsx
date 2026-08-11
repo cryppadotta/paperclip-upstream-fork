@@ -2178,6 +2178,7 @@ export function IssueDetail() {
     previousData: InboxIssueCacheSnapshot,
   ) => {
     if (companyId) {
+      await cancelInboxIssueQueries(queryClient, companyId);
       clearLocalInboxArchive(companyId, id);
       restoreIssueToInboxCaches(queryClient, previousData, id);
     }

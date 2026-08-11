@@ -1259,10 +1259,21 @@ describe("IssueDetail", () => {
     });
     expect(archiveToast?.action?.onClick).toEqual(expect.any(Function));
 
+    const staleInboxFetch = createDeferred<Issue[]>();
+    const staleInboxRequest = queryClient.fetchQuery({
+      queryKey: mineKey,
+      queryFn: () => staleInboxFetch.promise,
+    }).catch(() => undefined);
+    await waitForAssertion(() => {
+      expect(queryClient.isFetching({ queryKey: mineKey })).toBe(1);
+    });
+
     await act(async () => {
       archiveToast.action.onClick();
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
+    staleInboxFetch.resolve([otherIssue]);
+    await staleInboxRequest;
     await waitForAssertion(() => {
       expect(mockIssuesApi.unarchiveFromInbox).toHaveBeenCalledWith("issue-1");
       expect(queryClient.getQueryData<Issue[]>(mineKey)?.map((item) => item.id)).toEqual(["issue-1", "issue-2"]);
