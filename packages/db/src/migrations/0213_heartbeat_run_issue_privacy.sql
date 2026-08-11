@@ -80,7 +80,7 @@ BEGIN
   WHERE "scope_kind" = 'issue' AND "issue_id" IS NULL;
 
   IF unresolved_count > 0 THEN
-    RAISE EXCEPTION 'heartbeat run privacy backfill found % unresolved issue-scoped run(s); repair their issue binding before retrying migration 0199', unresolved_count;
+    RAISE EXCEPTION 'heartbeat run privacy backfill found % unresolved issue-scoped run(s); repair their issue binding before retrying migration 0213', unresolved_count;
   END IF;
 END $$;
 --> statement-breakpoint
