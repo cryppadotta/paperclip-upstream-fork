@@ -77,7 +77,7 @@ process.exit(0);
   return baseCwd;
 }
 
-function runProvision(baseCwd, { pathPrefix } = {}) {
+function runProvision(baseCwd, { pathPrefix, publicUrl } = {}) {
   const worktreeCwd = makeTempDir("paperclip-provision-worktree-");
   const worktreesHome = makeTempDir("paperclip-provision-home-");
   const result = spawnSync("bash", [script], {
@@ -91,6 +91,7 @@ function runProvision(baseCwd, { pathPrefix } = {}) {
       PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-test",
       PAPERCLIP_WORKTREES_DIR: worktreesHome,
       PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      ...(publicUrl ? { PAPERCLIP_WORKSPACE_PUBLIC_URL: publicUrl } : {}),
     },
   });
   return { result, worktreeCwd, worktreesHome };
@@ -132,7 +133,9 @@ function readWorktreeConfig(worktreeCwd) {
 
 test("uses the base CLI when its import graph boots", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 0 });
-  const { result, worktreeCwd } = runProvision(baseCwd);
+  const { result, worktreeCwd } = runProvision(baseCwd, {
+    publicUrl: "http://paperclip-dev:45439/",
+  });
 
   assert.equal(result.status, 0, result.stderr);
   const config = readWorktreeConfig(worktreeCwd);
@@ -145,6 +148,8 @@ test("uses the base CLI when its import graph boots", () => {
     initInvocation?.includes("--no-seed"),
     `expected --no-seed in ${JSON.stringify(initInvocation)}`,
   );
+  const env = fs.readFileSync(path.join(worktreeCwd, ".paperclip", ".env"), "utf8");
+  assert.match(env, /PAPERCLIP_PUBLIC_URL="http:\/\/paperclip-dev:45439"/);
 });
 
 test("falls back to an isolated config when the base CLI cannot boot", () => {
@@ -166,6 +171,7 @@ test("falls back to an isolated config when the base CLI cannot boot", () => {
   );
   const env = fs.readFileSync(path.join(worktreeCwd, ".paperclip", ".env"), "utf8");
   assert.match(env, /PAPERCLIP_IN_WORKTREE=true/);
+  assert.match(env, /PAPERCLIP_PUBLIC_URL="http:\/\/paperclip-dev:45439"/);
   assert.ok(fs.existsSync(path.join(worktreeCwd, ".paperclip", "seed-pending")));
 });
 
