@@ -102,6 +102,7 @@ export type AuthorizationDecision = {
     | "allow_local_board"
     | "allow_instance_admin"
     | "allow_explicit_grant"
+    | "allow_user_inbox_policy"
     | "allow_direct_change"
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
@@ -1949,43 +1950,6 @@ export function authorizationService(db: Db) {
         });
       }
 
-      if (targetUserId !== responsibleUserId) {
-        // Cross-user grants are board-admin overrides; user policies only govern responsible-user default access.
-        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
-        if (!grant) {
-          return deny({
-            action: input.action,
-            reason: "deny_missing_grant",
-            explanation: "Missing permission: inbox:manage.",
-          });
-        }
-        if (!(await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
-          return deny({
-            action: input.action,
-            reason: "deny_scope",
-            explanation: "Permission inbox:manage does not cover the requested user.",
-            grant: {
-              principalType: "agent",
-              principalId: actorAgentId,
-              permissionKey: "inbox:manage",
-              scope: grant.scope ?? null,
-            },
-          });
-        }
-        return allow({
-          action: input.action,
-          reason: "allow_explicit_grant",
-          explanation: "Allowed by explicit grant inbox:manage.",
-          inboxPolicyMode: "grant_override",
-          grant: {
-            principalType: "agent",
-            principalId: actorAgentId,
-            permissionKey: "inbox:manage",
-            scope: grant.scope ?? null,
-          },
-        });
-      }
-
       const policy = await db
         .select({
           mode: userInboxAgentPolicies.mode,
@@ -1999,6 +1963,73 @@ export function authorizationService(db: Db) {
           ),
         )
         .then((rows) => rows[0] ?? null);
+
+      if (targetUserId !== responsibleUserId) {
+        // A scoped grant remains an administrative override, including over a
+        // disabled user policy. Otherwise, a materialized target-user policy is
+        // explicit consent for agents selected in the profile control. The
+        // implicit default-open policy remains responsible-user-only so an
+        // absent row never becomes a company-wide cross-user grant.
+        const grant = await findGrant(companyId, "agent", actorAgentId, "inbox:manage");
+        if (grant && (await scopeAllows(db, companyId, grant.scope, { userId: targetUserId }))) {
+          return allow({
+            action: input.action,
+            reason: "allow_explicit_grant",
+            explanation: "Allowed by explicit grant inbox:manage.",
+            inboxPolicyMode: "grant_override",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+
+        if (policy?.mode === "disabled") {
+          return deny({
+            action: input.action,
+            reason: "inbox_management_disabled",
+            explanation: `Inbox management is disabled for user ${targetUserId}.`,
+          });
+        }
+        if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
+          return deny({
+            action: input.action,
+            reason: "inbox_agent_not_allowed",
+            explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+          });
+        }
+        if (policy?.mode === "open" || policy?.mode === "allowlist") {
+          return allow({
+            action: input.action,
+            reason: "allow_user_inbox_policy",
+            inboxPolicyMode: policy.mode,
+            explanation: policy.mode === "allowlist"
+              ? "Allowed by the target user's inbox agent allowlist."
+              : "Allowed by the target user's saved open inbox policy.",
+          });
+        }
+
+        if (grant) {
+          return deny({
+            action: input.action,
+            reason: "deny_scope",
+            explanation: "Permission inbox:manage does not cover the requested user.",
+            grant: {
+              principalType: "agent",
+              principalId: actorAgentId,
+              permissionKey: "inbox:manage",
+              scope: grant.scope ?? null,
+            },
+          });
+        }
+        return deny({
+          action: input.action,
+          reason: "deny_missing_grant",
+          explanation: "Missing permission: inbox:manage.",
+        });
+      }
 
       if (policy?.mode === "disabled") {
         return deny({
