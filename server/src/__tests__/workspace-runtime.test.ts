@@ -5981,6 +5981,70 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     }
   }, 20_000);
 
+  it("keeps one configured row failed after repeated readiness failures", async () => {
+    const fixture = await createRuntimeFixture();
+    const cleanupRuntimeHome = await createRuntimeHome();
+    const workspace = fixture.workspaces[0]!;
+    const port = await findFreePort();
+    const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.exit(1)")}`;
+    const config = fixedPortRuntimeConfig(port, command);
+
+    try {
+      await expect(startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config,
+        adapterEnv: {},
+      })).rejects.toThrow(/failed to start runtime service|exited before readiness/i);
+
+      const firstRows = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id));
+      expect(firstRows).toEqual([
+        expect.objectContaining({
+          serviceName: "web",
+          command,
+          status: "failed",
+          healthStatus: "unhealthy",
+        }),
+      ]);
+
+      await expect(startRuntimeServicesForWorkspaceControl({
+        db,
+        actor: fixture.actor,
+        issue: null,
+        workspace: fixture.realizedWorkspace(workspace),
+        executionWorkspaceId: workspace.id,
+        config,
+        adapterEnv: {},
+      })).rejects.toThrow(/failed to start runtime service|exited before readiness/i);
+
+      const retryRows = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.executionWorkspaceId, workspace.id));
+      expect(retryRows).toEqual([
+        expect.objectContaining({
+          id: firstRows[0]!.id,
+          status: "failed",
+          healthStatus: "unhealthy",
+        }),
+      ]);
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      }).catch(() => undefined);
+      await cleanupRuntimeHome();
+      await fixture.cleanup();
+    }
+  }, 20_000);
+
   it("returns a bounded structured conflict and exposes only same-company workspace references", async () => {
     const fixture = await createRuntimeFixture({
       workspaceModes: ["isolated_workspace", "isolated_workspace"],

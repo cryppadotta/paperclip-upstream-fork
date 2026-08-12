@@ -186,6 +186,24 @@ const runtimeProvisionByWorkspace = new Map<string, Promise<void>>();
 const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
 export const WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS = 32;
 const ACTIVE_RUNTIME_PORT_RESERVATION_STATUSES = ["provisioning", "starting", "running"] as const;
+const RUNTIME_SERVICE_FAILURE_RECORD_PROPERTY = "paperclipRuntimeServiceFailureRecord";
+
+function attachRuntimeServiceFailureRecord(error: unknown, record: RuntimeServiceRecord) {
+  const target = error instanceof Error ? error : new Error(String(error));
+  Object.defineProperty(target, RUNTIME_SERVICE_FAILURE_RECORD_PROPERTY, {
+    configurable: true,
+    enumerable: false,
+    value: record,
+    writable: true,
+  });
+  return target;
+}
+
+function getRuntimeServiceFailureRecord(error: unknown): RuntimeServiceRecord | null {
+  if (!(error instanceof Error)) return null;
+  const value = (error as unknown as Record<string, unknown>)[RUNTIME_SERVICE_FAILURE_RECORD_PROPERTY];
+  return value && typeof value === "object" ? value as RuntimeServiceRecord : null;
+}
 
 class RuntimeServicePortBindCollision extends Error {
   readonly port: number;
@@ -905,7 +923,12 @@ async function findActiveRuntimeServiceBlockingDirtyQuarantine(input: {
       scopeType: workspaceRuntimeServices.scopeType,
     })
     .from(workspaceRuntimeServices)
-    .where(and(serviceScopeCondition, ne(workspaceRuntimeServices.status, "stopped")))
+    .where(
+      and(
+        serviceScopeCondition,
+        inArray(workspaceRuntimeServices.status, [...ACTIVE_RUNTIME_PORT_RESERVATION_STATUSES]),
+      ),
+    )
     .orderBy(desc(workspaceRuntimeServices.updatedAt), desc(workspaceRuntimeServices.createdAt))
     .limit(1);
   return service ?? null;
@@ -4153,7 +4176,7 @@ async function findStoppedRuntimeServiceReuseCandidate(input: {
           eq(workspaceRuntimeServices.companyId, input.companyId),
           eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
           eq(workspaceRuntimeServices.provider, "local_process"),
-          eq(workspaceRuntimeServices.status, "stopped"),
+          inArray(workspaceRuntimeServices.status, ["stopped", "failed"]),
         ),
       )
       .orderBy(desc(workspaceRuntimeServices.updatedAt))
@@ -4175,7 +4198,7 @@ async function findStoppedRuntimeServiceReuseCandidate(input: {
       and(
         eq(workspaceRuntimeServices.companyId, input.companyId),
         eq(workspaceRuntimeServices.provider, "local_process"),
-        eq(workspaceRuntimeServices.status, "stopped"),
+        inArray(workspaceRuntimeServices.status, ["stopped", "failed"]),
         eq(workspaceRuntimeServices.scopeType, input.scopeType),
         scopeIdCondition,
         eq(workspaceRuntimeServices.serviceName, input.serviceName),
@@ -4770,7 +4793,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         processGroupId: child.pid,
       });
     }
-    record.status = "stopped";
+    record.status = "failed";
     record.healthStatus = "unhealthy";
     record.lastUsedAt = new Date().toISOString();
     record.stoppedAt = new Date().toISOString();
@@ -4856,28 +4879,54 @@ async function startLocalRuntimeService(
   );
   const retryBindCollisions = fixedPortFallbackEnabled || portType === "auto";
   const deferReadiness = Boolean(options?.deferReadiness && !fixedPortFallbackEnabled);
+  const identity = resolveRuntimeServiceReuseIdentity({
+    service: input.service,
+    workspace: input.workspace,
+    agent: input.agent,
+    issue: input.issue,
+    adapterEnv: input.adapterEnv,
+    scopeType: input.scopeType,
+    scopeId: input.scopeId,
+  });
+  if (!identity.command) throw new Error(`Runtime service "${identity.serviceName}" is missing command`);
+  let currentAttemptRecord = provisioningRecord ?? createProvisioningRuntimeServiceRecord(input, identity);
+  if (!provisioningRecord) {
+    currentAttemptRecord.status = "starting";
+    await persistRuntimeServiceRecord(input.db, currentAttemptRecord);
+  }
+  let retryRuntimeServiceId = input.runtimeServiceId;
 
   try {
     for (let attempt = 0; attempt < WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS; attempt += 1) {
       try {
+        const previousAttemptRecord = currentAttemptRecord;
         started = await spawnLocalRuntimeService({
           ...input,
           excludedPorts,
-          runtimeServiceId: provisioningRecord?.id ?? input.runtimeServiceId,
+          runtimeServiceId: provisioningRecord?.id ?? retryRuntimeServiceId,
         });
+        retryRuntimeServiceId = started.record.id;
+        currentAttemptRecord = started.record;
         if (runtimeProvisionCommand) {
           await persistRuntimeServiceRecord(input.db, started.record);
         }
-        if (provisioningRecord && started.record.id !== provisioningRecord.id && input.db) {
+        if (started.record.id !== previousAttemptRecord.id && input.db) {
           await input.db
             .delete(workspaceRuntimeServices)
-            .where(eq(workspaceRuntimeServices.id, provisioningRecord.id));
+            .where(eq(workspaceRuntimeServices.id, previousAttemptRecord.id));
         }
         if (!deferReadiness) {
           await started.readiness;
         }
         return started;
       } catch (error) {
+        const failedRecord = started?.record ?? currentAttemptRecord;
+        const nowIso = new Date().toISOString();
+        failedRecord.status = "failed";
+        failedRecord.healthStatus = "unhealthy";
+        failedRecord.lastUsedAt = nowIso;
+        failedRecord.stoppedAt = nowIso;
+        await persistRuntimeServiceRecord(input.db, failedRecord).catch(() => undefined);
         if (!(error instanceof RuntimeServicePortBindCollision) || !retryBindCollisions) throw error;
         excludedPorts.add(error.port);
         started = null;
@@ -4899,15 +4948,15 @@ async function startLocalRuntimeService(
       remediation: "Retry the start or configure a different runtime service port.",
     });
   } catch (error) {
-    if (!started && provisioningRecord && provisioningRecord.status === "starting") {
+    if (!started && currentAttemptRecord.status !== "failed") {
       const nowIso = new Date().toISOString();
-      provisioningRecord.status = "failed";
-      provisioningRecord.healthStatus = "unhealthy";
-      provisioningRecord.lastUsedAt = nowIso;
-      provisioningRecord.stoppedAt = nowIso;
-      await persistRuntimeServiceRecord(input.db, provisioningRecord).catch(() => undefined);
+      currentAttemptRecord.status = "failed";
+      currentAttemptRecord.healthStatus = "unhealthy";
+      currentAttemptRecord.lastUsedAt = nowIso;
+      currentAttemptRecord.stoppedAt = nowIso;
+      await persistRuntimeServiceRecord(input.db, currentAttemptRecord).catch(() => undefined);
     }
-    throw error;
+    throw attachRuntimeServiceFailureRecord(error, currentAttemptRecord);
   }
 }
 
@@ -4921,12 +4970,13 @@ function scheduleIdleStop(record: RuntimeServiceRecord) {
   }, idleSeconds * 1000);
 }
 
-async function stopRuntimeService(serviceId: string) {
+async function stopRuntimeService(serviceId: string, options?: { preserveFailure?: boolean }) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
-  record.status = "stopped";
-  record.healthStatus = "unknown";
+  const preserveFailure = options?.preserveFailure === true && record.status === "failed";
+  record.status = preserveFailure ? "failed" : "stopped";
+  record.healthStatus = preserveFailure ? "unhealthy" : "unknown";
   record.lastUsedAt = new Date().toISOString();
   record.stoppedAt = new Date().toISOString();
   runtimeServicesById.delete(serviceId);
@@ -5488,7 +5538,16 @@ export async function startRuntimeServicesForWorkspaceControl(
     });
   } catch (error) {
     for (const serviceId of startBatch.startedServiceIds) {
-      await stopRuntimeService(serviceId).catch(() => undefined);
+      await stopRuntimeService(serviceId, { preserveFailure: true }).catch(() => undefined);
+    }
+    const failedRecord = getRuntimeServiceFailureRecord(error);
+    if (failedRecord) {
+      const nowIso = new Date().toISOString();
+      failedRecord.status = "failed";
+      failedRecord.healthStatus = "unhealthy";
+      failedRecord.lastUsedAt = nowIso;
+      failedRecord.stoppedAt = nowIso;
+      await persistRuntimeServiceRecord(input.db, failedRecord).catch(() => undefined);
     }
     if (preparedProvisioning && startBatch.startedServiceIds.length === 0) {
       const nowIso = new Date().toISOString();
