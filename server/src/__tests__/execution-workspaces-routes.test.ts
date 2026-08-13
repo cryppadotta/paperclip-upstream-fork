@@ -305,6 +305,88 @@ describe.sequential("execution workspace routes", () => {
     expect(JSON.stringify(res.body)).not.toContain("/secret/workspace/path");
   });
 
+  it("derives configured service identity when a stop targets only a runtime service id", async () => {
+    const runtimeServiceId = "11111111-1111-4111-8111-111111111111";
+    const runtimeConfig = {
+      services: [
+        { name: "web", command: "pnpm dev" },
+        { name: "worker", command: "pnpm worker" },
+      ],
+    };
+    const workspace = {
+      id: "workspace-1",
+      companyId: "company-1",
+      projectId: null,
+      projectWorkspaceId: null,
+      sourceIssueId: null,
+      name: "Targeted runtime stop",
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      cwd: "/tmp/targeted-runtime-stop",
+      repoUrl: null,
+      baseRef: "master",
+      branchName: "targeted-runtime-stop",
+      providerType: "git_worktree",
+      providerRef: "/tmp/targeted-runtime-stop",
+      config: {
+        workspaceRuntime: runtimeConfig,
+        desiredState: "running",
+        serviceStates: { "0": "running", "1": "running" },
+      },
+      effectiveRuntimeConfig: {
+        workspaceRuntime: runtimeConfig,
+        source: { type: "execution_workspace", id: "workspace-1" },
+        desiredState: "running",
+        serviceStates: { "0": "running", "1": "running" },
+      },
+      runtimeServices: [{
+        id: runtimeServiceId,
+        serviceName: "worker",
+        status: "running",
+        configIndex: 1,
+        workspaceCommandId: "service:worker",
+      }],
+      metadata: {
+        config: {
+          workspaceRuntime: runtimeConfig,
+          desiredState: "running",
+          serviceStates: { "0": "running", "1": "running" },
+        },
+      },
+    };
+    mockExecutionWorkspaceService.getById.mockResolvedValue(workspace);
+    mockExecutionWorkspaceService.update.mockResolvedValue(workspace);
+    const recordOperation = vi.fn(async (input: { run: () => Promise<Record<string, unknown>> }) => ({
+      id: "operation-1",
+      ...await input.run(),
+    }));
+    mockWorkspaceOperationService.createRecorder.mockReturnValue({ recordOperation });
+
+    const res = await request(createApp())
+      .post("/api/execution-workspaces/workspace-1/runtime-services/stop")
+      .send({ runtimeServiceId });
+
+    expect(res.status).toBe(200);
+    expect(recordOperation).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        runtimeServiceId,
+        serviceIndex: 1,
+        workspaceCommandId: "service:worker",
+      }),
+    }));
+    expect(mockWorkspaceRuntimeTeardown.stopRuntimeServicesForExecutionWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeServiceId }),
+    );
+    expect(mockExecutionWorkspaceService.update).toHaveBeenCalledWith("workspace-1", {
+      metadata: expect.objectContaining({
+        config: expect.objectContaining({
+          desiredState: "running",
+          serviceStates: { "0": "running", "1": "stopped" },
+        }),
+      }),
+    });
+  });
+
   it.each([
     ["forward", { mode: "forward" }],
     ["override", { mode: "override", reason: "operator break-glass" }],

@@ -75,6 +75,7 @@ type ProjectedWorkspaceRuntimeServiceRow = WorkspaceRuntimeServiceRow & {
 type ProjectedWorkspaceRuntimeOperationResult = {
   serviceIndex: number | null;
   workspaceCommandId: string | null;
+  runtimeServiceId: string | null;
   occurredAt: Date;
   evidence: WorkspaceRuntimeFailureEvidence | null;
 };
@@ -1199,6 +1200,7 @@ async function loadLatestRuntimeOperationResultsByExecutionWorkspace(
         executionWorkspaceId: workspaceOperations.executionWorkspaceId,
         serviceIndex: serviceIndexExpression,
         workspaceCommandId: sql<string | null>`${workspaceOperations.metadata}->>'workspaceCommandId'`,
+        runtimeServiceId: sql<string | null>`${workspaceOperations.metadata}->>'runtimeServiceId'`,
         action: actionExpression,
         status: workspaceOperations.status,
         metadata: workspaceOperations.metadata,
@@ -1242,6 +1244,7 @@ async function loadLatestRuntimeOperationResultsByExecutionWorkspace(
     existing.push({
       serviceIndex,
       workspaceCommandId: operation.workspaceCommandId,
+      runtimeServiceId: operation.runtimeServiceId,
       occurredAt: operation.finishedAt ?? operation.startedAt,
       evidence: operation.status === "failed"
         && (operation.action === "start" || operation.action === "restart")
@@ -1394,7 +1397,11 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
     const runtimeServices = (runtimeRowsByWorkspaceId.get(row.id) ?? []).map((runtimeService) => {
       if (runtimeService.configIndex === undefined || runtimeService.configIndex === null) return runtimeService;
       const candidates = operationResults.filter((result) =>
-        (result.serviceIndex === runtimeService.configIndex || result.serviceIndex === null)
+        (
+          result.serviceIndex === runtimeService.configIndex
+          || (result.serviceIndex === null && result.runtimeServiceId === null)
+          || result.runtimeServiceId === runtimeService.id
+        )
         && (!result.workspaceCommandId || result.workspaceCommandId === runtimeService.workspaceCommandId),
       );
       const latestFailure = candidates

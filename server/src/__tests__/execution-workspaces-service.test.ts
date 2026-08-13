@@ -4043,7 +4043,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
     const failedServiceId = randomUUID();
+    const failedWorkerServiceId = randomUUID();
     const failedOperationId = randomUUID();
+    const failedWorkerOperationId = randomUUID();
     const failedAt = new Date("2026-08-11T14:00:00.000Z");
 
     await db.insert(companies).values([
@@ -4077,7 +4079,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       metadata: {
         runtimeConfig: {
           workspaceRuntime: {
-            services: [{ name: "web", command: "pnpm dev", reuseScope: "execution_workspace" }],
+            services: [
+              { name: "web", command: "pnpm dev", reuseScope: "execution_workspace" },
+              { name: "worker", command: "pnpm worker", reuseScope: "execution_workspace" },
+            ],
           },
           desiredState: "stopped",
         },
@@ -4138,6 +4143,24 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         healthStatus: "unhealthy",
         updatedAt: failedAt,
       },
+      {
+        id: failedWorkerServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        executionWorkspaceId,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+        serviceName: "worker",
+        status: "failed",
+        lifecycle: "shared",
+        reuseKey: "inherited-worker",
+        command: "pnpm worker",
+        cwd: "/tmp/inherited-runtime-projection/isolated",
+        provider: "local_process",
+        healthStatus: "unhealthy",
+        updatedAt: failedAt,
+      },
     ]);
     await db.insert(workspaceOperations).values([
       {
@@ -4156,6 +4179,27 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
             message: "Workspace runtime service failed to start.",
             remediation: "Review the workspace operation log and retry.",
             details: { port: 3100 },
+          },
+        },
+        startedAt: failedAt,
+        finishedAt: failedAt,
+      },
+      {
+        id: failedWorkerOperationId,
+        companyId,
+        executionWorkspaceId,
+        phase: "workspace_provision",
+        command: "pnpm worker",
+        status: "failed",
+        metadata: {
+          action: "start",
+          serviceIndex: 1,
+          workspaceCommandId: "service:worker",
+          runtimeServiceId: failedWorkerServiceId,
+          failureEvidence: {
+            code: "workspace_runtime_start_failed",
+            message: "Worker failed to start.",
+            remediation: "Review the worker operation log and retry.",
           },
         },
         startedAt: failedAt,
@@ -4186,7 +4230,10 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(workspace?.effectiveRuntimeConfig).toEqual({
       workspaceRuntime: {
-        services: [{ name: "web", command: "pnpm dev", reuseScope: "execution_workspace" }],
+        services: [
+          { name: "web", command: "pnpm dev", reuseScope: "execution_workspace" },
+          { name: "worker", command: "pnpm worker", reuseScope: "execution_workspace" },
+        ],
       },
       source: { type: "project_workspace", id: projectWorkspaceId },
       desiredState: "running",
@@ -4209,6 +4256,17 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           failedAt,
         },
       }),
+      expect.objectContaining({
+        id: failedWorkerServiceId,
+        status: "failed",
+        actualState: "failed",
+        desiredState: "running",
+        workspaceCommandId: "service:worker",
+        latestFailure: expect.objectContaining({
+          operationId: failedWorkerOperationId,
+          message: "Worker failed to start.",
+        }),
+      }),
     ]);
 
     const recoveredAt = new Date("2026-08-11T16:00:00.000Z");
@@ -4220,6 +4278,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       status: "succeeded",
       metadata: {
         action: "stop",
+        runtimeServiceId: failedServiceId,
       },
       startedAt: recoveredAt,
       finishedAt: recoveredAt,
@@ -4241,6 +4300,15 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         status: "stopped",
         actualState: "stopped",
         latestFailure: null,
+      }),
+      expect.objectContaining({
+        id: failedWorkerServiceId,
+        status: "failed",
+        actualState: "failed",
+        latestFailure: expect.objectContaining({
+          operationId: failedWorkerOperationId,
+          message: "Worker failed to start.",
+        }),
       }),
     ]);
   });
