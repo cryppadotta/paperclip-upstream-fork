@@ -4210,6 +4210,39 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
         },
       }),
     ]);
+
+    const recoveredAt = new Date("2026-08-11T16:00:00.000Z");
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      phase: "workspace_provision",
+      command: "pnpm dev",
+      status: "succeeded",
+      metadata: {
+        action: "stop",
+      },
+      startedAt: recoveredAt,
+      finishedAt: recoveredAt,
+    });
+    await db
+      .update(workspaceRuntimeServices)
+      .set({
+        status: "stopped",
+        healthStatus: "unknown",
+        updatedAt: recoveredAt,
+      })
+      .where(eq(workspaceRuntimeServices.id, failedServiceId));
+
+    const recoveredWorkspace = await svc.getById(executionWorkspaceId);
+
+    expect(recoveredWorkspace?.runtimeServices).toEqual([
+      expect.objectContaining({
+        id: failedServiceId,
+        status: "stopped",
+        actualState: "stopped",
+        latestFailure: null,
+      }),
+    ]);
   });
 
   it("returns a bounded company-scoped workspace overview with service and linked issue summaries", async () => {

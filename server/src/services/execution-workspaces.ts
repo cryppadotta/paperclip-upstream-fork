@@ -72,10 +72,11 @@ type ProjectedWorkspaceRuntimeServiceRow = WorkspaceRuntimeServiceRow & {
   desiredState?: WorkspaceRuntimeDesiredState | null;
   latestFailure?: WorkspaceRuntimeFailureEvidence | null;
 };
-type ProjectedWorkspaceRuntimeFailure = {
+type ProjectedWorkspaceRuntimeOperationResult = {
   serviceIndex: number | null;
   workspaceCommandId: string | null;
-  evidence: WorkspaceRuntimeFailureEvidence;
+  occurredAt: Date;
+  evidence: WorkspaceRuntimeFailureEvidence | null;
 };
 const execFileAsync = promisify(execFile);
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
@@ -1172,7 +1173,7 @@ function readWorkspaceRuntimeFailureEvidence(
   };
 }
 
-async function loadLatestRuntimeFailuresByExecutionWorkspace(
+async function loadLatestRuntimeOperationResultsByExecutionWorkspace(
   db: RuntimeServiceReadDb,
   companyId: string,
   runtimeRowsByWorkspaceId: Map<string, ProjectedWorkspaceRuntimeServiceRow[]>,
@@ -1183,7 +1184,7 @@ async function loadLatestRuntimeFailuresByExecutionWorkspace(
       : [{ executionWorkspaceId, configIndex: row.configIndex }]),
   );
   if (configuredRows.length === 0) {
-    return new Map<string, ProjectedWorkspaceRuntimeFailure[]>();
+    return new Map<string, ProjectedWorkspaceRuntimeOperationResult[]>();
   }
 
   const executionWorkspaceIds = [...new Set(configuredRows.map((row) => row.executionWorkspaceId))];
@@ -1198,6 +1199,8 @@ async function loadLatestRuntimeFailuresByExecutionWorkspace(
         executionWorkspaceId: workspaceOperations.executionWorkspaceId,
         serviceIndex: serviceIndexExpression,
         workspaceCommandId: sql<string | null>`${workspaceOperations.metadata}->>'workspaceCommandId'`,
+        action: actionExpression,
+        status: workspaceOperations.status,
         metadata: workspaceOperations.metadata,
         startedAt: workspaceOperations.startedAt,
         finishedAt: workspaceOperations.finishedAt,
@@ -1208,8 +1211,16 @@ async function loadLatestRuntimeFailuresByExecutionWorkspace(
       and(
         eq(workspaceOperations.companyId, companyId),
         inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
-        eq(workspaceOperations.status, "failed"),
-        inArray(actionExpression, ["start", "restart"]),
+        or(
+          and(
+            eq(workspaceOperations.status, "failed"),
+            inArray(actionExpression, ["start", "restart"]),
+          ),
+          and(
+            eq(workspaceOperations.status, "succeeded"),
+            inArray(actionExpression, ["start", "restart", "stop"]),
+          ),
+        ),
         or(inArray(serviceIndexExpression, serviceIndexes), isNull(serviceIndexExpression)),
       ),
     )
@@ -1220,7 +1231,7 @@ async function loadLatestRuntimeFailuresByExecutionWorkspace(
       desc(workspaceOperations.createdAt),
     );
 
-  const result = new Map<string, ProjectedWorkspaceRuntimeFailure[]>();
+  const result = new Map<string, ProjectedWorkspaceRuntimeOperationResult[]>();
   for (const operation of operations) {
     if (!operation.executionWorkspaceId) continue;
     const serviceIndex = operation.serviceIndex === null
@@ -1231,7 +1242,11 @@ async function loadLatestRuntimeFailuresByExecutionWorkspace(
     existing.push({
       serviceIndex,
       workspaceCommandId: operation.workspaceCommandId,
-      evidence: readWorkspaceRuntimeFailureEvidence(operation),
+      occurredAt: operation.finishedAt ?? operation.startedAt,
+      evidence: operation.status === "failed"
+        && (operation.action === "start" || operation.action === "restart")
+        ? readWorkspaceRuntimeFailureEvidence(operation)
+        : null,
     });
     result.set(operation.executionWorkspaceId, existing);
   }
@@ -1368,22 +1383,22 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
     runtimeRowsByWorkspaceId.set(row.id, effectiveRows);
   }
 
-  const failuresByWorkspaceId = await loadLatestRuntimeFailuresByExecutionWorkspace(
+  const operationResultsByWorkspaceId = await loadLatestRuntimeOperationResultsByExecutionWorkspace(
     db,
     companyId,
     runtimeRowsByWorkspaceId,
   );
 
   return new Map(rows.map((row) => {
-    const failures = failuresByWorkspaceId.get(row.id) ?? [];
+    const operationResults = operationResultsByWorkspaceId.get(row.id) ?? [];
     const runtimeServices = (runtimeRowsByWorkspaceId.get(row.id) ?? []).map((runtimeService) => {
       if (runtimeService.configIndex === undefined || runtimeService.configIndex === null) return runtimeService;
-      const candidates = failures.filter((failure) =>
-        (failure.serviceIndex === runtimeService.configIndex || failure.serviceIndex === null)
-        && (!failure.workspaceCommandId || failure.workspaceCommandId === runtimeService.workspaceCommandId),
+      const candidates = operationResults.filter((result) =>
+        (result.serviceIndex === runtimeService.configIndex || result.serviceIndex === null)
+        && (!result.workspaceCommandId || result.workspaceCommandId === runtimeService.workspaceCommandId),
       );
       const latestFailure = candidates
-        .sort((left, right) => right.evidence.failedAt.getTime() - left.evidence.failedAt.getTime())[0]
+        .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())[0]
         ?.evidence ?? null;
       return { ...runtimeService, latestFailure };
     });
