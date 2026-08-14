@@ -1686,6 +1686,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const created = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
       payload: { version: 1, prompt: "Approve this review?" },
+      resolverPolicy: "anyone",
     }, {
       userId: "local-board",
     });
@@ -1698,7 +1699,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, created.id, {}, {
       agentId: resolverAgentId,
       runId: resolverRunId,
-      reviewVerdictAuthorized: true,
+      resolverPolicyRestriction: "anyone",
     });
 
     expect(accepted.interaction).toMatchObject({
@@ -1736,6 +1737,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const createdByResolver = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_confirmation",
       payload: { version: 1, prompt: "Approve your own request?" },
+      resolverPolicy: "anyone",
     }, {
       userId: "local-board",
     });
@@ -1750,6 +1752,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         prompt: "Approve the same run?",
         options: [{ id: "approve", label: "Approve" }],
       },
+      resolverPolicy: "anyone",
     }, {
       userId: "local-board",
     });
@@ -1761,13 +1764,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const actor = {
       agentId: resolverAgentId,
       runId: resolverRunId,
-      reviewVerdictAuthorized: true,
+      resolverPolicyRestriction: "not_creator",
     };
     await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
-      .rejects.toThrow("Agents cannot resolve interactions they created");
+      .rejects.toThrow("requires a resolver other than its creator or creating run");
     await expect(interactionsSvc.acceptInteraction(issue, createdBySameRun.id, {
       selectedOptionIds: ["approve"],
-    }, actor)).rejects.toThrow("Agents cannot resolve interactions created by the same run");
+    }, actor)).rejects.toThrow("requires a resolver other than its creator or creating run");
   });
 
   it("accepts request_checkbox_confirmation interactions with selected option ids", async () => {
@@ -2827,16 +2830,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       latestRevisionNumber: 2,
     });
 
-    const accepted = await interactionsSvc.acceptInteraction({
+    await expect(interactionsSvc.acceptInteraction({
       id: issueId,
       companyId,
       goalId,
       projectId: null,
     }, created.id, {}, {
       userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "interaction_stale_target" },
     });
 
-    expect(accepted.interaction).toMatchObject({
+    const expired = await interactionsSvc.getForIssue({ id: issueId, companyId }, created.id);
+    expect(expired).toMatchObject({
       id: created.id,
       status: "expired",
       payload: {
@@ -3088,17 +3095,20 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       latestRevisionNumber: 2,
     });
 
-    const stale = await interactionsSvc.submitItemVerdicts({
+    await expect(interactionsSvc.submitItemVerdicts({
       id: issueId,
       companyId,
     }, created.id, {
       verdicts: [{ id: "docs", verdict: "approve" }],
     }, {
       userId: "local-board",
+    })).rejects.toMatchObject({
+      status: 409,
+      details: { code: "interaction_stale_target" },
     });
 
-    expect(stale.newlyResolvedItemIds).toEqual([]);
-    expect(stale.interaction).toMatchObject({
+    const stale = await interactionsSvc.getForIssue({ id: issueId, companyId }, created.id);
+    expect(stale).toMatchObject({
       id: created.id,
       status: "expired",
       payload: {

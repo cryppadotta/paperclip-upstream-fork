@@ -1179,9 +1179,26 @@ export const requestItemVerdictsResultItemSchema = z.object({
   id: z.string().trim().min(1).max(120),
   verdict: requestItemVerdictValueSchema,
   reason: z.string().trim().max(4000).nullable().optional(),
-  resolvedByUserId: z.string().trim().min(1).max(255),
+  resolvedByUserId: z.string().trim().min(1).max(255).nullable().optional(),
+  resolvedByAgentId: z.string().uuid().nullable().optional(),
+  resolvedByRunId: z.string().uuid().nullable().optional(),
   resolvedAt: z.union([z.string().datetime(), z.date()]),
   commentId: z.string().uuid().nullable().optional(),
+}).superRefine((value, ctx) => {
+  if (!value.resolvedByUserId && !value.resolvedByAgentId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "a user or agent resolver is required",
+      path: ["resolvedByUserId"],
+    });
+  }
+  if (value.resolvedByAgentId && !value.resolvedByRunId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "resolvedByRunId is required for an agent resolver",
+      path: ["resolvedByRunId"],
+    });
+  }
 });
 
 export const requestItemVerdictsResultSchema = z.object({

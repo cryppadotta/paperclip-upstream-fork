@@ -94,6 +94,7 @@ import {
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
+  type SuggestTasksInteraction,
   type SuccessfulRunHandoffState,
   type WorkspaceRuntimeService,
   issueWriteDenialCodeForResponsibleUserDenial,
@@ -229,6 +230,12 @@ import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
 } from "../services/issue-review-policy.js";
+import {
+  evaluateIssueThreadInteractionResolverAudience,
+  issueThreadInteractionAttentionAgentAllowed,
+  type IssueThreadInteractionResolverAudienceDecision,
+} from "../services/issue-thread-interaction-resolution.js";
+import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -3932,6 +3939,7 @@ export function issueRoutes(
       status: string;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
+      reviewPolicy?: IssueReviewPolicy | null;
       /** Used only to name the task in denial copy (plan §6). */
       identifier?: string | null;
     },
@@ -4096,30 +4104,124 @@ export function issueRoutes(
     return false;
   }
 
-  async function rejectTaskWatchdogInteractionMutation(
+  function denyIssueThreadInteractionResolution(
+    res: Response,
+    input: {
+      status: number;
+      code: string;
+      message: string;
+      details?: Record<string, unknown>;
+    },
+  ) {
+    res.status(input.status).json({
+      error: input.message,
+      code: input.code,
+      details: { code: input.code, ...(input.details ?? {}) },
+    });
+    return false as const;
+  }
+
+  async function assertAgentInteractionRunAttribution(
     req: Request,
     res: Response,
     issue: {
       id: string;
       companyId: string;
-      parentId?: string | null;
     },
   ) {
-    if (req.actor.type !== "agent") return false;
-    const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
-    if (scope.kind === "none") return false;
-    const result = await taskWatchdogScopeAllowsIssueMutation(db, scope, issue);
-    if (result.kind === "invalid") {
-      res.status(403).json({
-        error: result.detail,
-        details: {
-          issueId: issue.id,
-          securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
-        },
+    if (req.actor.type !== "agent") return null;
+    const runId = req.actor.runId?.trim();
+    if (!req.actor.agentId || !runId) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 422,
+        code: "interaction_run_attribution_required",
+        message: "A valid authenticated agent run is required to resolve this issue-thread interaction",
       });
+    }
+
+    const run = await db
+      .select({
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        responsibleUserId: heartbeatRuns.responsibleUserId,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, runId),
+        eq(heartbeatRuns.companyId, issue.companyId),
+        eq(heartbeatRuns.agentId, req.actor.agentId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const actorResponsibleUserId = req.actor.onBehalfOfUserId?.trim() || null;
+    if (
+      !run
+      || run.companyId !== issue.companyId
+      || run.agentId !== req.actor.agentId
+      || (
+        actorResponsibleUserId !== null
+        && run.responsibleUserId !== undefined
+        && run.responsibleUserId !== actorResponsibleUserId
+      )
+    ) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 422,
+        code: "interaction_run_attribution_required",
+        message: "The authenticated agent run is not valid for this issue-thread interaction",
+      });
+    }
+    return runId;
+  }
+
+  async function assertIssueThreadInteractionContainmentAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+  ) {
+    if (req.actor.type !== "agent") return true;
+    if (await actorIsLowTrustReview(req, issue.companyId, issue)) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 403,
+        code: "interaction_scope_denied",
+        message: "This issue-thread interaction is outside the actor's trusted control-plane scope",
+      });
+    }
+
+    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (watchdogScope.kind === "invalid") {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 403,
+        code: "interaction_scope_denied",
+        message: "This issue-thread interaction is outside the actor's authorized issue scope",
+      });
+    }
+    if (watchdogScope.kind !== "none") {
+      const scopeResult = await taskWatchdogScopeAllowsIssueMutation(db, watchdogScope, issue);
+      if (scopeResult.kind === "invalid") {
+        return denyIssueThreadInteractionResolution(res, {
+          status: 403,
+          code: "interaction_scope_denied",
+          message: "This issue-thread interaction is outside the actor's authorized issue scope",
+        });
+      }
+      const revalidated = await taskWatchdogsSvc.revalidateMutationScope(watchdogScope);
+      if (!revalidated.allowed) {
+        return denyIssueThreadInteractionResolution(res, {
+          status: 403,
+          code: "interaction_scope_denied",
+          message: "This issue-thread interaction is outside the current watchdog scope",
+        });
+      }
       return true;
     }
-    res.status(403).json({ error: "Task-watchdog runs cannot mutate issue-thread interactions" });
+
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!boundaryDecision.allowed) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: 403,
+        code: "interaction_scope_denied",
+        message: "This issue-thread interaction is outside the actor's authorized issue scope",
+      });
+    }
     return true;
   }
 
@@ -4133,74 +4235,123 @@ export function issueRoutes(
       createdByUserId?: string | null;
       sourceRunId?: string | null;
       effectiveResolverPolicy: string;
+      resolverPolicyProvenance?: string | null;
       addresseeAgentId?: string | null;
       kind: string;
       status: string;
       payload?: unknown;
     },
   ) {
-    if (req.actor.type !== "agent") {
-      assertBoard(req);
-      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
-      return "standard" as const;
-    }
-    const actorAgentId = req.actor.agentId;
-    const runId = requireAgentRunId(req, res);
-    if (!actorAgentId || !runId) return false;
-    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
-    if (watchdogScope.kind !== "none") {
-      res.status(403).json({ error: "Task-watchdog runs cannot resolve issue-thread interactions" });
-      return false;
-    }
-    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
-    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
+    const runId = await assertAgentInteractionRunAttribution(req, res, issue);
+    if (runId === false) return false;
+    if (!(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))) return false;
+    if (req.actor.type !== "agent") assertBoard(req);
+
     const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
     const payload = interaction.payload && typeof interaction.payload === "object"
       ? interaction.payload as { toolAction?: unknown }
       : null;
-    if (interaction.kind === "request_confirmation" && payload?.toolAction !== undefined) {
-      res.status(403).json({ error: "Tool-action confirmations are always human-only" });
-      return false;
+    const resolverPolicyRestriction = isReviewConfirmationVerdict
+      ? issue.reviewPolicy ?? "anyone"
+      : null;
+    const actor = getActorInfo(req);
+    const decision: IssueThreadInteractionResolverAudienceDecision =
+      evaluateIssueThreadInteractionResolverAudience({
+        actor: actor.actorType === "agent"
+          ? { type: "agent", agentId: actor.agentId, runId: runId || actor.runId }
+          : { type: "user", userId: actor.actorId },
+        interaction,
+        additionalRestriction: resolverPolicyRestriction,
+        governedAction: interaction.kind === "request_confirmation" && payload?.toolAction !== undefined,
+      });
+    if (!decision.allowed) {
+      return denyIssueThreadInteractionResolution(res, {
+        status: decision.status,
+        code: decision.code,
+        message: decision.message,
+        details: { effectiveResolverPolicy: decision.effectiveResolverPolicy },
+      });
     }
-    if (isReviewConfirmationVerdict) {
-      if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId, { excludeCreator: true })) return false;
-      await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
-      return "review_verdict" as const;
-    }
-    if (interaction.effectiveResolverPolicy === "human_only" || interaction.effectiveResolverPolicy === "board_only") {
-      res.status(403).json({ error: "This issue-thread interaction is human-only" });
-      return false;
-    }
-    return assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId, {
-      excludeCreator: interaction.effectiveResolverPolicy === "not_creator"
-        || interaction.effectiveResolverPolicy === "board_or_agents",
-    })
-      ? "standard" as const
-      : false;
+    return { decision, resolverPolicyRestriction } as const;
   }
 
-  function assertAgentInteractionActorAllowed(
+  async function assertSuggestedTaskEffectsAllowed(
+    req: Request,
     res: Response,
-    interaction: {
-      addresseeAgentId?: string | null;
-      createdByAgentId?: string | null;
-      sourceRunId?: string | null;
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2] & {
+      projectId: string | null;
     },
-    actorAgentId: string,
-    runId: string,
-    options: { excludeCreator: boolean },
+    interaction: SuggestTasksInteraction,
+    selectedClientKeys: string[] | undefined,
   ) {
-    if (interaction.addresseeAgentId && interaction.addresseeAgentId !== actorAgentId) {
-      res.status(403).json({ error: "Only the addressed agent or a board user may resolve this issue-thread interaction" });
-      return false;
-    }
-    if (options.excludeCreator && interaction.createdByAgentId === actorAgentId) {
-      res.status(403).json({ error: "Agents cannot resolve interactions they created" });
-      return false;
-    }
-    if (options.excludeCreator && interaction.sourceRunId === runId) {
-      res.status(403).json({ error: "Agents cannot resolve interactions created by the same run" });
-      return false;
+    if (req.actor.type !== "agent") return true;
+    const { selectedTasks } = resolveSelectedSuggestedTasks({ interaction, selectedClientKeys });
+    for (const task of selectedTasks) {
+      const explicitParentIssueId = task.parentId ?? interaction.payload.defaultParentId ?? issue.id;
+      const parent = explicitParentIssueId === issue.id
+        ? issue
+        : await svc.getById(explicitParentIssueId);
+      if (!parent || parent.companyId !== issue.companyId) {
+        return denyIssueThreadInteractionResolution(res, {
+          status: 403,
+          code: "interaction_governed_action_denied",
+          message: "Suggested-task creation is outside the resolver's authorized issue scope",
+        });
+      }
+      try {
+        const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+        if (watchdogScope.kind === "invalid") {
+          return denyIssueThreadInteractionResolution(res, {
+            status: 403,
+            code: "interaction_governed_action_denied",
+            message: "Suggested-task creation is outside the current watchdog scope",
+          });
+        }
+        if (watchdogScope.kind !== "none") {
+          const scopeResult = await taskWatchdogScopeAllowsIssueMutation(
+            db,
+            watchdogScope,
+            parent,
+            { allowWatchdogIssue: false },
+          );
+          if (scopeResult.kind === "invalid") {
+            return denyIssueThreadInteractionResolution(res, {
+              status: 403,
+              code: "interaction_governed_action_denied",
+              message: "Suggested-task creation is outside the current watchdog scope",
+            });
+          }
+          const revalidated = await taskWatchdogsSvc.revalidateMutationScope(watchdogScope);
+          if (!revalidated.allowed) {
+            return denyIssueThreadInteractionResolution(res, {
+              status: 403,
+              code: "interaction_governed_action_denied",
+              message: "Suggested-task creation is outside the current watchdog scope",
+            });
+          }
+        }
+        await assertTaskBridgeCreateAllowed(req, issue.companyId, {
+          projectId: task.projectId ?? issue.projectId,
+          parentIssueId: parent.id,
+          assigneeAgentId: task.assigneeAgentId ?? null,
+          assigneeUserId: task.assigneeUserId ?? null,
+        });
+        if (task.assigneeAgentId || task.assigneeUserId) {
+          await assertCanAssignTasks(req, issue.companyId, {
+            projectId: task.projectId ?? issue.projectId,
+            parentIssueId: parent.id,
+            assigneeAgentId: task.assigneeAgentId ?? null,
+            assigneeUserId: task.assigneeUserId ?? null,
+          });
+        }
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 403) throw error;
+        return denyIssueThreadInteractionResolution(res, {
+          status: 403,
+          code: "interaction_governed_action_denied",
+          message: "Suggested-task creation requires independent authorization for every selected task",
+        });
+      }
     }
     return true;
   }
@@ -4268,19 +4419,8 @@ export function issueRoutes(
       return true;
     }
     const actorAgentId = req.actor.agentId;
-    if (!actorAgentId || !requireAgentRunId(req, res)) return false;
-
-    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
-    if (watchdogScope.kind !== "none") {
-      res.status(403).json({ error: "Task-watchdog runs cannot withdraw issue-thread interactions" });
-      return false;
-    }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
-    if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
-      return false;
-    }
-    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+    if (!actorAgentId || await assertAgentInteractionRunAttribution(req, res, issue) === false) return false;
+    if (!(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))) return false;
 
     const isCreator = interaction.createdByAgentId === actorAgentId;
     const isAssignee = issue.assigneeAgentId === actorAgentId;
@@ -10583,7 +10723,18 @@ export function issueRoutes(
       },
     });
 
-    if (interaction.addresseeAgentId) {
+    if (
+      interaction.addresseeAgentId
+      && issueThreadInteractionAttentionAgentAllowed({
+        agentId: interaction.addresseeAgentId,
+        interaction,
+        governedAction: interaction.kind === "request_confirmation"
+          && typeof interaction.payload === "object"
+          && interaction.payload !== null
+          && "toolAction" in interaction.payload
+          && interaction.payload.toolAction !== undefined,
+      })
+    ) {
       void heartbeat.wakeup(interaction.addresseeAgentId, {
         source: "automation",
         triggerDetail: "system",
@@ -10628,20 +10779,28 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
       if (!resolutionAuthorization) return;
+      const suggestedTaskEffectsAuthorized = current.kind === "suggest_tasks"
+        ? await assertSuggestedTaskEffectsAllowed(
+            req,
+            res,
+            issue,
+            current,
+            req.body.selectedClientKeys,
+          )
+        : true;
+      if (!suggestedTaskEffectsAuthorized) return;
 
       const actor = getActorInfo(req);
       const { interaction, createdIssues, continuationIssue } = await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-        ...(actor.actorType === "agent" && resolutionAuthorization === "review_verdict"
-          ? { reviewVerdictAuthorized: true }
-          : {}),
+        resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
+        suggestedTaskEffectsAuthorized,
       });
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
@@ -10705,6 +10864,7 @@ export function issueRoutes(
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           resolverPolicyProvenance: interaction.resolverPolicyProvenance,
           effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
+          resolverAuthorizationReason: resolutionAuthorization.decision.reason,
           createdTaskCount:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.createdTasks?.length ?? 0)
@@ -10786,7 +10946,6 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
       const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
@@ -10797,9 +10956,7 @@ export function issueRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-        ...(actor.actorType === "agent" && resolutionAuthorization === "review_verdict"
-          ? { reviewVerdictAuthorized: true }
-          : {}),
+        resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
       });
 
       await logActivity(db, {
@@ -10823,6 +10980,7 @@ export function issueRoutes(
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           resolverPolicyProvenance: interaction.resolverPolicyProvenance,
           effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
+          resolverAuthorizationReason: resolutionAuthorization.decision.reason,
           rejectionReason:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.rejectionReason ?? null)
@@ -10853,16 +11011,17 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
+      if (!resolutionAuthorization) return;
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
         agentId: actor.agentId,
         runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
+        resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
       });
 
       await logActivity(db, {
@@ -10884,6 +11043,7 @@ export function issueRoutes(
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           resolverPolicyProvenance: interaction.resolverPolicyProvenance,
           effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
+          resolverAuthorizationReason: resolutionAuthorization.decision.reason,
           answeredQuestionCount:
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.answers?.length ?? 0)
@@ -10912,10 +11072,10 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current))) return;
+      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
+      if (!resolutionAuthorization) return;
 
       const actor = getActorInfo(req);
       const { interaction, newlyResolvedItemIds } = await interactionSvc.submitItemVerdicts(
@@ -10926,6 +11086,7 @@ export function issueRoutes(
           agentId: actor.agentId,
           runId: actor.runId,
           userId: actor.actorType === "user" ? actor.actorId : null,
+          resolverPolicyRestriction: resolutionAuthorization.resolverPolicyRestriction,
         },
       );
 
@@ -10950,6 +11111,7 @@ export function issueRoutes(
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
           resolverPolicyProvenance: interaction.resolverPolicyProvenance,
           effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
+          resolverAuthorizationReason: resolutionAuthorization.decision.reason,
           submittedVerdictCount: Array.isArray(req.body?.verdicts) ? req.body.verdicts.length : 0,
           newlyResolvedItemCount: newlyResolvedItemIds.length,
           newlyResolvedItemIds,
@@ -10988,7 +11150,6 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectTaskWatchdogInteractionMutation(req, res, issue)) return;
 
       const interactionSvc = issueThreadInteractionService(db);
       const current = await interactionSvc.getForIssue(issue, interactionId);
@@ -10998,6 +11159,7 @@ export function issueRoutes(
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
+        runId: actor.runId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
       await logActivity(db, {
