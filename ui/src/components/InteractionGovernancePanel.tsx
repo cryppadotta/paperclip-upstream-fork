@@ -85,6 +85,15 @@ function governanceOptions(field: GovernanceField): {
 }
 
 /**
+ * The label a *closed* trigger must show. Derived from the value rather than
+ * looked up in the option list so an out-of-list value (a raw `anyone`, say)
+ * still renders a complete, truthful label instead of falling back to a lie.
+ */
+export function governanceValueLabel(field: GovernanceField, value: GovernanceSelectValue): string {
+  return value === GOVERNANCE_UNSET ? UNSET_LABELS[field] : resolverPolicyLabel(value);
+}
+
+/**
  * Map a persisted override onto a select value. A stored `anyone` — including
  * the deprecated `board_or_agents` alias — is the open default, so it shows as
  * the unset sentinel rather than as a narrowing override.
@@ -156,20 +165,44 @@ function GovernanceSelect({
         <SelectTrigger
           size="sm"
           aria-label={ariaLabel}
-          className="w-full min-w-0 text-xs sm:w-(--sz-170px)"
+          // 208px is sized for the longest label the control can hold —
+          // `Anyone except creator` needs ~150px of text room, and 170px only
+          // left 122px after padding, gap and chevron, so it clipped even once
+          // the effect sentence was gone (PAP-17297).
+          className="w-full min-w-0 text-xs sm:w-(--sz-208px)"
           data-testid={testId}
         >
-          <SelectValue />
+          {/*
+           * Explicit children, not the default `<SelectValue />`. Radix portals
+           * the selected item's *whole* subtree into an empty value node, which
+           * dragged each option's effect sentence into the closed trigger and
+           * clipped the selected label (desktop truncated the prose, mobile cut
+           * `Anyone (default)` mid-label — PAP-17293/PAP-17297). Passing children
+           * sets `valueNodeHasChildren`, which suppresses that portal, so the
+           * trigger shows exactly the label and nothing else.
+           */}
+          <SelectValue>{governanceValueLabel(field, value)}</SelectValue>
         </SelectTrigger>
-        <SelectContent>
+        {/*
+         * Cap the option list so the effect sentences wrap instead of stretching
+         * the popover past a ~390px viewport (WCAG 2.1 SC 1.4.10 Reflow).
+         */}
+        <SelectContent className="max-w-(--sz-280px) sm:max-w-(--sz-360px)">
           {options.map((option) => (
-            <SelectItem key={option.value} value={option.value} className="text-xs">
+            <SelectItem
+              key={option.value}
+              value={option.value}
+              // Keyboard typeahead matches on `textValue` when given; without it
+              // Radix would match against the effect prose too.
+              textValue={option.label}
+              className="text-xs"
+            >
               {/*
                * Effect preview lives inside the option so the consequence of a
                * narrowing choice is legible at the moment of choosing, not only
                * after saving (PAP-17280).
                */}
-              <span className="flex flex-col gap-0.5">
+              <span className="flex min-w-0 flex-col gap-0.5">
                 <span>{option.label}</span>
                 <span className="text-(length:--text-micro) text-muted-foreground">
                   {option.effect}
