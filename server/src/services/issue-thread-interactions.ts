@@ -21,8 +21,11 @@ import type {
   CreateIssueThreadInteraction,
   InteractionResolverGovernance,
   IssueThreadInteraction,
+  IssueThreadInteractionCanonicalResolverPolicy,
+  IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionKind,
   IssueThreadInteractionResolverPolicy,
+  IssueThreadInteractionResolverPolicyProvenance,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
@@ -42,6 +45,8 @@ import {
   askUserQuestionsResultSchema,
   cancelIssueThreadInteractionSchema,
   createIssueThreadInteractionSchema,
+  legacyIssueThreadInteractionResolverPolicyAlias,
+  normalizeIssueThreadInteractionResolverPolicy,
   rejectIssueThreadInteractionSchema,
   requestCheckboxConfirmationPayloadSchema,
   requestCheckboxConfirmationResultSchema,
@@ -222,12 +227,21 @@ type ResolvedInteractionResult = {
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
 type IssueTouchDb = Pick<Db, "update">;
 
-const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<IssueThreadInteractionKind, IssueThreadInteractionResolverPolicy> = {
-  suggest_tasks: "board_only",
-  ask_user_questions: "board_or_agents",
-  request_confirmation: "board_only",
-  request_checkbox_confirmation: "board_only",
-  request_item_verdicts: "board_only",
+export const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<
+  IssueThreadInteractionKind,
+  IssueThreadInteractionCanonicalResolverPolicy
+> = {
+  suggest_tasks: "anyone",
+  ask_user_questions: "anyone",
+  request_confirmation: "anyone",
+  request_checkbox_confirmation: "anyone",
+  request_item_verdicts: "anyone",
+};
+
+const RESOLVER_POLICY_RESTRICTION_RANK: Record<IssueThreadInteractionCanonicalResolverPolicy, number> = {
+  anyone: 0,
+  not_creator: 1,
+  human_only: 2,
 };
 
 export function resolveInteractionPolicy(args: {
@@ -237,13 +251,31 @@ export function resolveInteractionPolicy(args: {
   hasToolAction: boolean;
 }) {
   const kindGovernance = args.governance[args.kind];
-  const requestedResolverPolicy = args.requested
+  const requestedPolicyInput = args.requested
     ?? kindGovernance?.defaultPolicy
     ?? DEFAULT_RESOLVER_POLICY_BY_KIND[args.kind];
-  const effectiveResolverPolicy = args.hasToolAction || kindGovernance?.cap === "board_only"
-    ? "board_only"
-    : requestedResolverPolicy;
-  return { requestedResolverPolicy, effectiveResolverPolicy } as const;
+  const requestedResolverPolicy = normalizeIssueThreadInteractionResolverPolicy(requestedPolicyInput);
+  const resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance =
+    args.requested === undefined ? "inherited" : "explicit";
+
+  let effectiveResolverPolicy = requestedResolverPolicy;
+  let effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource = "requested";
+  if (args.hasToolAction) {
+    effectiveResolverPolicy = "human_only";
+    effectiveResolverPolicySource = "governed_action";
+  } else if (kindGovernance?.cap) {
+    const cap = normalizeIssueThreadInteractionResolverPolicy(kindGovernance.cap);
+    if (RESOLVER_POLICY_RESTRICTION_RANK[cap] > RESOLVER_POLICY_RESTRICTION_RANK[effectiveResolverPolicy]) {
+      effectiveResolverPolicy = cap;
+      effectiveResolverPolicySource = "company_cap";
+    }
+  }
+  return {
+    requestedResolverPolicy,
+    effectiveResolverPolicy,
+    resolverPolicyProvenance,
+    effectiveResolverPolicySource,
+  } as const;
 }
 
 function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
@@ -256,26 +288,34 @@ function assertAgentResolutionAllowed(current: IssueThreadInteractionRow, actor:
     && "toolAction" in current.payload
     && current.payload.toolAction !== undefined
   ) {
-    throw forbidden("Tool-action confirmations are always board-only");
+    throw forbidden("Tool-action confirmations are always human-only");
   }
   if (actor.reviewVerdictAuthorized && isRequestConfirmationLikeKind(current.kind)) {
-    assertAgentInteractionActorAllowed(current, actor);
+    assertAgentInteractionActorAllowed(current, actor, { excludeCreator: true });
     return;
   }
-  if (current.effectiveResolverPolicy !== "board_or_agents") {
-    throw forbidden("This issue-thread interaction is board-only");
+  const effectiveResolverPolicy = current.effectiveResolverPolicy as IssueThreadInteractionResolverPolicy;
+  if (effectiveResolverPolicy === "human_only" || effectiveResolverPolicy === "board_only") {
+    throw forbidden("This issue-thread interaction is human-only");
   }
-  assertAgentInteractionActorAllowed(current, actor);
+  assertAgentInteractionActorAllowed(current, actor, {
+    excludeCreator: effectiveResolverPolicy === "not_creator"
+      || effectiveResolverPolicy === "board_or_agents",
+  });
 }
 
-function assertAgentInteractionActorAllowed(current: IssueThreadInteractionRow, actor: InteractionActor) {
+function assertAgentInteractionActorAllowed(
+  current: IssueThreadInteractionRow,
+  actor: InteractionActor,
+  options: { excludeCreator: boolean },
+) {
   if (current.addresseeAgentId && current.addresseeAgentId !== actor.agentId) {
     throw forbidden("Only the addressed agent or a board user may resolve this issue-thread interaction");
   }
-  if (current.createdByAgentId === actor.agentId) {
+  if (options.excludeCreator && current.createdByAgentId === actor.agentId) {
     throw forbidden("Agents cannot resolve interactions they created");
   }
-  if (current.sourceRunId && current.sourceRunId === actor.runId) {
+  if (options.excludeCreator && current.sourceRunId && current.sourceRunId === actor.runId) {
     throw forbidden("Agents cannot resolve interactions created by the same run");
   }
 }
@@ -384,15 +424,40 @@ function parseStoredInteractionResult<S extends z.ZodTypeAny>(
 function hydrateInteraction(
   row: IssueThreadInteractionRow,
 ): IssueThreadInteraction {
+  const storedRequestedResolverPolicy = row.requestedResolverPolicy as IssueThreadInteractionResolverPolicy;
+  const storedEffectiveResolverPolicy = row.effectiveResolverPolicy as IssueThreadInteractionResolverPolicy;
+  const resolverPolicyProvenance = row.resolverPolicyProvenance
+    ?? (storedRequestedResolverPolicy === "board_only" || storedRequestedResolverPolicy === "board_or_agents"
+      ? "legacy_inherited_restriction"
+      : "inherited");
+  const canonicalizeStoredPolicy = (
+    policy: IssueThreadInteractionResolverPolicy,
+  ): IssueThreadInteractionCanonicalResolverPolicy => {
+    // Before provenance existed, board_or_agents excluded both the creator
+    // agent and the creating run. Preserve that historical restriction rather
+    // than silently widening an ambiguous pending card to canonical anyone.
+    if (resolverPolicyProvenance === "legacy_inherited_restriction" && policy === "board_or_agents") {
+      return "not_creator";
+    }
+    return normalizeIssueThreadInteractionResolverPolicy(policy);
+  };
+  const requestedResolverPolicy = canonicalizeStoredPolicy(storedRequestedResolverPolicy);
+  const effectiveResolverPolicy = canonicalizeStoredPolicy(storedEffectiveResolverPolicy);
   const base = {
     ...row,
     idempotencyKey: row.idempotencyKey ?? null,
     addresseeAgentId: row.addresseeAgentId ?? null,
     status: row.status as IssueThreadInteraction["status"],
     continuationPolicy: row.continuationPolicy as IssueThreadInteraction["continuationPolicy"],
-    resolverPolicy: row.requestedResolverPolicy,
-    requestedResolverPolicy: row.requestedResolverPolicy,
-    effectiveResolverPolicy: row.effectiveResolverPolicy,
+    resolverPolicy: requestedResolverPolicy,
+    requestedResolverPolicy,
+    effectiveResolverPolicy,
+    resolverPolicyProvenance,
+    effectiveResolverPolicySource: row.effectiveResolverPolicySource ?? "requested",
+    legacyResolverPolicyAliases: {
+      requested: legacyIssueThreadInteractionResolverPolicyAlias(requestedResolverPolicy),
+      effective: legacyIssueThreadInteractionResolverPolicyAlias(effectiveResolverPolicy),
+    },
   };
 
   switch (row.kind) {
@@ -1916,6 +1981,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               continuationPolicy: data.continuationPolicy,
               requestedResolverPolicy: policy.requestedResolverPolicy,
               effectiveResolverPolicy: policy.effectiveResolverPolicy,
+              resolverPolicyProvenance: policy.resolverPolicyProvenance,
+              effectiveResolverPolicySource: policy.effectiveResolverPolicySource,
               idempotencyKey: data.idempotencyKey ?? null,
               sourceCommentId: data.sourceCommentId ?? null,
               sourceRunId: data.sourceRunId ?? null,

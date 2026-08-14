@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
+  ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES,
+  legacyIssueThreadInteractionResolverPolicyAlias,
+  normalizeIssueThreadInteractionResolverPolicy,
+} from "./constants.js";
+import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
@@ -9,6 +15,35 @@ import {
 } from "./validators/issue.js";
 
 describe("issue thread interaction schemas", () => {
+  it("defines canonical resolver policies and normalizes compatibility aliases", () => {
+    expect(ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES).toEqual([
+      "anyone",
+      "not_creator",
+      "human_only",
+    ]);
+    expect(ISSUE_THREAD_INTERACTION_LEGACY_RESOLVER_POLICY_ALIASES).toEqual([
+      "board_or_agents",
+      "board_only",
+    ]);
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_or_agents")).toBe("anyone");
+    expect(normalizeIssueThreadInteractionResolverPolicy("board_only")).toBe("human_only");
+    expect(normalizeIssueThreadInteractionResolverPolicy("not_creator")).toBe("not_creator");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("anyone")).toBe("board_or_agents");
+    expect(legacyIssueThreadInteractionResolverPolicyAlias("not_creator")).toBeNull();
+  });
+
+  it.each(["anyone", "not_creator", "human_only", "board_or_agents", "board_only"] as const)(
+    "accepts resolver policy input %s",
+    (resolverPolicy) => {
+      const parsed = createIssueThreadInteractionSchema.parse({
+        kind: "request_confirmation",
+        resolverPolicy,
+        payload: { version: 1, prompt: "Proceed?" },
+      });
+      expect(parsed.resolverPolicy).toBe(resolverPolicy);
+    },
+  );
+
   it("parses request_confirmation payloads with default no-wake continuation", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "request_confirmation",

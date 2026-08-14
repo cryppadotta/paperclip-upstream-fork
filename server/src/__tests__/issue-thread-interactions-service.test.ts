@@ -100,7 +100,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     return { companyId, goalId, issueId };
   }
 
-  it("persists addressees without allowing them to bypass board-only governance", async () => {
+  it("persists addressees without allowing them to bypass human-only governance", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
     const creatorAgentId = randomUUID();
     const addresseeAgentId = randomUUID();
@@ -163,8 +163,10 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     );
     expect(created).toMatchObject({
       addresseeAgentId,
-      requestedResolverPolicy: "board_or_agents",
-      effectiveResolverPolicy: "board_or_agents",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "requested",
     });
 
     const answered = await interactionsSvc.answerQuestions(
@@ -211,7 +213,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       { agentId: addresseeAgentId, runId: addresseeRunId },
     )).rejects.toMatchObject({
       status: 403,
-      message: expect.stringContaining("board-only"),
+      message: expect.stringContaining("human-only"),
     });
 
     await expect(interactionsSvc.create(

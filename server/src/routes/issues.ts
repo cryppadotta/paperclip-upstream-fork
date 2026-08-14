@@ -4159,19 +4159,22 @@ export function issueRoutes(
       ? interaction.payload as { toolAction?: unknown }
       : null;
     if (interaction.kind === "request_confirmation" && payload?.toolAction !== undefined) {
-      res.status(403).json({ error: "Tool-action confirmations are always board-only" });
+      res.status(403).json({ error: "Tool-action confirmations are always human-only" });
       return false;
     }
     if (isReviewConfirmationVerdict) {
-      if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)) return false;
+      if (!assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId, { excludeCreator: true })) return false;
       await assertPendingReviewInteractionVerdictAllowed(req, issue, interaction);
       return "review_verdict" as const;
     }
-    if (interaction.effectiveResolverPolicy !== "board_or_agents") {
-      res.status(403).json({ error: "This issue-thread interaction is board-only" });
+    if (interaction.effectiveResolverPolicy === "human_only" || interaction.effectiveResolverPolicy === "board_only") {
+      res.status(403).json({ error: "This issue-thread interaction is human-only" });
       return false;
     }
-    return assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId)
+    return assertAgentInteractionActorAllowed(res, interaction, actorAgentId, runId, {
+      excludeCreator: interaction.effectiveResolverPolicy === "not_creator"
+        || interaction.effectiveResolverPolicy === "board_or_agents",
+    })
       ? "standard" as const
       : false;
   }
@@ -4185,16 +4188,17 @@ export function issueRoutes(
     },
     actorAgentId: string,
     runId: string,
+    options: { excludeCreator: boolean },
   ) {
     if (interaction.addresseeAgentId && interaction.addresseeAgentId !== actorAgentId) {
       res.status(403).json({ error: "Only the addressed agent or a board user may resolve this issue-thread interaction" });
       return false;
     }
-    if (interaction.createdByAgentId === actorAgentId) {
+    if (options.excludeCreator && interaction.createdByAgentId === actorAgentId) {
       res.status(403).json({ error: "Agents cannot resolve interactions they created" });
       return false;
     }
-    if (interaction.sourceRunId === runId) {
+    if (options.excludeCreator && interaction.sourceRunId === runId) {
       res.status(403).json({ error: "Agents cannot resolve interactions created by the same run" });
       return false;
     }
@@ -10574,6 +10578,8 @@ export function issueRoutes(
         addresseeAgentId: interaction.addresseeAgentId ?? null,
         requestedResolverPolicy: interaction.requestedResolverPolicy,
         effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+        resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+        effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
       },
     });
 
@@ -10697,6 +10703,8 @@ export function issueRoutes(
           resolutionActorKind: actor.actorType,
           requestedResolverPolicy: interaction.requestedResolverPolicy,
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+          effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
           createdTaskCount:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.createdTasks?.length ?? 0)
@@ -10813,6 +10821,8 @@ export function issueRoutes(
           resolutionActorKind: actor.actorType,
           requestedResolverPolicy: interaction.requestedResolverPolicy,
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+          effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
           rejectionReason:
             interaction.kind === "suggest_tasks"
               ? (interaction.result?.rejectionReason ?? null)
@@ -10872,6 +10882,8 @@ export function issueRoutes(
           resolutionActorKind: actor.actorType,
           requestedResolverPolicy: interaction.requestedResolverPolicy,
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+          effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
           answeredQuestionCount:
             interaction.kind === "ask_user_questions"
               ? (interaction.result?.answers?.length ?? 0)
@@ -10936,6 +10948,8 @@ export function issueRoutes(
           resolutionActorKind: actor.actorType,
           requestedResolverPolicy: interaction.requestedResolverPolicy,
           effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+          resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+          effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
           submittedVerdictCount: Array.isArray(req.body?.verdicts) ? req.body.verdicts.length : 0,
           newlyResolvedItemCount: newlyResolvedItemIds.length,
           newlyResolvedItemIds,

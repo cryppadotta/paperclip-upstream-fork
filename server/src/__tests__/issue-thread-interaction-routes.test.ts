@@ -1728,7 +1728,7 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
-  it("keeps an unrelated pending confirmation board-only on an in-review issue", async () => {
+  it("keeps an unrelated pending confirmation human-only on an in-review issue", async () => {
     mockReviewTransition.value = {
       actorType: "agent",
       actorId: CREATED_AGENT_ID,
@@ -1762,11 +1762,11 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "This issue-thread interaction is board-only" });
+    expect(res.body).toEqual({ error: "This issue-thread interaction is human-only" });
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
-  it("keeps a same-requester sibling confirmation board-only", async () => {
+  it("keeps a same-requester sibling confirmation human-only", async () => {
     mockReviewTransition.value = {
       actorType: "agent",
       actorId: CREATED_AGENT_ID,
@@ -1800,7 +1800,7 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "This issue-thread interaction is board-only" });
+    expect(res.body).toEqual({ error: "This issue-thread interaction is human-only" });
     expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
   });
 
@@ -1964,7 +1964,7 @@ describe.sequential("issue thread interaction routes", () => {
     expect(board.status).toBe(200);
   });
 
-  it("blocks creator-agent self-resolution", async () => {
+  it("preserves creator exclusion for legacy board_or_agents rows", async () => {
     mockIssueService.getById.mockResolvedValueOnce(createIssue({
       status: "todo",
       assigneeAgentId: CREATED_AGENT_ID,
@@ -1983,7 +1983,43 @@ describe.sequential("issue thread interaction routes", () => {
     expect(mockInteractionService.answerQuestions).not.toHaveBeenCalled();
   });
 
-  it("blocks same-run resolution and requires a resolver run id", async () => {
+  it("allows the creator agent and creating run under anyone", async () => {
+    mockInteractionService.getForIssue.mockResolvedValueOnce({
+      id: "interaction-open",
+      kind: "ask_user_questions",
+      createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: "run-9",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
+      payload: { version: 1, questions: [] },
+    });
+    mockIssueService.getById.mockResolvedValueOnce(createIssue({
+      status: "todo",
+      assigneeAgentId: CREATED_AGENT_ID,
+    }));
+    const app = await createApp({
+      type: "agent",
+      agentId: CREATED_AGENT_ID,
+      companyId: "company-1",
+      runId: "run-9",
+    });
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-open/respond")
+      .send({ answers: [] });
+
+    expect(res.status).toBe(200);
+    expect(mockInteractionService.answerQuestions).toHaveBeenCalledWith(
+      expect.anything(),
+      "interaction-open",
+      expect.anything(),
+      expect.objectContaining({ agentId: CREATED_AGENT_ID, runId: "run-9" }),
+    );
+  });
+
+  it("preserves same-run exclusion for legacy board_or_agents rows and requires a resolver run id", async () => {
     mockInteractionService.getForIssue.mockResolvedValueOnce({
       id: "interaction-2",
       kind: "ask_user_questions",
@@ -2018,7 +2054,7 @@ describe.sequential("issue thread interaction routes", () => {
     expect(missingRun.status).toBe(401);
   });
 
-  it("blocks board-only and tool-action interactions for agents", async () => {
+  it("blocks human-only and tool-action interactions for agents", async () => {
     mockInteractionService.getForIssue
       .mockResolvedValueOnce({
         id: "interaction-1",
@@ -2052,7 +2088,7 @@ describe.sequential("issue thread interaction routes", () => {
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-1/accept")
       .send({});
     expect(capped.status).toBe(403);
-    expect(capped.body.error).toContain("board-only");
+    expect(capped.body.error).toContain("human-only");
 
     const toolAction = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool/accept")
