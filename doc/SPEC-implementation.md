@@ -690,6 +690,17 @@ audience. A cap never widens the requested audience. Tool-action confirmations a
 other hard-governed action cards remain `human_only` (or move to the formal approval
 system) regardless of a requested open audience.
 
+Surfaces that offer a resolution must state the effective audience before the
+operator acts, from server metadata rather than a client-side policy inference.
+Issue-thread cards read it from the interaction snapshot; attention rows read it
+from the feed item's `resolverAudience` (canonical requested/effective policy,
+effective-policy source, provenance, and the addressee/creator identities the
+evaluator compares against), because a collapsed row carries decision verbs
+before the interaction itself is fetched. A failed resolution keeps the server's
+denial reason in visible, assertively announced feedback and names who may
+respond; an audience denial is permanent, so it must not degrade to a retry
+prompt. Neither surface may enable or disable a control on its own authority.
+
 Every resolution remains company-scoped, run-attributed for agent actors,
 low-trust/task-bridge contained, target-current, and exact-once. Target staleness,
 supersession, continuation idempotency, and activity attribution remain mandatory.

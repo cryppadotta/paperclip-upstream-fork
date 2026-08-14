@@ -67,6 +67,7 @@ import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 import {
   assertIssueThreadInteractionResolverAudience,
+  canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
 } from "./issue-thread-interaction-resolution.js";
 import {
@@ -420,15 +421,8 @@ function hydrateInteraction(
       : "inherited");
   const canonicalizeStoredPolicy = (
     policy: IssueThreadInteractionResolverPolicy,
-  ): IssueThreadInteractionCanonicalResolverPolicy => {
-    // Before provenance existed, board_or_agents excluded both the creator
-    // agent and the creating run. Preserve that historical restriction rather
-    // than silently widening an ambiguous pending card to canonical anyone.
-    if (resolverPolicyProvenance === "legacy_inherited_restriction" && policy === "board_or_agents") {
-      return "not_creator";
-    }
-    return normalizeIssueThreadInteractionResolverPolicy(policy);
-  };
+  ): IssueThreadInteractionCanonicalResolverPolicy =>
+    canonicalizeStoredResolverPolicy(policy, resolverPolicyProvenance);
   const requestedResolverPolicy = canonicalizeStoredPolicy(storedRequestedResolverPolicy);
   const effectiveResolverPolicy = canonicalizeStoredPolicy(storedEffectiveResolverPolicy);
   const base = {

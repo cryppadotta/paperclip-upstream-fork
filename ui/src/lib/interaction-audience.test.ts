@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { AttentionItem, AttentionResolverAudience } from "@paperclipai/shared";
 import type { RequestConfirmationInteraction } from "./issue-thread-interactions";
 import {
   DEFAULT_RESOLVER_POLICY,
   RESOLVER_POLICY_CHOICES,
+  describeAttentionResolverAudience,
   describeInteractionAudience,
   resolverPolicyEffect,
   resolverPolicyLabel,
@@ -205,5 +207,101 @@ describe("describeInteractionAudience", () => {
       "Created before Anyone became the default, so it stays restricted. A new card would be open.",
     );
     expect(audience.summary).toBe("Anyone in the company except ClaudeCoder can respond.");
+  });
+});
+
+/** The `resolverAudience` metadata the attention feed ships with an interaction row. */
+function attentionAudience(
+  overrides: Partial<AttentionResolverAudience> = {},
+): AttentionResolverAudience {
+  return {
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "anyone",
+    effectiveResolverPolicySource: "requested",
+    resolverPolicyProvenance: "inherited",
+    addresseeAgentId: null,
+    addresseeName: null,
+    createdByAgentId: "agent-creator",
+    createdByAgentName: "Watchdog",
+    ...overrides,
+  };
+}
+
+function attentionItem(
+  audience: AttentionResolverAudience | null,
+  sourceKind: AttentionItem["sourceKind"] = "issue_thread_interaction",
+): Pick<AttentionItem, "sourceKind" | "resolverAudience"> {
+  return { sourceKind, resolverAudience: audience };
+}
+
+describe("glanceable audience copy", () => {
+  it("states the open default in one clause", () => {
+    expect(describeInteractionAudience({ interaction: confirmation() }).shortSummary)
+      .toBe("Anyone can respond");
+  });
+
+  it("names the excluded creator", () => {
+    expect(describeInteractionAudience({
+      interaction: confirmation({ requestedResolverPolicy: "not_creator", effectiveResolverPolicy: "not_creator" }),
+      creatorLabel: "Watchdog",
+    }).shortSummary).toBe("Anyone except Watchdog can respond");
+  });
+
+  it("names the addressed responder", () => {
+    expect(describeInteractionAudience({
+      interaction: confirmation({ addresseeAgentId: "agent-codex" }),
+      addresseeLabel: "CodexCoder",
+    }).shortSummary).toBe("Only CodexCoder or the board can respond");
+  });
+
+  it("keeps human-only ownership with the board", () => {
+    expect(describeInteractionAudience({
+      interaction: confirmation({ requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only" }),
+    }).shortSummary).toBe("Only the board can respond");
+  });
+});
+
+describe("describeAttentionResolverAudience", () => {
+  it("describes an open interaction row from server metadata alone", () => {
+    const audience = describeAttentionResolverAudience(attentionItem(attentionAudience()));
+    expect(audience?.policy).toBe("anyone");
+    expect(audience?.isOpen).toBe(true);
+    expect(audience?.label).toBe("Anyone");
+    expect(audience?.shortSummary).toBe("Anyone can respond");
+  });
+
+  it("names the addressed agent the server recorded", () => {
+    const audience = describeAttentionResolverAudience(attentionItem(attentionAudience({
+      addresseeAgentId: "agent-codex",
+      addresseeName: "CodexCoder",
+    })));
+    expect(audience?.label).toBe("Addressed");
+    expect(audience?.shortSummary).toBe("Only CodexCoder or the board can respond");
+  });
+
+  it("names the excluded creator the server recorded", () => {
+    const audience = describeAttentionResolverAudience(attentionItem(attentionAudience({
+      requestedResolverPolicy: "not_creator",
+      effectiveResolverPolicy: "not_creator",
+    })));
+    expect(audience?.shortSummary).toBe("Anyone except Watchdog can respond");
+  });
+
+  it("carries the narrowing explanation for a company cap", () => {
+    const audience = describeAttentionResolverAudience(attentionItem(attentionAudience({
+      effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "company_cap",
+    })));
+    expect(audience?.narrowedBy).toBe("company_cap");
+    expect(audience?.narrowedNote).toBe(
+      "Company interaction governance narrowed this from Anyone to Human only.",
+    );
+  });
+
+  it("stays silent rather than guessing a policy client-side", () => {
+    // No metadata (an older feed) and non-interaction rows must render nothing.
+    expect(describeAttentionResolverAudience(attentionItem(null))).toBeNull();
+    expect(describeAttentionResolverAudience({ sourceKind: "issue_thread_interaction" })).toBeNull();
+    expect(describeAttentionResolverAudience(attentionItem(attentionAudience(), "approval"))).toBeNull();
   });
 });

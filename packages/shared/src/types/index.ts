@@ -27,6 +27,7 @@ export type {
   AttentionFeedQuery,
   AttentionProjectRef,
   AttentionQueueRef,
+  AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,

@@ -20,8 +20,12 @@
 import {
   ISSUE_THREAD_INTERACTION_CANONICAL_RESOLVER_POLICIES,
   normalizeIssueThreadInteractionResolverPolicy,
+  type AttentionItem,
+  type AttentionResolverAudience,
   type IssueThreadInteractionCanonicalResolverPolicy,
+  type IssueThreadInteractionEffectiveResolverPolicySource,
   type IssueThreadInteractionResolverPolicy,
+  type IssueThreadInteractionResolverPolicyProvenance,
 } from "@paperclipai/shared";
 import type { IssueThreadInteraction } from "./issue-thread-interactions";
 
@@ -96,12 +100,31 @@ export interface InteractionAudienceDescription {
   label: string;
   /** One sentence naming exactly who can respond to *this* card. */
   summary: string;
+  /**
+   * The same fact in a glanceable clause, for a dense surface that shows the
+   * audience beside compact decision buttons (collapsed attention rows).
+   */
+  shortSummary: string;
   /** True when the card is open to the whole company with no addressee. */
   isOpen: boolean;
   /** Set when something narrows the audience below the open default. */
   narrowedBy: InteractionAudienceNarrowing | null;
   /** Extra sentence explaining a narrowing the requester did not ask for. */
   narrowedNote: string | null;
+}
+
+/**
+ * The server-evaluated facts an audience description is derived from. Both the
+ * full interaction snapshot (issue thread) and the attention feed's
+ * `resolverAudience` (collapsed queue rows) reduce to this shape, so one copy
+ * table serves both surfaces and they cannot drift.
+ */
+export interface InteractionAudienceFacts {
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  requestedResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy;
+  effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource;
+  resolverPolicyProvenance: IssueThreadInteractionResolverPolicyProvenance;
+  hasAddressee: boolean;
 }
 
 /**
@@ -123,9 +146,36 @@ export function describeInteractionAudience({
   /** Display label of the named addressee agent, when the card has one. */
   addresseeLabel?: string | null;
 }): InteractionAudienceDescription {
-  const policy = interaction.effectiveResolverPolicy;
-  const requestedPolicy = interaction.requestedResolverPolicy;
-  const hasAddressee = Boolean(interaction.addresseeAgentId);
+  return describeResolverAudience({
+    facts: {
+      effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+      requestedResolverPolicy: interaction.requestedResolverPolicy,
+      effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
+      resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+      hasAddressee: Boolean(interaction.addresseeAgentId),
+    },
+    creatorLabel,
+    addresseeLabel,
+  });
+}
+
+/**
+ * Describe an effective audience from the server-evaluated facts alone — used
+ * where the full interaction is not loaded, such as a collapsed attention row
+ * (PAP-17287).
+ */
+export function describeResolverAudience({
+  facts,
+  creatorLabel,
+  addresseeLabel,
+}: {
+  facts: InteractionAudienceFacts;
+  creatorLabel?: string | null;
+  addresseeLabel?: string | null;
+}): InteractionAudienceDescription {
+  const policy = facts.effectiveResolverPolicy;
+  const requestedPolicy = facts.requestedResolverPolicy;
+  const hasAddressee = facts.hasAddressee;
   const addressee = addresseeLabel?.trim() || "the addressed agent";
   const creator = creatorLabel?.trim() || "the agent that created it";
 
@@ -137,8 +187,18 @@ export function describeInteractionAudience({
         ? `Anyone in the company except ${creator} can respond.`
         : "Anyone in the company can respond — the board or any agent, including the one that asked.";
 
-  const source = interaction.effectiveResolverPolicySource;
-  const provenance = interaction.resolverPolicyProvenance;
+  // Same fact, fewer words: a collapsed row has to answer "is this mine to
+  // decide?" in one glance, next to the buttons that act on the answer.
+  const shortSummary = policy === "human_only"
+    ? "Only the board can respond"
+    : hasAddressee
+      ? `Only ${addressee} or the board can respond`
+      : policy === "not_creator"
+        ? `Anyone except ${creator} can respond`
+        : "Anyone can respond";
+
+  const source = facts.effectiveResolverPolicySource;
+  const provenance = facts.resolverPolicyProvenance;
 
   // Narrowing the requester did *not* ask for is the only thing worth an extra
   // sentence: a governed-action clamp, a company cap, or a card created before
@@ -174,8 +234,34 @@ export function describeInteractionAudience({
       ? "Addressed"
       : RESOLVER_POLICY_LABELS[policy],
     summary,
+    shortSummary,
     isOpen: policy === "anyone" && !hasAddressee,
     narrowedBy,
     narrowedNote,
   };
+}
+
+/**
+ * Audience of an `issue_thread_interaction` attention row, from the server
+ * metadata the feed ships with the item (PAP-17287). Returns `null` for every
+ * other source kind and for a feed built before the metadata existed, so a
+ * caller renders nothing rather than guessing a policy client-side.
+ */
+export function describeAttentionResolverAudience(
+  item: Pick<AttentionItem, "sourceKind" | "resolverAudience">,
+): InteractionAudienceDescription | null {
+  if (item.sourceKind !== "issue_thread_interaction") return null;
+  const audience: AttentionResolverAudience | null | undefined = item.resolverAudience;
+  if (!audience) return null;
+  return describeResolverAudience({
+    facts: {
+      effectiveResolverPolicy: audience.effectiveResolverPolicy,
+      requestedResolverPolicy: audience.requestedResolverPolicy,
+      effectiveResolverPolicySource: audience.effectiveResolverPolicySource,
+      resolverPolicyProvenance: audience.resolverPolicyProvenance,
+      hasAddressee: Boolean(audience.addresseeAgentId),
+    },
+    creatorLabel: audience.createdByAgentName,
+    addresseeLabel: audience.addresseeName,
+  });
 }

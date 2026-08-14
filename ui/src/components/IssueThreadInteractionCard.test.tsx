@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { ApiError } from "../api/client";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
@@ -510,6 +511,110 @@ describe("IssueThreadInteractionCard", () => {
     expect(onAcceptInteraction).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "request_confirmation" }),
     );
+  });
+
+  // PAP-17287: a denial is persistent, so the inline error keeps the server's
+  // reason and names who can respond instead of offering a doomed retry.
+  it("keeps the server denial reason in an aria-live region when a confirmation is refused", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      });
+    });
+    const host = renderCard({
+      interaction: humanOnlyRequestConfirmationInteraction,
+      onAcceptInteraction,
+    });
+
+    const confirmButton = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Approve"),
+    );
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const error = host.querySelector('[data-testid="interaction-action-error"]');
+    expect(error?.getAttribute("aria-live")).toBe("assertive");
+    expect(error?.textContent).toContain("This issue-thread interaction is human-only.");
+    expect(error?.textContent).toContain("Only the board can respond.");
+    expect(error?.textContent).not.toMatch(/try again/i);
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
+  });
+
+  it("still offers a retry when a resolution fails for a transient reason", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("Request failed: 503", 503, null);
+    });
+    const host = renderCard({
+      interaction: pendingRequestConfirmationInteraction,
+      onAcceptInteraction,
+    });
+
+    await act(async () => {
+      Array.from(host.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Approve plan"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
+    ).toBe("Request failed: 503. Try again.");
+  });
+
+  it("surfaces a denied suggested-task acceptance instead of failing silently", async () => {
+    const onAcceptInteraction = vi.fn(async () => {
+      throw new ApiError("Only the addressed agent or an authorized human may resolve this issue-thread interaction", 403, {
+        error: "Only the addressed agent or an authorized human may resolve this issue-thread interaction",
+        code: "interaction_addressee_mismatch",
+      });
+    });
+    const host = renderCard({
+      interaction: pendingSuggestedTasksInteraction,
+      onAcceptInteraction,
+    });
+
+    await act(async () => {
+      Array.from(host.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Accept"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const error = host.querySelector('[data-testid="interaction-action-error"]');
+    expect(error?.getAttribute("aria-live")).toBe("assertive");
+    expect(error?.textContent).toContain("may resolve this issue-thread interaction.");
+  });
+
+  it("surfaces a denied answer submission on a questions card", async () => {
+    const onSubmitInteractionAnswers = vi.fn(async () => {
+      throw new ApiError("This issue-thread interaction is human-only", 403, {
+        error: "This issue-thread interaction is human-only",
+        code: "interaction_human_only",
+      });
+    });
+    const host = renderCard({
+      interaction: pendingAskUserQuestionsInteraction,
+      onSubmitInteractionAnswers,
+    });
+
+    // Answer every question so Submit is enabled, then submit.
+    for (const group of ['[role="radio"]', '[role="checkbox"]']) {
+      const option = host.querySelector(group);
+      await act(async () => {
+        (option as HTMLElement | null)?.click();
+      });
+    }
+    const submit = Array.from(host.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Send answers"),
+    );
+    expect(submit?.hasAttribute("disabled")).toBe(false);
+    await act(async () => {
+      submit?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(
+      host.querySelector('[data-testid="interaction-action-error"]')?.textContent,
+    ).toContain("This issue-thread interaction is human-only.");
   });
 
   it("standardizes the bare-reject button to Reject even when the payload carries a legacy rejectLabel", () => {

@@ -66,12 +66,30 @@ export type IssueThreadInteractionResolverAudienceDecision =
       message: string;
     };
 
-function canonicalStoredPolicy(input: IssueThreadInteractionResolverAudienceInput["interaction"]) {
-  const policy = input.effectiveResolverPolicy as IssueThreadInteractionResolverPolicy;
-  if (input.resolverPolicyProvenance === "legacy_inherited_restriction" && policy === "board_or_agents") {
-    return "not_creator" as const;
+/**
+ * Canonicalize one stored resolver-policy value.
+ *
+ * Before provenance existed, `board_or_agents` excluded both the creator agent
+ * and the creating run, so a pre-migration row must stay `not_creator` rather
+ * than widening to canonical `anyone`. Every reader of the stored columns —
+ * hydration, the audience evaluator, and the attention feed — goes through here
+ * so none of them can disagree about a legacy row.
+ */
+export function canonicalizeStoredResolverPolicy(
+  policy: IssueThreadInteractionResolverPolicy | string,
+  resolverPolicyProvenance: string | null | undefined,
+): IssueThreadInteractionCanonicalResolverPolicy {
+  if (resolverPolicyProvenance === "legacy_inherited_restriction" && policy === "board_or_agents") {
+    return "not_creator";
   }
-  return normalizeIssueThreadInteractionResolverPolicy(policy);
+  return normalizeIssueThreadInteractionResolverPolicy(policy as IssueThreadInteractionResolverPolicy);
+}
+
+function canonicalStoredPolicy(input: IssueThreadInteractionResolverAudienceInput["interaction"]) {
+  return canonicalizeStoredResolverPolicy(
+    input.effectiveResolverPolicy,
+    input.resolverPolicyProvenance,
+  );
 }
 
 /**
