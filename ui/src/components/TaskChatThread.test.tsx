@@ -96,6 +96,76 @@ describe("TaskChatThread composer alignment (PAP-498)", () => {
   });
 });
 
+describe("TaskChatThread queued message actions", () => {
+  it("interrupts the exact run that a persisted queued message is waiting behind", () => {
+    const onInterruptQueued = vi.fn(async () => {});
+    const queuedComment = {
+      id: "comment-queued",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "user" as const,
+      authorAgentId: null,
+      authorUserId: "user-1",
+      body: "Use the latest requirements instead.",
+      presentation: null,
+      metadata: null,
+      queueState: "queued" as const,
+      queueTargetRunId: "run-active",
+      createdAt: new Date("2026-08-14T12:00:00.000Z"),
+      updatedAt: new Date("2026-08-14T12:00:00.000Z"),
+    };
+
+    render(
+      <TaskChatThread
+        comments={[queuedComment]}
+        onAdd={async () => {}}
+        onInterruptQueued={onInterruptQueued}
+      />,
+    );
+
+    const interrupt = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Interrupt",
+    );
+    expect(container.textContent).toContain("Queued");
+    expect(interrupt).not.toBeUndefined();
+
+    flushSync(() => interrupt!.click());
+    expect(onInterruptQueued).toHaveBeenCalledOnce();
+    expect(onInterruptQueued).toHaveBeenCalledWith("run-active");
+  });
+
+  it("disables the action while the queued run is being interrupted", () => {
+    render(
+      <TaskChatThread
+        comments={[{
+          id: "comment-queued",
+          companyId: "company-1",
+          issueId: "issue-1",
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "user-1",
+          body: "Use the latest requirements instead.",
+          presentation: null,
+          metadata: null,
+          clientStatus: "queued",
+          queueTargetRunId: "run-active",
+          createdAt: new Date("2026-08-14T12:00:00.000Z"),
+          updatedAt: new Date("2026-08-14T12:00:00.000Z"),
+        }]}
+        onAdd={async () => {}}
+        onInterruptQueued={async () => {}}
+        interruptingQueuedRunId="run-active"
+      />,
+    );
+
+    const interrupting = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Interrupting…",
+    );
+    expect(interrupting).not.toBeUndefined();
+    expect(interrupting?.disabled).toBe(true);
+  });
+});
+
 describe("TaskChatThread mobile composer dock (PAP-495)", () => {
   it("pins the composer to the nav-aware bottom offset so its action row clears the auto-hiding bottom nav", () => {
     sidebarState.isMobile = true;

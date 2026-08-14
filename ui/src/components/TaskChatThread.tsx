@@ -41,6 +41,7 @@ import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
@@ -123,6 +124,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     feedbackTermsUrl = null,
     onVote,
     draftKey,
+    onInterruptQueued,
+    interruptingQueuedRunId,
   } = props;
 
   const linkedRunMetaById = useMemo(() => {
@@ -522,6 +525,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [onVote, feedbackVoteByTargetId, feedbackDataSharingPreference, feedbackTermsUrl],
   );
 
+  const renderQueuedAction = useCallback(
+    (item: TaskChatMessageItem) => {
+      const runId = item.queueTargetRunId;
+      if (item.optimistic !== "queued" || !runId || !onInterruptQueued) return null;
+
+      const isInterrupting = interruptingQueuedRunId === runId;
+      return (
+        <Button
+          type="button"
+          variant="link"
+          className="h-auto p-0 text-(length:--text-micro)"
+          disabled={isInterrupting}
+          onClick={() => void onInterruptQueued(runId)}
+        >
+          {isInterrupting ? "Interrupting…" : "Interrupt"}
+        </Button>
+      );
+    },
+    [interruptingQueuedRunId, onInterruptQueued],
+  );
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
@@ -585,6 +609,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             renderInteraction={renderInteraction}
             renderBrief={issueBrief ? () => <TaskChatDescriptionBubble brief={issueBrief} /> : undefined}
             renderMessageActions={renderMessageActions}
+            renderQueuedAction={renderQueuedAction}
             tail={tailRunId ? (
               <div data-testid="task-chat-live-transcript">
                 <TaskChatLiveRunPill
