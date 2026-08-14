@@ -98,6 +98,39 @@ describe("issue-thread interaction resolver audience", () => {
     })).toMatchObject({ allowed: false, code: "interaction_creator_excluded" });
   });
 
+  it("excludes the review requester when a review card has null creator columns", () => {
+    const restriction = {
+      policy: "not_creator",
+      excludedActor: { type: "user", id: "review-requester" },
+      source: "issue_review",
+    } as const;
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "review-requester" },
+      interaction: interaction({
+        createdByAgentId: null,
+        createdByUserId: null,
+        sourceRunId: null,
+      }),
+      additionalRestriction: restriction,
+    })).toMatchObject({
+      allowed: false,
+      code: "review_policy_denied",
+      details: {
+        policy: "not_creator",
+        allowedActor: "writer_other_than_review_requester",
+      },
+    });
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "peer-reviewer" },
+      interaction: interaction({
+        createdByAgentId: null,
+        createdByUserId: null,
+        sourceRunId: null,
+      }),
+      additionalRestriction: restriction,
+    })).toMatchObject({ allowed: true, effectiveResolverPolicy: "not_creator" });
+  });
+
   it("keeps governed actions independently human-only", () => {
     const decision = evaluateIssueThreadInteractionResolverAudience({
       actor: agent,

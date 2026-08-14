@@ -17,6 +17,7 @@ export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
   "interaction_already_resolved",
   "interaction_issue_closed",
   "interaction_governed_action_denied",
+  "review_policy_denied",
 ] as const;
 
 export type IssueThreadInteractionResolutionDenialCode =
@@ -26,6 +27,17 @@ export type IssueThreadInteractionResolverActor =
   | { type: "user"; userId: string }
   | { type: "agent"; agentId: string | null | undefined; runId: string | null | undefined }
   | { type: "system"; systemId: string };
+
+export type IssueThreadInteractionResolverRestriction = {
+  policy: IssueThreadInteractionCanonicalResolverPolicy;
+  /**
+   * A server-resolved identity excluded by the binding flow in addition to the
+   * interaction creator. `null` means the binding requires an identity but it
+   * could not be resolved, so the evaluator must fail closed.
+   */
+  excludedActor?: { type: "agent" | "user"; id: string } | null;
+  source?: "issue_review";
+};
 
 export type IssueThreadInteractionResolverAudienceInput = {
   actor: IssueThreadInteractionResolverActor;
@@ -41,7 +53,10 @@ export type IssueThreadInteractionResolverAudienceInput = {
    * A server-derived restriction owned by a binding flow such as issue review.
    * It may only narrow the interaction's persisted effective audience.
    */
-  additionalRestriction?: IssueThreadInteractionCanonicalResolverPolicy | null;
+  additionalRestriction?:
+    | IssueThreadInteractionCanonicalResolverPolicy
+    | IssueThreadInteractionResolverRestriction
+    | null;
   governedAction?: boolean;
 };
 
@@ -62,8 +77,10 @@ export type IssueThreadInteractionResolverAudienceDecision =
         | "interaction_creator_excluded"
         | "interaction_addressee_mismatch"
         | "interaction_governed_action_denied"
+        | "review_policy_denied"
       >;
       message: string;
+      details?: Record<string, unknown>;
     };
 
 /**
@@ -92,6 +109,43 @@ function canonicalStoredPolicy(input: IssueThreadInteractionResolverAudienceInpu
   );
 }
 
+function reviewRestrictionExcludesActor(
+  restriction: IssueThreadInteractionResolverRestriction | null | undefined,
+  actor: { type: "agent" | "user"; id: string },
+) {
+  return restriction?.policy === "not_creator"
+    && restriction.source === "issue_review"
+    && (
+      restriction.excludedActor === null
+      || (
+        restriction.excludedActor?.type === actor.type
+        && restriction.excludedActor.id === actor.id
+      )
+    );
+}
+
+function reviewPolicyDeniedDecision(
+  effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy,
+  requesterKnown: boolean,
+): Extract<IssueThreadInteractionResolverAudienceDecision, { allowed: false }> {
+  return {
+    allowed: false,
+    effectiveResolverPolicy,
+    status: 403,
+    code: "review_policy_denied",
+    message: requesterKnown
+      ? "Review policy `not_creator` requires someone other than the writer who moved the issue into `in_review` to approve or reject it."
+      : "Review policy `not_creator` requires a different writer, but the review requester could not be determined.",
+    details: {
+      policy: "not_creator",
+      allowedActor: "writer_other_than_review_requester",
+      remediation: requesterKnown
+        ? "Have another writer with issue write access submit the verdict, or change reviewPolicy to `anyone`."
+        : "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
+    },
+  };
+}
+
 /**
  * The single pure audience evaluator for issue-thread interaction resolution.
  * Resource access, run validation, containment, and current-target checks must
@@ -101,17 +155,20 @@ export function evaluateIssueThreadInteractionResolverAudience(
   input: IssueThreadInteractionResolverAudienceInput,
 ): IssueThreadInteractionResolverAudienceDecision {
   const persistedPolicy = canonicalStoredPolicy(input.interaction);
+  const additionalRestriction = typeof input.additionalRestriction === "string"
+    ? { policy: input.additionalRestriction }
+    : input.additionalRestriction;
   // human_only and not_creator are independent constraints, not a linear
   // severity scale: their intersection means "a human other than the
   // creator." Keep both predicates even though the persisted public policy
   // enum can only name one of them.
   const creatorExcluded =
     persistedPolicy === "not_creator"
-    || input.additionalRestriction === "not_creator";
+    || additionalRestriction?.policy === "not_creator";
   const humanOnly =
     Boolean(input.governedAction)
     || persistedPolicy === "human_only"
-    || input.additionalRestriction === "human_only";
+    || additionalRestriction?.policy === "human_only";
   const effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy = humanOnly
     ? "human_only"
     : creatorExcluded
@@ -134,6 +191,15 @@ export function evaluateIssueThreadInteractionResolverAudience(
         code: "interaction_creator_excluded",
         message: "This issue-thread interaction requires a resolver other than its creator",
       };
+    }
+    if (reviewRestrictionExcludesActor(additionalRestriction, {
+      type: "user",
+      id: input.actor.userId,
+    })) {
+      return reviewPolicyDeniedDecision(
+        effectiveResolverPolicy,
+        additionalRestriction?.excludedActor !== null,
+      );
     }
     return {
       allowed: true,
@@ -204,6 +270,16 @@ export function evaluateIssueThreadInteractionResolverAudience(
     };
   }
 
+  if (reviewRestrictionExcludesActor(additionalRestriction, {
+    type: "agent",
+    id: input.actor.agentId,
+  })) {
+    return reviewPolicyDeniedDecision(
+      effectiveResolverPolicy,
+      additionalRestriction?.excludedActor !== null,
+    );
+  }
+
   return {
     allowed: true,
     effectiveResolverPolicy,
@@ -229,7 +305,7 @@ export function assertIssueThreadInteractionResolverAudience(
       decision.status,
       decision.code,
       decision.message,
-      { effectiveResolverPolicy: decision.effectiveResolverPolicy },
+      { effectiveResolverPolicy: decision.effectiveResolverPolicy, ...(decision.details ?? {}) },
     );
   }
   return decision;
@@ -244,7 +320,7 @@ export function assertIssueThreadInteractionResolverAudience(
 export function issueThreadInteractionAttentionAgentAllowed(input: {
   agentId: string;
   interaction: IssueThreadInteractionResolverAudienceInput["interaction"];
-  additionalRestriction?: IssueThreadInteractionCanonicalResolverPolicy | null;
+  additionalRestriction?: IssueThreadInteractionResolverAudienceInput["additionalRestriction"];
   governedAction?: boolean;
 }) {
   const attentionRunId = input.interaction.createdByAgentId === input.agentId

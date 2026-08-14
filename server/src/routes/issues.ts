@@ -90,6 +90,7 @@ import {
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
   type IssueReviewPolicy,
+  type IssueThreadInteractionCanonicalResolverPolicy,
   type IssueCommentPresentation,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
@@ -228,12 +229,13 @@ import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
-  isIssueReviewVerdictInteraction,
+  resolveIssueReviewRequester,
 } from "../services/issue-review-policy.js";
 import {
   evaluateIssueThreadInteractionResolverAudience,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
+  type IssueThreadInteractionResolverRestriction,
 } from "../services/issue-thread-interaction-resolution.js";
 import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
@@ -4191,7 +4193,7 @@ export function issueRoutes(
       return denyIssueThreadInteractionResolution(res, {
         status: 403,
         code: "interaction_scope_denied",
-        message: "This issue-thread interaction is outside the actor's authorized issue scope",
+        message: watchdogScope.detail,
       });
     }
     if (watchdogScope.kind !== "none") {
@@ -4200,7 +4202,7 @@ export function issueRoutes(
         return denyIssueThreadInteractionResolution(res, {
           status: 403,
           code: "interaction_scope_denied",
-          message: "This issue-thread interaction is outside the actor's authorized issue scope",
+          message: scopeResult.detail,
         });
       }
       const revalidated = await taskWatchdogsSvc.revalidateMutationScope(watchdogScope);
@@ -4241,18 +4243,11 @@ export function issueRoutes(
       status: string;
       payload?: unknown;
     },
+    runId: string | null,
   ) {
-    const runId = await assertAgentInteractionRunAttribution(req, res, issue);
-    if (runId === false) return false;
-    if (!(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))) return false;
-    if (req.actor.type !== "agent") assertBoard(req);
-
-    const isReviewConfirmationVerdict = await isPendingReviewConfirmationVerdict(issue, interaction);
+    const resolverPolicyRestriction = await resolvePendingReviewInteractionRestriction(issue, interaction);
     const payload = interaction.payload && typeof interaction.payload === "object"
       ? interaction.payload as { toolAction?: unknown }
-      : null;
-    const resolverPolicyRestriction = isReviewConfirmationVerdict
-      ? issue.reviewPolicy ?? "anyone"
       : null;
     const actor = getActorInfo(req);
     const decision: IssueThreadInteractionResolverAudienceDecision =
@@ -4269,7 +4264,10 @@ export function issueRoutes(
         status: decision.status,
         code: decision.code,
         message: decision.message,
-        details: { effectiveResolverPolicy: decision.effectiveResolverPolicy },
+        details: {
+          effectiveResolverPolicy: decision.effectiveResolverPolicy,
+          ...(decision.details ?? {}),
+        },
       });
     }
 
@@ -4283,6 +4281,33 @@ export function issueRoutes(
     // charged, matching comment/update semantics.
     if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "interaction_resolution"))) return false;
     return { decision, resolverPolicyRestriction } as const;
+  }
+
+  async function getIssueThreadInteractionResolutionAuthorization(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+    interactionId: string,
+  ) {
+    // Actor-only gates deliberately precede the interaction lookup. An actor
+    // outside the issue's trusted/watchdog scope must not learn whether an
+    // interaction id exists on that issue.
+    const runId = await assertAgentInteractionRunAttribution(req, res, issue);
+    if (runId === false) return false;
+    if (!(await assertIssueThreadInteractionContainmentAllowed(req, res, issue))) return false;
+    if (req.actor.type !== "agent") assertBoard(req);
+
+    const interactionSvc = issueThreadInteractionService(db);
+    const current = await interactionSvc.getForIssue(issue, interactionId);
+    const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(
+      req,
+      res,
+      issue,
+      current,
+      runId,
+    );
+    if (!resolutionAuthorization) return false;
+    return { interactionSvc, current, resolutionAuthorization } as const;
   }
 
   async function assertSuggestedTaskEffectsAllowed(
@@ -4366,11 +4391,12 @@ export function issueRoutes(
     return true;
   }
 
-  async function isPendingReviewConfirmationVerdict(
+  async function resolvePendingReviewInteractionRestriction(
     issue: {
       id: string;
       companyId: string;
       status: string;
+      reviewPolicy?: IssueReviewPolicy | null;
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
     },
@@ -4381,7 +4407,7 @@ export function issueRoutes(
       createdByAgentId?: string | null;
       createdByUserId?: string | null;
     },
-  ) {
+  ): Promise<IssueThreadInteractionCanonicalResolverPolicy | IssueThreadInteractionResolverRestriction | null> {
     if (
       issue.status !== "in_review"
       || interaction.status !== "pending"
@@ -4389,8 +4415,17 @@ export function issueRoutes(
         interaction.kind !== "request_confirmation"
         && interaction.kind !== "request_checkbox_confirmation"
       )
-    ) return false;
-    return isIssueReviewVerdictInteraction(db, { issue, interaction });
+    ) return null;
+    if (issue.reviewPolicy == null || issue.reviewPolicy === "anyone") return "anyone";
+    if (issue.reviewPolicy === "human_only") {
+      return { policy: "human_only", source: "issue_review" };
+    }
+    const requester = await resolveIssueReviewRequester(db, issue);
+    return {
+      policy: "not_creator",
+      source: "issue_review",
+      excludedActor: requester ? { type: requester.type, id: requester.id } : null,
+    };
   }
 
   async function assertPendingReviewInteractionVerdictAllowed(
@@ -10789,10 +10824,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      const interactionSvc = issueThreadInteractionService(db);
-      const current = await interactionSvc.getForIssue(issue, interactionId);
-      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
-      if (!resolutionAuthorization) return;
+      const authorizedResolution = await getIssueThreadInteractionResolutionAuthorization(
+        req,
+        res,
+        issue,
+        interactionId,
+      );
+      if (!authorizedResolution) return;
+      const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
       const suggestedTaskEffectsAuthorized = current.kind === "suggest_tasks"
         ? await assertSuggestedTaskEffectsAllowed(
             req,
@@ -10956,10 +10995,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      const interactionSvc = issueThreadInteractionService(db);
-      const current = await interactionSvc.getForIssue(issue, interactionId);
-      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
-      if (!resolutionAuthorization) return;
+      const authorizedResolution = await getIssueThreadInteractionResolutionAuthorization(
+        req,
+        res,
+        issue,
+        interactionId,
+      );
+      if (!authorizedResolution) return;
+      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
@@ -11021,10 +11064,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      const interactionSvc = issueThreadInteractionService(db);
-      const current = await interactionSvc.getForIssue(issue, interactionId);
-      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
-      if (!resolutionAuthorization) return;
+      const authorizedResolution = await getIssueThreadInteractionResolutionAuthorization(
+        req,
+        res,
+        issue,
+        interactionId,
+      );
+      if (!authorizedResolution) return;
+      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.answerQuestions(issue, interactionId, req.body, {
@@ -11082,10 +11129,14 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      const interactionSvc = issueThreadInteractionService(db);
-      const current = await interactionSvc.getForIssue(issue, interactionId);
-      const resolutionAuthorization = await assertIssueThreadInteractionResolutionAllowed(req, res, issue, current);
-      if (!resolutionAuthorization) return;
+      const authorizedResolution = await getIssueThreadInteractionResolutionAuthorization(
+        req,
+        res,
+        issue,
+        interactionId,
+      );
+      if (!authorizedResolution) return;
+      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
 
       const actor = getActorInfo(req);
       const { interaction, newlyResolvedItemIds } = await interactionSvc.submitItemVerdicts(

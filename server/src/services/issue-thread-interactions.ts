@@ -69,6 +69,7 @@ import {
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
   issueThreadInteractionResolutionError,
+  type IssueThreadInteractionResolverRestriction,
 } from "./issue-thread-interaction-resolution.js";
 import {
   createPullRequestMergeStateResolver,
@@ -86,7 +87,10 @@ type InteractionActor = {
   runId?: string | null;
   userId?: string | null;
   systemId?: string | null;
-  resolverPolicyRestriction?: IssueThreadInteractionCanonicalResolverPolicy | null;
+  resolverPolicyRestriction?:
+    | IssueThreadInteractionCanonicalResolverPolicy
+    | IssueThreadInteractionResolverRestriction
+    | null;
   suggestedTaskEffectsAuthorized?: boolean;
   resolutionDetails?: Record<string, unknown>;
 };
