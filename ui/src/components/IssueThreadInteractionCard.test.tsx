@@ -539,7 +539,11 @@ describe("IssueThreadInteractionCard", () => {
     expect(error?.textContent).toContain("This issue-thread interaction is human-only.");
     expect(error?.textContent).toContain("Only the board can respond.");
     expect(error?.textContent).not.toMatch(/try again/i);
-    expect(host.querySelector('[role="alert"]')).toBeTruthy();
+    // PAP-17289: one live region, not two. `role="alert"` is itself an
+    // assertive live region, so nesting it inside this wrapper can announce the
+    // same denial twice.
+    expect(error?.querySelector('[role="alert"]')).toBeNull();
+    expect(host.querySelectorAll('[aria-live], [role="alert"]').length).toBe(1);
   });
 
   it("still offers a retry when a resolution fails for a transient reason", async () => {

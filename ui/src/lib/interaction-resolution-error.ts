@@ -89,26 +89,51 @@ export function isInteractionAudienceDenial(error: unknown): boolean {
   return errorStatus(error) === 403;
 }
 
+/** The audience of the card being resolved, as far as this client knows it. */
+export type InteractionResolutionAudience = Pick<
+  InteractionAudienceDescription,
+  "shortSummary" | "isOpen"
+>;
+
 /**
  * Classify a rejected resolution and produce the copy to show inline.
  *
  * `audience` is the effective audience of the card being resolved; when the
- * failure is an audience denial its short form is appended so the reader learns
- * who can respond instead of being told to retry.
+ * failure is an audience denial *and* that audience is narrower than the open
+ * default, its short form is appended so the reader learns who can respond
+ * instead of being told to retry.
  */
 export function describeInteractionResolutionFailure(
   error: unknown,
-  audience?: Pick<InteractionAudienceDescription, "shortSummary"> | null,
+  audience?: InteractionResolutionAudience | null,
 ): InteractionResolutionFailure {
   const code = interactionResolutionErrorCode(error);
   const reason = serverReason(error);
 
   if (isInteractionAudienceDenial(error)) {
-    const responder = audience?.shortSummary ? `${audience.shortSummary}.` : null;
+    // Only a *narrowed* audience has a responder worth naming. Appending the
+    // open-default clause to a refusal produces copy that refutes itself —
+    // "You are not in this card's resolver audience. Anyone can respond." —
+    // which happens whenever the snapshot the client holds is wider than the
+    // policy the server just enforced (PAP-17289).
+    const responder = audience && !audience.isOpen && audience.shortSummary
+      ? `${audience.shortSummary}.`
+      : null;
+    // Without a code the server has told us only that this is forbidden, not
+    // *why*. Restate the status; do not invent a resolver-audience cause it
+    // never claimed.
+    const coded = code !== null
+      && (INTERACTION_AUDIENCE_DENIAL_CODES as readonly string[]).includes(code);
     return {
       kind: "audience_denied",
       code,
-      message: [reason ?? "You are not in this card's resolver audience.", responder]
+      message: [
+        reason
+          ?? (coded
+            ? "You are not in this card's resolver audience."
+            : "You do not have permission to respond to this card."),
+        responder,
+      ]
         .filter(Boolean)
         .join(" "),
     };
@@ -132,7 +157,7 @@ export function describeInteractionResolutionFailure(
 /** Convenience for the many call sites that only need the sentence. */
 export function interactionResolutionErrorMessage(
   error: unknown,
-  audience?: Pick<InteractionAudienceDescription, "shortSummary"> | null,
+  audience?: InteractionResolutionAudience | null,
 ): string {
   return describeInteractionResolutionFailure(error, audience).message;
 }

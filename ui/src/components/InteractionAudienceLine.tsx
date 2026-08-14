@@ -42,7 +42,13 @@ export function InteractionAudienceLine({
         : undefined}
     >
       <Users className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      <div className="min-w-0">
+      {/* The clause names an agent, and an agent name is one unbreakable word.
+          Without a break the row's `overflow-hidden` shell cuts it mid-word with
+          no ellipsis, so a reader sees a plausible but *wrong* responder
+          ("Only ReleaseEngineeringPlatformCoordin") and nothing signals the
+          truncation. Wrapping is the only safe failure mode for a sentence whose
+          whole job is to name who may act (PAP-17289). */}
+      <div className="min-w-0 break-words">
         {/* The compact form drops the policy badge: its clause already names the
             responder, and "Anyone — Anyone can respond" spends a scarce line on
             saying one thing twice. The badge stays on the card, where the longer

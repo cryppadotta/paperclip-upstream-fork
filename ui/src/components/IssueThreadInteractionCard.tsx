@@ -65,15 +65,19 @@ function useResolutionErrorMessage() {
  * The inline resolution error. Announced through an `aria-live` region because a
  * denial is the only feedback a failed decision gets — the row stays put and no
  * toast fires on the attention surface.
+ *
+ * The live region is the *outer* wrapper, mounted whether or not there is a
+ * message: a region has to be in the accessibility tree before its content
+ * changes for the change to be announced. The styled inner div deliberately
+ * carries no `role="alert"` — `alert` is itself an assertive live region, and
+ * nesting one inside another makes some screen reader / browser pairs announce
+ * the same denial twice (PAP-17289).
  */
 function InteractionActionError({ message }: { message: string | null }) {
   return (
     <div aria-live="assertive" data-testid="interaction-action-error">
       {message ? (
-        <div
-          role="alert"
-          className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
+        <div className="rounded-sm border border-destructive/60 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {message}
         </div>
       ) : null}

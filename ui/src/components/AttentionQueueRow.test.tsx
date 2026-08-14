@@ -827,6 +827,31 @@ describe("AttentionQueueRow", () => {
     expect(audience?.textContent).not.toContain("Addressed —");
   });
 
+  // PAP-17289: the row's shell is `overflow-hidden`, so a clause that cannot
+  // wrap is cut mid-word with no ellipsis and names a responder that does not
+  // exist. jsdom does no layout, so this asserts the wrapping rule itself.
+  it("lets a long addressee name wrap instead of being cut mid-word", () => {
+    const addresseeName = "ReleaseEngineeringPlatformCoordinationServiceBot";
+    render(
+      <AttentionQueueRow
+        item={interactionItem({
+          ...openAudience,
+          addresseeAgentId: "agent-release",
+          addresseeName,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const audience = container?.querySelector('[data-testid="interaction-audience"]');
+    const summary = audience?.querySelector('[data-testid="interaction-audience-summary"]');
+    expect(summary?.textContent).toBe(`Only ${addresseeName} or the board can respond`);
+    expect(summary?.parentElement?.className).toContain("break-words");
+  });
+
   it("renders no audience line when the feed carries no resolver metadata", () => {
     render(
       <AttentionQueueRow

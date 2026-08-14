@@ -7,8 +7,9 @@ import {
   isInteractionAudienceDenial,
 } from "./interaction-resolution-error";
 
-const addressedAudience = { shortSummary: "Only CodexCoder or the board can respond" };
-const humanOnlyAudience = { shortSummary: "Only the board can respond" };
+const addressedAudience = { shortSummary: "Only CodexCoder or the board can respond", isOpen: false };
+const humanOnlyAudience = { shortSummary: "Only the board can respond", isOpen: false };
+const openAudience = { shortSummary: "Anyone can respond", isOpen: true };
 
 /** Shapes an `ApiError` the way `errorHandler` serializes an `HttpError`. */
 function denial(status: number, code: string, message: string) {
@@ -95,6 +96,41 @@ describe("describeInteractionResolutionFailure", () => {
       "This issue-thread interaction requires a resolver other than its creator.",
     );
     expect(failure.message).not.toMatch(/try again/i);
+  });
+
+  // PAP-17289: the responder clause explains a denial, so it must never
+  // contradict it. An open card has no narrower audience to point at.
+  it("does not append the open-default clause to a refusal it would refute", () => {
+    const failure = describeInteractionResolutionFailure(
+      denial(
+        403,
+        "interaction_addressee_mismatch",
+        "Only the addressed agent can resolve this interaction",
+      ),
+      openAudience,
+    );
+
+    expect(failure.kind).toBe("audience_denied");
+    expect(failure.message).toBe("Only the addressed agent can resolve this interaction.");
+    expect(failure.message).not.toMatch(/anyone can respond/i);
+  });
+
+  it("keeps the server's own text for an uncoded 403 instead of inventing a cause", () => {
+    const failure = describeInteractionResolutionFailure(
+      new ApiError("Forbidden", 403, { error: "Forbidden" }),
+      openAudience,
+    );
+
+    expect(failure).toMatchObject({ kind: "audience_denied", code: null, message: "Forbidden." });
+    expect(failure.message).not.toMatch(/resolver audience/i);
+    expect(failure.message).not.toMatch(/try again/i);
+  });
+
+  it("restates the refusal without claiming an audience cause when a 403 says nothing", () => {
+    const failure = describeInteractionResolutionFailure(new ApiError("", 403, null), null);
+
+    expect(failure.message).toBe("You do not have permission to respond to this card.");
+    expect(failure.message).not.toMatch(/resolver audience/i);
   });
 
   it("does not ask for a retry when the card has already moved on", () => {
