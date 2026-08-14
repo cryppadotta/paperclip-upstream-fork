@@ -12,7 +12,7 @@ import {
   issues,
   toolActionRequests,
 } from "@paperclipai/db";
-import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
+import { trackInteractionCreated, trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
   AcceptIssueThreadInteraction,
   AskUserQuestionsAnswer,
@@ -875,9 +875,25 @@ async function emitInteractionResolvedTelemetry(
       ...buildInteractionResolvedCounts(interaction, {
         createdTaskCount: args?.createdTaskCount,
       }),
+      legacyInheritedRestriction:
+        interaction.resolverPolicyProvenance === "legacy_inherited_restriction",
     });
   } catch (error) {
     console.error("[paperclip] Failed to emit interaction.resolved telemetry", error);
+  }
+}
+
+function emitInteractionCreatedTelemetry(args: {
+  interactionKind: IssueThreadInteractionKind;
+  usedDeprecatedResolverPolicyAlias: boolean;
+}) {
+  const telemetryClient = getTelemetryClient();
+  if (!telemetryClient) return;
+
+  try {
+    trackInteractionCreated(telemetryClient, args);
+  } catch (error) {
+    console.error("[paperclip] Failed to emit interaction.created telemetry", error);
   }
 }
 
@@ -1884,6 +1900,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       actor: InteractionActor,
     ) => {
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
+      const usedDeprecatedResolverPolicyAlias =
+        data.resolverPolicy === "board_or_agents" || data.resolverPolicy === "board_only";
       const governance = await db
         .select({ interactionResolverGovernance: companies.interactionResolverGovernance })
         .from(companies)
@@ -2098,7 +2116,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       if (superseded.length > 0) {
         await emitResolvedInteractionsTelemetry(db, superseded.map(hydrateInteraction));
       }
-      return hydrateInteraction(created);
+      const interaction = hydrateInteraction(created);
+      emitInteractionCreatedTelemetry({
+        interactionKind: interaction.kind,
+        usedDeprecatedResolverPolicyAlias,
+      });
+      return interaction;
     },
 
     acceptInteraction: async (
