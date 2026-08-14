@@ -4272,6 +4272,16 @@ export function issueRoutes(
         details: { effectiveResolverPolicy: decision.effectiveResolverPolicy },
       });
     }
+
+    // Resolving an interaction on another run's issue is a cross-issue mutation
+    // like a comment or a PATCH, so it consumes the same per-run budget (§9.3,
+    // §9.8.1). This runs last: company/resource access, run attribution,
+    // containment, and the audience decision have all already passed, and the
+    // terminal interaction mutation plus every child-task, continuation,
+    // activity, tool, and wake side effect is still downstream. Same-issue
+    // resolutions short-circuit inside the counter transaction and are not
+    // charged, matching comment/update semantics.
+    if (!(await assertCrossIssueInfluenceWithinRunCap(req, res, issue, "interaction_resolution"))) return false;
     return { decision, resolverPolicyRestriction } as const;
   }
 

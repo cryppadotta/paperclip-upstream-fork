@@ -580,10 +580,11 @@ may wake the target assignee, including an explicit `resume: true` comment on a
 the normal agent rewake throttle; comment presentation cannot give it human
 wake privileges. Agent issue comments and updates require a persisted heartbeat
 run bound to the authenticated agent and company; missing, invalid, or mismatched
-run context fails closed before mutation. A run may attempt at most 20 cross-issue comments or issue
-updates across the shared counter. The server records each attempt with its
-source issue, target issue, run, count, and rollout mode, and fails closed with
-the cap in the error once enforcement is active. Assignee self-comments do not
+run context fails closed before mutation. A run may attempt at most 20 cross-issue comments, issue
+updates, or issue-thread interaction resolutions across one shared counter. The
+server records each attempt with its source issue, target issue, run, count, and
+rollout mode, and fails closed with the cap in the error once enforcement is
+active. Writes to the run's own source issue are not counted. Assignee self-comments do not
 wake the assignee, and a non-assignee comment cannot mint a mention grant.
 
 Agent-authored issue comments persist the responsible user derived from the
@@ -704,6 +705,12 @@ prompt. Neither surface may enable or disable a control on its own authority.
 Every resolution remains company-scoped, run-attributed for agent actors,
 low-trust/task-bridge contained, target-current, and exact-once. Target staleness,
 supersession, continuation idempotency, and activity attribution remain mandatory.
+An open audience is not an uncapped one: when an agent run resolves an interaction
+on an issue other than its own source issue, the resolution is a cross-issue
+mutation and consumes the per-run cross-issue influence budget in §9.3, charged
+after audience authorization and before the interaction mutation, child tasks,
+continuation, tool action, or wake. Same-issue resolutions and board/user
+resolutions are outside that counter.
 Accepting or answering an interaction records a response only: suggested-task
 creation, provider/tool calls, deployment, spend, hiring, secrets, execution-policy
 decisions, and every other downstream effect must re-run its own authorization and
