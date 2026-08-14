@@ -1853,6 +1853,7 @@ describe("IssueDetail", () => {
       postedComment.resolve(createIssueComment({ body: "Keep this bound to the original run" }));
     });
     await flushReact();
+    mockHeartbeatsApi.cancel.mockClear();
   });
 
   it("does not optimistically queue a fresh comment from an unlocked stale active-run cache", async () => {
