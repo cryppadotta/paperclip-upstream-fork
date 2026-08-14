@@ -1,7 +1,7 @@
 ALTER TABLE "issue_thread_interactions" ALTER COLUMN "requested_resolver_policy" SET DEFAULT 'anyone';--> statement-breakpoint
 ALTER TABLE "issue_thread_interactions" ALTER COLUMN "effective_resolver_policy" SET DEFAULT 'anyone';--> statement-breakpoint
-ALTER TABLE "issue_thread_interactions" ADD COLUMN "resolver_policy_provenance" text;--> statement-breakpoint
-ALTER TABLE "issue_thread_interactions" ADD COLUMN "effective_resolver_policy_source" text;--> statement-breakpoint
+ALTER TABLE "issue_thread_interactions" ADD COLUMN IF NOT EXISTS "resolver_policy_provenance" text;--> statement-breakpoint
+ALTER TABLE "issue_thread_interactions" ADD COLUMN IF NOT EXISTS "effective_resolver_policy_source" text;--> statement-breakpoint
 -- Existing rows predate provenance, so their explicit-vs-default origin cannot
 -- be proven. Preserve the old creator-excluding board_or_agents behavior as
 -- not_creator and the old board_only behavior as human_only. This deliberately
