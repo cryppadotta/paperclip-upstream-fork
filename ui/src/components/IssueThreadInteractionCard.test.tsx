@@ -4,6 +4,7 @@ import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Agent } from "@paperclipai/shared";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
 import { ThemeProvider } from "../context/ThemeContext";
 import { TooltipProvider } from "./ui/tooltip";
@@ -33,6 +34,10 @@ import {
   agentResolvedRequestConfirmationInteraction,
   withdrawnRequestConfirmationInteraction,
   issueClosedRequestConfirmationInteraction,
+  notCreatorRequestConfirmationInteraction,
+  humanOnlyRequestConfirmationInteraction,
+  companyCappedRequestConfirmationInteraction,
+  legacyRestrictedRequestConfirmationInteraction,
 } from "../fixtures/issueThreadInteractionFixtures";
 
 let root: Root | null = null;
@@ -1001,5 +1006,93 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     const label = "Expired · issue closed";
     const occurrences = (host.textContent ?? "").split(label).length - 1;
     expect(occurrences).toBe(1);
+  });
+
+});
+
+/**
+ * The effective audience is shown *before* anyone responds, so a reader never
+ * has to guess whether an open card is waiting on them (PAP-17280).
+ */
+describe("IssueThreadInteractionCard resolver audience", () => {
+  it("shows an open audience on a pending card created without a restriction", () => {
+    const host = renderCard({ interaction: pendingRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("anyone");
+    expect(audience?.getAttribute("data-audience-open")).toBe("true");
+    expect(audience?.textContent).toContain("Anyone");
+    expect(audience?.textContent).toContain("the board or any agent, including the one that asked");
+    // An open card must never read as board-required.
+    expect(audience?.textContent).not.toMatch(/only a person on the board/i);
+    expect(host.querySelector('[data-testid="interaction-audience-note"]')).toBeNull();
+  });
+
+  it("names the excluded creator for an explicit not_creator card", () => {
+    const host = renderCard({
+      interaction: notCreatorRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("not_creator");
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Anyone except creator");
+    expect(audience?.textContent).toContain("except CodexCoder can respond");
+  });
+
+  it("keeps human-only ownership copy on a human-only card", () => {
+    const host = renderCard({ interaction: humanOnlyRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
+    expect(audience?.textContent).toContain("Human only");
+    expect(audience?.textContent).toContain("Only a person on the board can respond");
+  });
+
+  it("keeps addressee ownership copy on an agent-addressed card", () => {
+    const host = renderCard({
+      interaction: agentAddressedRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-open")).toBe("false");
+    expect(audience?.textContent).toContain("Addressed");
+    expect(audience?.textContent).toContain("Only CodexCoder or a person on the board can respond");
+    expect(audience?.textContent).not.toContain("Anyone");
+  });
+
+  it("explains a company cap that narrowed the requested audience", () => {
+    const host = renderCard({ interaction: companyCappedRequestConfirmationInteraction });
+
+    const audience = host.querySelector('[data-testid="interaction-audience"]');
+    expect(audience?.getAttribute("data-audience-policy")).toBe("human_only");
+    expect(
+      host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
+    ).toBe("Company interaction governance narrowed this from Anyone to Human only.");
+  });
+
+  it("explains a legacy card that predates the open default", () => {
+    const host = renderCard({ interaction: legacyRestrictedRequestConfirmationInteraction });
+
+    expect(
+      host.querySelector('[data-testid="interaction-audience-note"]')?.textContent,
+    ).toContain("Created before Anyone became the default");
+  });
+
+  it("omits the audience row once a card is resolved and shows who resolved it", () => {
+    const host = renderCard({
+      interaction: agentResolvedRequestConfirmationInteraction,
+      agentMap: new Map([["agent-codex", { name: "CodexCoder" } as Agent]]),
+    });
+
+    expect(host.querySelector('[data-testid="interaction-audience"]')).toBeNull();
+    const footer = host.querySelector('[data-testid="interaction-resolved-footer"]');
+    expect(footer?.textContent).toContain("Resolved by");
+    expect(footer?.textContent).toContain("CodexCoder");
+    expect(
+      footer?.querySelector('[data-testid="interaction-resolved-by-agent-chip"]'),
+    ).not.toBeNull();
   });
 });

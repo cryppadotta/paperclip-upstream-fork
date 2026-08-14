@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
-import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Wrench, X, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, Bot, Check, CheckCircle2, ChevronDown, ChevronRight, CircleDashed, Clock, ExternalLink, FileText, GitBranch, ImagePlus, Loader2, MessageSquareQuote, MinusCircle, ShieldAlert, ThumbsUp, TriangleAlert, Users, Wrench, X, XCircle } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatAssigneeUserLabel } from "../lib/assignees";
+import { describeInteractionAudience } from "../lib/interaction-audience";
 import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
@@ -3252,6 +3253,15 @@ export function IssueThreadInteractionCard({
         userLabelMap,
       })
     : null;
+  // PAP-17280: the effective audience, shown *before* anyone responds so a
+  // reader never has to guess whether an open card is waiting on them. Derived
+  // from the same server snapshot the resolver routes enforce, so the copy
+  // cannot promise a wider audience than the API allows.
+  const audience = describeInteractionAudience({
+    interaction,
+    creatorLabel: createdByLabel,
+    addresseeLabel,
+  });
   const statusText =
     adminOutcome === "withdrawn"
       ? "Withdrawn"
@@ -3285,7 +3295,7 @@ export function IssueThreadInteractionCard({
                   </Badge>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="max-w-xs text-xs">
-                  Directed to {addresseeLabel}. Agent-addressed interactions are handled by that agent and are kept out of the board attention feed.
+                  Directed to {addresseeLabel}. Agent-addressed interactions are owned by that agent and are kept out of the open company attention feed.
                 </TooltipContent>
               </Tooltip>
             ) : null}
@@ -3296,7 +3306,12 @@ export function IssueThreadInteractionCard({
               ?? (interaction.kind === "suggest_tasks"
                 ? "Suggested task tree"
                 : interaction.kind === "ask_user_questions"
-                  ? interaction.payload.title ?? "Questions for the operator"
+                  // Only a human-only card is genuinely "for the operator";
+                  // an open card is answerable by any teammate (PAP-17280).
+                  ? interaction.payload.title
+                    ?? (audience.policy === "human_only"
+                      ? "Questions for the operator"
+                      : "Questions to answer")
                 : interaction.kind === "request_checkbox_confirmation"
                   ? "Checkbox confirmation requested"
                   : isToolAction
@@ -3311,6 +3326,26 @@ export function IssueThreadInteractionCard({
             <p className="mt-2 max-w-3xl text-sm leading-6 text-muted-foreground">
               {interaction.summary}
             </p>
+          ) : null}
+          {interaction.status === "pending" ? (
+            <div
+              className="mt-3 flex max-w-3xl items-start gap-2 text-xs leading-5 text-muted-foreground"
+              data-testid="interaction-audience"
+              data-audience-policy={audience.policy}
+              data-audience-open={audience.isOpen ? "true" : "false"}
+            >
+              <Users className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <div>
+                <span className="font-medium text-foreground">{audience.label}</span>
+                {" — "}
+                <span>{audience.summary}</span>
+                {audience.narrowedNote ? (
+                  <span className="block" data-testid="interaction-audience-note">
+                    {audience.narrowedNote}
+                  </span>
+                ) : null}
+              </div>
+            </div>
           ) : null}
         </div>
 
