@@ -46,6 +46,7 @@ import type {
   AttentionWorkspaceRef,
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionResolverPolicyProvenance,
+  IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
@@ -127,6 +128,8 @@ type IssueSummaryRow = {
   title: string;
   status: string;
   priority: string;
+  /** Who may give the `in_review` verdict; `null`/absent ≡ "anyone" (PAP-16506). */
+  reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   createdAt: Date;
@@ -345,6 +348,9 @@ function issueSubject(prefix: string, issue: IssueSubjectRow): AttentionSubject 
       priority: issue.priority,
       assigneeAgentId: issue.assigneeAgentId,
       assigneeUserId: issue.assigneeUserId,
+      // Only present when the row was selected with the column, so subjects
+      // built from narrower selects do not claim a policy they never read.
+      ...(issue.reviewPolicy !== undefined ? { reviewPolicy: issue.reviewPolicy } : {}),
     },
   };
 }
@@ -820,6 +826,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
       title: issues.title,
       status: issues.status,
       priority: issues.priority,
+      reviewPolicy: issues.reviewPolicy,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeUserId: issues.assigneeUserId,
       createdAt: issues.createdAt,
@@ -845,6 +852,7 @@ async function issueSummaryMap(db: Db, companyId: string, issueIds: Array<string
     title: row.title,
     status: row.status,
     priority: row.priority,
+    reviewPolicy: row.reviewPolicy ?? null,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     createdAt: row.createdAt,

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -48,6 +49,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
   afterEach(async () => {
     await db.delete(issueThreadInteractions);
+    await db.delete(activityLog);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -98,6 +100,27 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
 
     return { companyId, goalId, issueId };
+  }
+
+  async function recordReviewTransition(args: {
+    companyId: string;
+    issueId: string;
+    interactionId: string;
+    actorId?: string;
+  }) {
+    await db.insert(activityLog).values({
+      companyId: args.companyId,
+      actorType: "user",
+      actorId: args.actorId ?? "local-board",
+      action: "issue.updated",
+      entityType: "issue",
+      entityId: args.issueId,
+      details: {
+        status: "in_review",
+        reviewInteractionId: args.interactionId,
+        _previous: { status: "in_progress" },
+      },
+    });
   }
 
   it("persists addressees without allowing them to bypass human-only governance", async () => {
@@ -1690,6 +1713,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     });
+    await recordReviewTransition({ companyId, issueId, interactionId: created.id });
 
     const accepted = await interactionsSvc.acceptInteraction({
       id: issueId,
@@ -1710,10 +1734,113 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   });
 
+  it.each(["accept", "reject"] as const)(
+    "revalidates review policy under the issue lock before interaction %s",
+    async (action) => {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue(`Locked ${action} policy`);
+      const resolverAgentId = randomUUID();
+      const resolverRunId = randomUUID();
+      await db.insert(agents).values({
+        id: resolverAgentId,
+        companyId,
+        name: "Review agent",
+        role: "reviewer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      });
+      await db.insert(heartbeatRuns).values({
+        id: resolverRunId,
+        companyId,
+        agentId: resolverAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+      });
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        payload: { version: 1, prompt: "Approve this review?" },
+      }, {
+        userId: "local-board",
+      });
+      await db.update(issues)
+        .set({ status: "in_review", reviewPolicy: "anyone" })
+        .where(eq(issues.id, issueId));
+      await recordReviewTransition({ companyId, issueId, interactionId: created.id });
+
+      let releasePolicyLock!: () => void;
+      let policyLockReady!: () => void;
+      const holdPolicyLock = new Promise<void>((resolve) => {
+        releasePolicyLock = resolve;
+      });
+      const policyLocked = new Promise<void>((resolve) => {
+        policyLockReady = resolve;
+      });
+      const tightenPolicy = db.transaction(async (tx) => {
+        await tx.select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .for("update");
+        await tx.update(issues)
+          .set({ reviewPolicy: "human_only" })
+          .where(eq(issues.id, issueId));
+        policyLockReady();
+        await holdPolicyLock;
+      });
+      await policyLocked;
+
+      const actor = {
+        agentId: resolverAgentId,
+        runId: resolverRunId,
+        reviewVerdictAuthorized: true,
+      };
+      const verdict = action === "accept"
+        ? interactionsSvc.acceptInteraction({
+            id: issueId,
+            companyId,
+            goalId,
+            projectId: null,
+            status: "in_review",
+          }, created.id, {}, actor)
+        : interactionsSvc.rejectInteraction({
+            id: issueId,
+            companyId,
+            status: "in_review",
+          }, created.id, { reason: "Needs changes" }, actor);
+      let verdictSettled = false;
+      void verdict.then(
+        () => { verdictSettled = true; },
+        () => { verdictSettled = true; },
+      );
+      const denied = expect(verdict).rejects.toMatchObject({
+        status: 403,
+        details: expect.objectContaining({
+          code: "review_policy_denied",
+          policy: "human_only",
+        }),
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(verdictSettled).toBe(false);
+      releasePolicyLock();
+      await tightenPolicy;
+      await denied;
+
+      const persisted = await db.select({ status: issueThreadInteractions.status })
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("pending");
+    },
+  );
+
   it("preserves creator and same-run guards for authorized agent review verdicts", async () => {
     const { companyId, goalId, issueId } = await seedConfirmationIssue("Guard agent review verdicts");
     const resolverAgentId = randomUUID();
     const resolverRunId = randomUUID();
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
     await db.insert(agents).values({
       id: resolverAgentId,
       companyId,
@@ -1744,6 +1871,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await db.update(issueThreadInteractions)
       .set({ createdByAgentId: resolverAgentId })
       .where(eq(issueThreadInteractions.id, createdByResolver.id));
+    await recordReviewTransition({ companyId, issueId, interactionId: createdByResolver.id });
 
     const createdBySameRun = await interactionsSvc.create({ id: issueId, companyId }, {
       kind: "request_checkbox_confirmation",
@@ -1768,6 +1896,13 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     };
     await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
       .rejects.toThrow("requires a resolver other than its creator or creating run");
+    await db.update(activityLog).set({
+      details: {
+        status: "in_review",
+        reviewInteractionId: createdBySameRun.id,
+        _previous: { status: "in_progress" },
+      },
+    }).where(eq(activityLog.entityId, issueId));
     await expect(interactionsSvc.acceptInteraction(issue, createdBySameRun.id, {
       selectedOptionIds: ["approve"],
     }, actor)).rejects.toThrow("requires a resolver other than its creator or creating run");

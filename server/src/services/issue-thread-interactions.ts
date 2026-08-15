@@ -20,6 +20,7 @@ import type {
   CancelIssueThreadInteraction,
   CreateIssueThreadInteraction,
   InteractionResolverGovernance,
+  IssueReviewPolicy,
   IssueThreadInteraction,
   IssueThreadInteractionCanonicalResolverPolicy,
   IssueThreadInteractionEffectiveResolverPolicySource,
@@ -64,6 +65,10 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import {
+  assertIssueReviewVerdictActorAllowed,
+  isIssueReviewVerdictInteraction,
+} from "./issue-review-policy.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 import {
   assertIssueThreadInteractionResolverAudience,
@@ -319,7 +324,41 @@ type IssueResolutionContext = {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  reviewPolicy: IssueReviewPolicy | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
 };
+
+async function assertRequestConfirmationResolutionAllowedUnderLock(
+  tx: Db,
+  issue: IssueResolutionContext,
+  interaction: IssueThreadInteractionRow,
+  actor: InteractionActor,
+) {
+  if (isTerminalIssueStatus(issue.status)) {
+    throw conflict("Interaction is no longer actionable because the issue is closed");
+  }
+
+  const isReviewVerdict = issue.status === "in_review"
+    && isRequestConfirmationLikeKind(interaction.kind)
+    && await isIssueReviewVerdictInteraction(tx, { issue, interaction });
+
+  assertInteractionResolutionAllowed(interaction, actor);
+  if (!isReviewVerdict) return;
+
+  const verdictActor = actor.agentId
+    ? { type: "agent" as const, id: actor.agentId }
+    : actor.userId
+      ? { type: "user" as const, id: actor.userId }
+      : null;
+  if (!verdictActor) {
+    throw forbidden("A review verdict requires an authenticated agent or user");
+  }
+  await assertIssueReviewVerdictActorAllowed(tx, {
+    issue,
+    actor: verdictActor,
+  });
+}
 
 const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
   "request_confirmation",
@@ -1443,17 +1482,66 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     });
     if (expired) throw interactionTerminalError({ status: expired.status, result: expired.result });
 
-    const interaction = hydrateInteraction(args.current);
-    const selectedOptionIds =
-      interaction.kind === "request_checkbox_confirmation"
+    const now = new Date();
+    const result = await db.transaction(async (tx) => {
+      // Lock the issue before claiming the interaction. Policy mutations and
+      // review transitions use the same issue-row lock, so the authoritative
+      // review policy and requester are stable through the verdict write.
+      const issueContext = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          reviewPolicy: issues.reviewPolicy,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+        })
+        .from(issues)
+        .where(eq(issues.id, args.issue.id))
+        .for("update")
+        .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+      if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+        throw notFound("Issue not found");
+      }
+
+      const lockedCurrent = await tx
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, args.current.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedCurrent
+        || lockedCurrent.companyId !== args.issue.companyId
+        || lockedCurrent.issueId !== args.issue.id
+      ) {
+        throw notFound("Interaction not found");
+      }
+      if (lockedCurrent.status !== "pending") {
+        throw issueThreadInteractionResolutionError(
+          409,
+          "interaction_already_resolved",
+          "Interaction has already been resolved",
+        );
+      }
+      await assertRequestConfirmationResolutionAllowedUnderLock(
+        tx as unknown as Db,
+        issueContext,
+        lockedCurrent,
+        args.actor,
+      );
+
+      const interaction = hydrateInteraction(lockedCurrent);
+      const selectedOptionIds = interaction.kind === "request_checkbox_confirmation"
         ? resolveSelectedCheckboxConfirmationOptions({
             interaction,
             selectedOptionIds: args.input.selectedOptionIds,
           })
         : undefined;
 
-    const now = new Date();
-    const result = await db.transaction(async (tx) => {
       const [updated] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -1470,7 +1558,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           updatedAt: now,
         })
         .where(and(
-          eq(issueThreadInteractions.id, args.current.id),
+          eq(issueThreadInteractions.id, lockedCurrent.id),
           eq(issueThreadInteractions.status, "pending"),
         ))
         .returning();
@@ -1483,32 +1571,16 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         );
       }
 
-      const issueContext = await tx
-        .select({
-          id: issues.id,
-          companyId: issues.companyId,
-          status: issues.status,
-          assigneeAgentId: issues.assigneeAgentId,
-          assigneeUserId: issues.assigneeUserId,
-        })
-        .from(issues)
-        .where(eq(issues.id, args.issue.id))
-        .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
-
-      if (!issueContext || issueContext.companyId !== args.issue.companyId) {
-        throw notFound("Issue not found");
-      }
-
       let continuationIssue: IssueWakeTarget | null = null;
       if (shouldReturnAcceptedConfirmationToCreatorAgent({
         issue: issueContext,
-        current: args.current,
+        current: lockedCurrent,
         actor: args.actor,
       })) {
         const returnStatus = issueContext.status === "blocked" ? "blocked" : "todo";
         const returnedIssue = await issueService(db).update(args.issue.id, {
           status: returnStatus,
-          assigneeAgentId: args.current.createdByAgentId,
+          assigneeAgentId: lockedCurrent.createdByAgentId,
           assigneeUserId: null,
           actorAgentId: args.actor.agentId ?? null,
           actorUserId: args.actor.userId ?? null,
@@ -1537,12 +1609,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           entityType: "issue",
           entityId: args.issue.id,
           details: {
-            interactionId: args.current.id,
-            interactionKind: args.current.kind,
+            interactionId: lockedCurrent.id,
+            interactionKind: lockedCurrent.kind,
             interactionStatus: "accepted",
             resolutionActorKind: "system",
-            requestedResolverPolicy: args.current.requestedResolverPolicy,
-            effectiveResolverPolicy: args.current.effectiveResolverPolicy,
+            requestedResolverPolicy: lockedCurrent.requestedResolverPolicy,
+            effectiveResolverPolicy: lockedCurrent.effectiveResolverPolicy,
             ...(args.actor.resolutionDetails ?? {}),
           },
         });
@@ -1576,35 +1648,85 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
     }
 
     const now = new Date();
-    const [updated] = await db
-      .update(issueThreadInteractions)
-      .set({
-        status: "rejected",
-        result: {
-          version: 1,
-          outcome: "rejected",
-          reason: reason || null,
-        },
-        resolvedByAgentId: args.actor.agentId ?? null,
-        resolvedByRunId: args.actor.runId ?? null,
-        resolvedByUserId: args.actor.userId ?? null,
-        resolvedAt: now,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(issueThreadInteractions.id, args.current.id),
-        eq(issueThreadInteractions.status, "pending"),
-      ))
-      .returning();
+    const updated = await db.transaction(async (tx) => {
+      const issueContext = await tx
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          reviewPolicy: issues.reviewPolicy,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+        })
+        .from(issues)
+        .where(eq(issues.id, args.issue.id))
+        .for("update")
+        .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+      if (!issueContext || issueContext.companyId !== args.issue.companyId) {
+        throw notFound("Issue not found");
+      }
 
-    if (!updated) {
-      throw issueThreadInteractionResolutionError(
-        409,
-        "interaction_already_resolved",
-        "Interaction has already been resolved",
+      const lockedCurrent = await tx
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, args.current.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedCurrent
+        || lockedCurrent.companyId !== args.issue.companyId
+        || lockedCurrent.issueId !== args.issue.id
+      ) {
+        throw notFound("Interaction not found");
+      }
+      if (lockedCurrent.status !== "pending") {
+        throw issueThreadInteractionResolutionError(
+          409,
+          "interaction_already_resolved",
+          "Interaction has already been resolved",
+        );
+      }
+      await assertRequestConfirmationResolutionAllowedUnderLock(
+        tx as unknown as Db,
+        issueContext,
+        lockedCurrent,
+        args.actor,
       );
-    }
-    await touchIssue(db, args.issue.id);
+
+      const [resolved] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "rejected",
+          result: {
+            version: 1,
+            outcome: "rejected",
+            reason: reason || null,
+          },
+          resolvedByAgentId: args.actor.agentId ?? null,
+          resolvedByRunId: args.actor.runId ?? null,
+          resolvedByUserId: args.actor.userId ?? null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(issueThreadInteractions.id, lockedCurrent.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .returning();
+
+      if (!resolved) {
+        throw issueThreadInteractionResolutionError(
+          409,
+          "interaction_already_resolved",
+          "Interaction has already been resolved",
+        );
+      }
+      await touchIssue(tx, args.issue.id);
+      return resolved;
+    });
+
     const rejected = hydrateInteraction(updated);
     await emitInteractionResolvedTelemetry(db, rejected);
     return rejected;
