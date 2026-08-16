@@ -18,13 +18,20 @@ SET
     WHEN 'board_only' THEN 'human_only'
     ELSE "effective_resolver_policy"
   END,
-  "resolver_policy_provenance" = 'legacy_inherited_restriction',
-  "effective_resolver_policy_source" = CASE
-    WHEN "kind" = 'request_confirmation' AND "payload" ? 'toolAction' THEN 'governed_action'
-    WHEN "effective_resolver_policy" IS DISTINCT FROM "requested_resolver_policy" THEN 'company_cap'
-    ELSE 'requested'
-  END
-WHERE "resolver_policy_provenance" IS NULL;--> statement-breakpoint
+  "resolver_policy_provenance" = COALESCE(
+    "resolver_policy_provenance",
+    'legacy_inherited_restriction'
+  ),
+  "effective_resolver_policy_source" = COALESCE(
+    "effective_resolver_policy_source",
+    CASE
+      WHEN "kind" = 'request_confirmation' AND "payload" ? 'toolAction' THEN 'governed_action'
+      WHEN "effective_resolver_policy" IS DISTINCT FROM "requested_resolver_policy" THEN 'company_cap'
+      ELSE 'requested'
+    END
+  )
+WHERE "resolver_policy_provenance" IS NULL
+   OR "effective_resolver_policy_source" IS NULL;--> statement-breakpoint
 ALTER TABLE "issue_thread_interactions" ALTER COLUMN "resolver_policy_provenance" SET DEFAULT 'inherited';--> statement-breakpoint
 ALTER TABLE "issue_thread_interactions" ALTER COLUMN "resolver_policy_provenance" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "issue_thread_interactions" ALTER COLUMN "effective_resolver_policy_source" SET DEFAULT 'requested';--> statement-breakpoint
