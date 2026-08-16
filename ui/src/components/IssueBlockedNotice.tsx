@@ -186,6 +186,56 @@ function WaitingStepGlyph({ status }: { status: WaitingStepStatus }) {
 }
 
 /**
+ * Calm in-flight counterpart to the amber "still needs a next step" alarm.
+ * The handoff is still `required`, but a correction run is live on the issue,
+ * so the alarm would be crying wolf while an agent is already working. Saying
+ * it quietly beats saying nothing: the reader still learns a disposition is
+ * outstanding, and learns that the alarm comes back if the run ends without
+ * choosing one.
+ */
+function SuccessfulRunHandoffInFlightNotice({
+  liveRunId,
+  assigneeAgentId,
+}: {
+  liveRunId?: string | null;
+  assigneeAgentId?: string | null;
+}) {
+  const shortRunId = liveRunId ? liveRunId.slice(0, 8) : null;
+  return (
+    <div
+      data-testid="issue-next-step-in-flight"
+      data-successful-run-handoff="in_flight"
+      className="mb-3 rounded-md border border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+    >
+      <div className="flex items-start gap-2">
+        <span className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+        </span>
+        <p className="min-w-0 leading-5">
+          A correction run is in progress — the agent is working. This alert returns if the run
+          stops without choosing a next step.
+          {shortRunId ? (
+            <>
+              {" "}
+              {assigneeAgentId ? (
+                <Link
+                  to={`/agents/${assigneeAgentId}/runs/${liveRunId}`}
+                  className="font-mono underline underline-offset-2 hover:text-foreground"
+                >
+                  run {shortRunId}
+                </Link>
+              ) : (
+                <span className="font-mono">run {shortRunId}</span>
+              )}
+            </>
+          ) : null}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Blue "Waiting on live work" variant — rendered in place of the
  * amber notice when `blockerAttention.state === "covered"`: the blocker chain
  * is a healthy plan executing in order and something in it is live.
@@ -384,11 +434,33 @@ export function IssueBlockedNotice({
   // missing-disposition complaint only applies when the issue is stuck.
   // `hasLiveContinuation` is the server's view; `liveIssueIds` catches runs
   // that started after the issue payload was fetched.
+  const issueHasLiveRun = Boolean(issueId && liveIssueIds?.has(issueId));
   const showSuccessfulRunHandoff =
     successfulRunHandoff != null
     && isSuccessfulRunHandoffRequired({ successfulRunHandoff, scheduledRetry })
-    && !(issueId && liveIssueIds?.has(issueId));
-  if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") return null;
+    && !issueHasLiveRun;
+  // Outstanding handoff + a live run on the issue: the alarm is suppressed, so
+  // render the quiet in-flight line in its place rather than nothing at all.
+  // The unpromoted-scheduled-retry carve-out keeps `showSuccessfulRunHandoff`
+  // true, so the amber notice (and its "Retry now" control) still wins there.
+  // This stands in for the handoff alarm only. When the issue also has
+  // blockers, the blocker notice below is the stronger signal and owns the
+  // slot, exactly as it did before this line existed.
+  const handoffInFlightNotice =
+    successfulRunHandoff != null
+    && successfulRunHandoff.required === true
+    && !showSuccessfulRunHandoff
+    && (successfulRunHandoff.hasLiveContinuation || issueHasLiveRun)
+      ? (
+        <SuccessfulRunHandoffInFlightNotice
+          liveRunId={successfulRunHandoff.liveRunId}
+          assigneeAgentId={successfulRunHandoff.assigneeAgentId}
+        />
+      )
+      : null;
+  if (!showSuccessfulRunHandoff && blockers.length === 0 && issueStatus !== "blocked") {
+    return handoffInFlightNotice;
+  }
   const successfulRunRetryNow = showSuccessfulRunHandoff
     && issueId
     && scheduledRetry?.status === "scheduled_retry"
