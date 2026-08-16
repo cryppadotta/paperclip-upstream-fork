@@ -1,8 +1,15 @@
 import { and, count, desc, eq, gte, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companySecretProposals, companySecrets, heartbeatRuns, issues } from "@paperclipai/db";
+import {
+  agents,
+  companySecretBindings,
+  companySecretProposals,
+  companySecrets,
+  heartbeatRuns,
+  issues,
+} from "@paperclipai/db";
 import type { SecretProvider } from "@paperclipai/shared";
-import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { agentService } from "./agents.js";
 import { logActivity } from "./activity-log.js";
@@ -204,16 +211,24 @@ export function createSecretProposalsService(db: Db) {
 
   async function createBinding(context: Pick<ProposalRunContext, "companyId" | "heartbeatRunId">, input: {
     secretId?: string | null;
+    sourceConfigPath?: string | null;
     secretProposalId?: string | null;
     targetAgentId?: string | null;
     configPath: string;
     justification: string;
     bindingTargetPolicy: "self_and_reports";
   }) {
-    if (Boolean(input.secretId) === Boolean(input.secretProposalId)) {
-      throw unprocessable("Binding proposals require exactly one of secretId or secretProposalId");
+    const referenceCount = [input.secretId, input.sourceConfigPath, input.secretProposalId]
+      .filter((value) => Boolean(value)).length;
+    if (referenceCount !== 1) {
+      throw badRequest(
+        "Binding proposals require exactly one of secretId, sourceConfigPath, or secretProposalId",
+      );
     }
     if (!CONFIG_PATH_RE.test(input.configPath)) throw unprocessable("configPath must use env.<KEY> or access.<ALIAS>");
+    if (input.sourceConfigPath && !CONFIG_PATH_RE.test(input.sourceConfigPath)) {
+      throw unprocessable("sourceConfigPath must use env.<KEY> or access.<ALIAS>");
+    }
     if (!input.justification.trim()) throw unprocessable("Justification is required");
     const { run, originIssueId } = await loadRunContext(db, context);
     const targetAgentId = input.targetAgentId ?? run.agentId;
@@ -224,12 +239,33 @@ export function createSecretProposalsService(db: Db) {
     if (!bindingTargetAllowed(run.agentId, targetAgentId, targetAncestors)) {
       throw forbidden("Binding proposals may target only the proposing agent or its reports");
     }
-    if (input.secretId) {
+    let resolvedSecretId = input.secretId ?? null;
+    if (input.sourceConfigPath) {
+      const sourceBinding = await db.select({ secretId: companySecretBindings.secretId })
+        .from(companySecretBindings)
+        .where(and(
+          eq(companySecretBindings.companyId, context.companyId),
+          eq(companySecretBindings.targetType, "agent"),
+          eq(companySecretBindings.targetId, run.agentId),
+          eq(companySecretBindings.configPath, input.sourceConfigPath),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceBinding) throw notFound("Source secret binding not found");
+      resolvedSecretId = sourceBinding.secretId;
+    }
+    if (resolvedSecretId) {
       const secret = await db.select().from(companySecrets).where(and(
-        eq(companySecrets.id, input.secretId),
+        eq(companySecrets.id, resolvedSecretId),
         eq(companySecrets.companyId, context.companyId),
       )).then((rows) => rows[0] ?? null);
-      if (!secret || secret.scope !== "company" || secret.status === "deleted") throw notFound("Secret not found");
+      const sourceBindingAllowsUserSecret = Boolean(input.sourceConfigPath) && secret?.scope === "user";
+      if (
+        !secret
+        || secret.status === "deleted"
+        || (secret.scope !== "company" && !sourceBindingAllowsUserSecret)
+      ) {
+        throw notFound("Secret not found");
+      }
     }
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
@@ -250,7 +286,7 @@ export function createSecretProposalsService(db: Db) {
           companyId: context.companyId,
           kind: "binding",
           justification: input.justification.trim(),
-          secretId: input.secretId ?? null,
+          secretId: resolvedSecretId,
           secretProposalId: input.secretProposalId ?? null,
           targetType: "agent",
           targetId: targetAgentId,
