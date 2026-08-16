@@ -7,6 +7,8 @@ import {
   companySecrets,
   heartbeatRuns,
   issues,
+  userSecretDeclarations,
+  userSecretDefinitions,
 } from "@paperclipai/db";
 import type { SecretProvider } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
@@ -250,8 +252,29 @@ export function createSecretProposalsService(db: Db) {
           eq(companySecretBindings.configPath, input.sourceConfigPath),
         ))
         .then((rows) => rows[0] ?? null);
-      if (!sourceBinding) throw notFound("Source secret binding not found");
-      resolvedSecretId = sourceBinding.secretId;
+      if (sourceBinding) {
+        resolvedSecretId = sourceBinding.secretId;
+      } else if (run.responsibleUserId) {
+        const sourceDeclaration = await db
+          .select({ secretId: companySecrets.id })
+          .from(userSecretDeclarations)
+          .innerJoin(companySecrets, and(
+            eq(companySecrets.companyId, context.companyId),
+            eq(companySecrets.scope, "user"),
+            eq(companySecrets.ownerUserId, run.responsibleUserId),
+            eq(companySecrets.userSecretDefinitionId, userSecretDeclarations.userSecretDefinitionId),
+            eq(companySecrets.status, "active"),
+          ))
+          .where(and(
+            eq(userSecretDeclarations.companyId, context.companyId),
+            eq(userSecretDeclarations.targetType, "agent"),
+            eq(userSecretDeclarations.targetId, run.agentId),
+            eq(userSecretDeclarations.configPath, input.sourceConfigPath),
+          ))
+          .then((rows) => rows[0] ?? null);
+        resolvedSecretId = sourceDeclaration?.secretId ?? null;
+      }
+      if (!resolvedSecretId) throw notFound("Source secret binding not found");
     }
     if (resolvedSecretId) {
       const secret = await db.select().from(companySecrets).where(and(
@@ -265,9 +288,6 @@ export function createSecretProposalsService(db: Db) {
         || (secret.scope !== "company" && !sourceBindingAllowsUserSecret)
       ) {
         throw notFound("Secret not found");
-      }
-      if (sourceBindingAllowsUserSecret && targetAgentId !== run.agentId) {
-        throw unprocessable("User-scoped source secrets may be rebound only to the proposing agent");
       }
     }
     return createWithinQuota(
@@ -481,14 +501,37 @@ export function createSecretProposalsService(db: Db) {
     return updated;
   }
 
-  async function applyBindingApproval(txDb: Db, proposal: Proposal, secretId: string, resolvedByUserId: string) {
+  async function applyBindingApproval(
+    txDb: Db,
+    proposal: Proposal,
+    secret: typeof companySecrets.$inferSelect,
+    resolvedByUserId: string,
+  ) {
     if (!proposal.targetId || !proposal.configPath) throw conflict("Binding proposal is incomplete");
     const agentSvc = agentService(txDb);
     const target = await agentSvc.getById(proposal.targetId);
     if (!target || target.companyId !== proposal.companyId) throw notFound("Target agent not found");
     const adapterConfig = { ...asRecord(target.adapterConfig) };
     const [namespace, key] = proposal.configPath.split(".", 2);
-    const binding = { type: "secret_ref", secretId, version: "latest" };
+    const userSecretDefinition = secret.scope === "user" && secret.userSecretDefinitionId
+      ? await txDb.select({ key: userSecretDefinitions.key }).from(userSecretDefinitions).where(and(
+          eq(userSecretDefinitions.id, secret.userSecretDefinitionId),
+          eq(userSecretDefinitions.companyId, proposal.companyId),
+          eq(userSecretDefinitions.status, "active"),
+        )).then((rows) => rows[0] ?? null)
+      : null;
+    if (secret.scope === "user" && !userSecretDefinition) {
+      throw conflict("Binding proposal user secret definition is not active");
+    }
+    const binding = userSecretDefinition
+      ? {
+          type: "user_secret_ref",
+          key: userSecretDefinition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        }
+      : { type: "secret_ref", secretId: secret.id, version: "latest" };
     if (namespace === "env") {
       const env = { ...asRecord(adapterConfig.env) };
       const existing = env[key];
@@ -561,9 +604,9 @@ export function createSecretProposalsService(db: Db) {
       if (!secretId) throw conflict("Binding proposal has no approved secret");
       const liveSecret = await secretService(txDb).getById(secretId);
       if (!liveSecret || liveSecret.companyId !== companyId || liveSecret.status !== "active") {
-        throw conflict("Binding proposal secret is not an active company secret");
+        throw conflict("Binding proposal secret is not active");
       }
-      await applyBindingApproval(txDb, proposal, secretId, input.resolvedByUserId);
+      await applyBindingApproval(txDb, proposal, liveSecret, input.resolvedByUserId);
       return markApproved(txDb, proposal, {
         resolvedByUserId: input.resolvedByUserId,
         appliedBindingConfigPath: proposal.configPath,

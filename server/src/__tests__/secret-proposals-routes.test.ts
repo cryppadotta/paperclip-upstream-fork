@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -19,6 +19,7 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
@@ -27,6 +28,7 @@ import { secretRoutes } from "../routes/secrets.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { issueService } from "../services/issues.js";
+import { agentService } from "../services/agents.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { secretService } from "../services/secrets.js";
 import {
@@ -59,6 +61,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);
+    await db.delete(userSecretDeclarations);
     await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(issues);
@@ -100,6 +103,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       companyId,
       agentId,
       status: "running",
+      responsibleUserId: "user-1",
       contextSnapshot: { issueId },
     });
     await db.insert(issues).values({
@@ -108,6 +112,7 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       title: "Needs credential",
       identifier: "SEC-1",
       status: "in_progress",
+      responsibleUserId: "user-1",
       executionRunId: heartbeatRunId,
     });
     return { companyId, agentId, heartbeatRunId, issueId };
@@ -512,12 +517,16 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       definitionId: definition.id,
       value: "personal-source-secret",
     });
-    await db.insert(companySecretBindings).values({
-      companyId: fixture.companyId,
-      secretId: userSecret.id,
-      targetType: "agent",
-      targetId: fixture.agentId,
-      configPath: "access.personal_source",
+    await agentService(db).update(fixture.agentId, {
+      adapterConfig: {
+        "access.personal_source": {
+          type: "user_secret_ref",
+          key: definition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        },
+      },
     });
 
     const proposal = await request(createAgentApp(fixture))
@@ -531,9 +540,36 @@ describeEmbeddedPostgres("secret proposal routes", () => {
 
     expect(proposal.status).toBe(201);
     expect(proposal.body).toMatchObject({ secretId: userSecret.id, target: { id: fixture.agentId } });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    const updatedAgent = await agentService(db).getById(fixture.agentId);
+    expect(updatedAgent?.adapterConfig).toMatchObject({
+      "access.personal_alias": {
+        type: "user_secret_ref",
+        key: definition.key,
+        version: "latest",
+        required: true,
+        allowMissingOverride: false,
+      },
+    });
+    expect(await db.select().from(userSecretDeclarations).where(eq(userSecretDeclarations.targetId, fixture.agentId)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          userSecretDefinitionId: definition.id,
+          configPath: "access.personal_source",
+        }),
+        expect.objectContaining({
+          userSecretDefinitionId: definition.id,
+          configPath: "access.personal_alias",
+        }),
+      ]));
   });
 
-  it("rejects rebinding a user-scoped source secret to a report", async () => {
+  it("preserves user-secret declaration semantics when rebinding a source secret to a report", async () => {
     const fixture = await seedRun();
     const reportAgentId = randomUUID();
     await db.insert(agents).values({
@@ -557,12 +593,16 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       definitionId: definition.id,
       value: "personal-report-source-secret",
     });
-    await db.insert(companySecretBindings).values({
-      companyId: fixture.companyId,
-      secretId: userSecret.id,
-      targetType: "agent",
-      targetId: fixture.agentId,
-      configPath: "access.personal_report_source",
+    await agentService(db).update(fixture.agentId, {
+      adapterConfig: {
+        "access.personal_report_source": {
+          type: "user_secret_ref",
+          key: definition.key,
+          version: "latest",
+          required: true,
+          allowMissingOverride: false,
+        },
+      },
     });
 
     const proposal = await request(createAgentApp(fixture))
@@ -575,9 +615,40 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         justification: "Attempt to pass a personal credential to a report",
       });
 
-    expect(proposal.status).toBe(422);
-    expect(proposal.body.error).toBe("User-scoped source secrets may be rebound only to the proposing agent");
-    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+    expect(proposal.status).toBe(201);
+    expect(proposal.body).toMatchObject({ secretId: userSecret.id, target: { id: reportAgentId } });
+
+    const approved = await request(createBoardApp(fixture))
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${proposal.body.id}/approve`)
+      .send({});
+
+    expect(approved.status).toBe(200);
+    const report = await agentService(db).getById(reportAgentId);
+    expect(report?.adapterConfig).toMatchObject({
+      "access.personal_alias": {
+        type: "user_secret_ref",
+        key: definition.key,
+        version: "latest",
+        required: true,
+        allowMissingOverride: false,
+      },
+    });
+    expect(await db.select().from(userSecretDeclarations).where(and(
+      eq(userSecretDeclarations.targetId, reportAgentId),
+      eq(userSecretDeclarations.configPath, "access.personal_alias"),
+    ))).toEqual([expect.objectContaining({ userSecretDefinitionId: definition.id })]);
+    await expect(secrets.resolveUserSecretValue(
+      fixture.companyId,
+      {
+        definitionKey: definition.key,
+        responsibleUserId: "user-1",
+      },
+      {
+        consumerType: "agent",
+        consumerId: reportAgentId,
+        configPath: "access.personal_alias",
+      },
+    )).resolves.toMatchObject({ value: "personal-report-source-secret" });
   });
 
   it("returns 404 when sourceConfigPath is missing or belongs to another agent", async () => {
