@@ -593,6 +593,10 @@ describeEmbeddedPostgres("secret proposal routes", () => {
       definitionId: definition.id,
       value: "personal-report-source-secret",
     });
+    await secrets.createCurrentUserSecretValue(fixture.companyId, "user-2", {
+      definitionId: definition.id,
+      value: "second-user-report-secret",
+    });
     await agentService(db).update(fixture.agentId, {
       adapterConfig: {
         "access.personal_report_source": {
@@ -649,6 +653,18 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         configPath: "access.personal_alias",
       },
     )).resolves.toMatchObject({ value: "personal-report-source-secret" });
+    await expect(secrets.resolveUserSecretValue(
+      fixture.companyId,
+      {
+        definitionKey: definition.key,
+        responsibleUserId: "user-2",
+      },
+      {
+        consumerType: "agent",
+        consumerId: reportAgentId,
+        configPath: "access.personal_alias",
+      },
+    )).resolves.toMatchObject({ value: "second-user-report-secret" });
   });
 
   it("returns 404 when sourceConfigPath is missing or belongs to another agent", async () => {
