@@ -266,6 +266,9 @@ export function createSecretProposalsService(db: Db) {
       ) {
         throw notFound("Secret not found");
       }
+      if (sourceBindingAllowsUserSecret && targetAgentId !== run.agentId) {
+        throw unprocessable("User-scoped source secrets may be rebound only to the proposing agent");
+      }
     }
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },

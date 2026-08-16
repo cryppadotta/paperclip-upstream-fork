@@ -533,6 +533,53 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(proposal.body).toMatchObject({ secretId: userSecret.id, target: { id: fixture.agentId } });
   });
 
+  it("rejects rebinding a user-scoped source secret to a report", async () => {
+    const fixture = await seedRun();
+    const reportAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reportAgentId,
+      companyId: fixture.companyId,
+      name: "Report",
+      role: "engineer",
+      reportsTo: fixture.agentId,
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      status: "idle",
+    });
+    const secrets = secretService(db);
+    const definition = await secrets.createUserSecretDefinition(fixture.companyId, {
+      key: "personal_report_source_token",
+      name: "Personal report source token",
+      provider: "local_encrypted",
+    });
+    const userSecret = await secrets.createCurrentUserSecretValue(fixture.companyId, "user-1", {
+      definitionId: definition.id,
+      value: "personal-report-source-secret",
+    });
+    await db.insert(companySecretBindings).values({
+      companyId: fixture.companyId,
+      secretId: userSecret.id,
+      targetType: "agent",
+      targetId: fixture.agentId,
+      configPath: "access.personal_report_source",
+    });
+
+    const proposal = await request(createAgentApp(fixture))
+      .post("/api/agents/me/secret-proposals")
+      .send({
+        kind: "binding",
+        sourceConfigPath: "access.personal_report_source",
+        targetAgentId: reportAgentId,
+        configPath: "access.personal_alias",
+        justification: "Attempt to pass a personal credential to a report",
+      });
+
+    expect(proposal.status).toBe(422);
+    expect(proposal.body.error).toBe("User-scoped source secrets may be rebound only to the proposing agent");
+    expect(await db.select().from(companySecretProposals)).toHaveLength(0);
+  });
+
   it("returns 404 when sourceConfigPath is missing or belongs to another agent", async () => {
     const fixture = await seedRun();
     const otherAgentId = randomUUID();
