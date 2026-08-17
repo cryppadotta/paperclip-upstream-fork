@@ -81,6 +81,8 @@ The manifest records:
 - `schemaVersion` and `generatedBy`: identify a manifest that the train may
   safely replace on a later run.
 - `baseMasterSha`: the exact `origin/master` commit used as the base.
+- `trainCommitSha`: the exact assembled `dev/dotta` commit. The deploy refuses
+  a manifest whose value does not equal the source ref.
 - `included`: the PR number, head SHA, title, and migration flag for each merged
   PR.
 - `skipped`: the same PR data plus the reason it was skipped.
@@ -157,7 +159,8 @@ The deploy order is fixed and fail-closed:
 4. Move the old `/srv/paperclip/app` aside, move the stage into place, request
    a guarded hot restart, and restart `paperclip.service`.
 5. Require a new service PID, an `ok` health response carrying the exact version
-   stamp, and a current hot-restart report with no lost runs.
+   stamp, and a hot-restart report for the same old and new PIDs, the current
+   restart window, and no lost runs.
 
 If a failure happens after the directory swap, the script restores the previous
 application directory and restarts the service. It deliberately does not

@@ -242,12 +242,14 @@ fi
 
 mkdir -p "$(dirname "$manifest_path")"
 manifest_tmp="$tmp_dir/manifest.json"
+train_commit_sha="$(git rev-parse 'HEAD^{commit}')"
 jq -n \
   --argjson schemaVersion "$MANIFEST_SCHEMA_VERSION" \
   --arg generatedBy "$MANIFEST_GENERATOR" \
   --arg repository "$GITHUB_REPOSITORY" \
   --arg branch "$TRAIN_BRANCH" \
   --arg baseMasterSha "$base_master_sha" \
+  --arg trainCommitSha "$train_commit_sha" \
   --arg generatedAt "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
   --argjson dryRun "$dry_run" \
   --slurpfile included "$included_path" \
@@ -258,6 +260,7 @@ jq -n \
     repository: $repository,
     branch: $branch,
     baseMasterSha: $baseMasterSha,
+    trainCommitSha: $trainCommitSha,
     generatedAt: $generatedAt,
     dryRun: $dryRun,
     included: $included,

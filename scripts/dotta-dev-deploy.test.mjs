@@ -84,6 +84,7 @@ fi
     repository: "paperclipai/paperclip",
     branch: "dev/dotta",
     baseMasterSha: baseCommit,
+    trainCommitSha: sourceCommit,
     generatedAt: "2099-01-01T00:00:00Z",
     dryRun: true,
     included: [
@@ -230,6 +231,20 @@ test("manifest validation happens only after a fresh backup", () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /manifest does not match/);
+  assert.equal(readFileSync(fixture.eventLog, "utf8"), "backup\n");
+  assert.equal(readFileSync(path.join(fixture.appDir, "old.txt"), "utf8"), "old app\n");
+});
+
+test("a stale manifest cannot label a newer train commit", () => {
+  const fixture = setupFixture();
+  writeFileSync(path.join(fixture.repo, "source.txt"), "newer train source\n");
+  run("git", ["add", "source.txt"], fixture.repo);
+  run("git", ["commit", "-m", "rebuild train"], fixture.repo);
+
+  const result = runDeploy(fixture);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /manifest trainCommitSha does not match dev\/dotta/);
   assert.equal(readFileSync(fixture.eventLog, "utf8"), "backup\n");
   assert.equal(readFileSync(path.join(fixture.appDir, "old.txt"), "utf8"), "old app\n");
 });

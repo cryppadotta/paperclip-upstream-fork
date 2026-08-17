@@ -233,6 +233,7 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
     assert.equal(manifest.schemaVersion, 1);
     assert.equal(manifest.generatedBy, "scripts/dotta-dev-train.sh");
     assert.equal(manifest.baseMasterSha, baseMasterSha);
+    assert.equal(manifest.trainCommitSha, git(workspace, "rev-parse", "dev/dotta"));
     assert.equal(manifest.dryRun, false);
     assert.deepEqual(
       manifest.included.map((pullRequest) => pullRequest.number),
@@ -298,6 +299,7 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
     const dryRunManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 
     assert.equal(dryRunManifest.dryRun, true);
+    assert.equal(dryRunManifest.trainCommitSha, git(workspace, "rev-parse", "dev/dotta"));
     assert.deepEqual(
       dryRunManifest.included.map((pullRequest) => pullRequest.number),
       [2, 10, 14],

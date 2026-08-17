@@ -252,6 +252,7 @@ if ! jq -e \
    .generatedBy == $generator and
    .branch == $branch and
    (.baseMasterSha | type == "string" and test("^[0-9a-f]{40}$")) and
+   (.trainCommitSha | type == "string" and test("^[0-9a-f]{40}$")) and
    (.dryRun | type == "boolean") and
    (.included | type == "array") and
    all(.included[];
@@ -274,6 +275,9 @@ if [[ "$source_ref" == "origin/dev/dotta" ]]; then
 fi
 source_commit="$(git -C "$repo_root" rev-parse "$source_ref^{commit}" 2>/dev/null)" ||
   die "source ref is not available: $source_ref"
+manifest_train_commit="$(jq -r '.trainCommitSha' "$manifest_path")"
+[[ "$manifest_train_commit" == "$source_commit" ]] ||
+  die "manifest trainCommitSha does not match $source_ref ($manifest_train_commit != $source_commit)"
 
 base_master_sha="$(jq -r '.baseMasterSha' "$manifest_path")"
 git -C "$repo_root" merge-base --is-ancestor "$base_master_sha" "$source_commit" ||
@@ -328,6 +332,7 @@ printf '%s\n' "$app_backup" >"$app_dir/.previous-app-backup-PAP-service-rebuild"
 if [[ "$dry_run" == false ]]; then
   # Write the intent only after both moves succeed. A failed swap must not
   # leave the still-running old service with an unconsumed restart marker.
+  restart_window_started_epoch="$(date -u +%s)"
   (
     cd "$app_dir"
     pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --server-pid "$old_pid"
@@ -372,8 +377,20 @@ else
     '.status == "ok" and (.serverVersion // .version) == $version' \
     <<<"$health_body" >/dev/null ||
     die "health smoke did not report the deployed version (set PAPERCLIP_API_KEY for authenticated mode)"
-  jq -e --arg version "$build_version" \
-    '.newServerVersion == $version and (.lostRunIds | type == "array" and length == 0)' \
+  jq -e \
+    --arg version "$build_version" \
+    --argjson oldPid "$old_pid" \
+    --argjson newPid "$new_pid" \
+    --argjson restartWindowStartedEpoch "$restart_window_started_epoch" \
+    'def epoch:
+       if type == "string" then sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 else error("not an ISO timestamp") end;
+     .version == 1 and
+     .previousServerPid == $oldPid and
+     .newServerPid == $newPid and
+     .newServerVersion == $version and
+     (.requestedAt | epoch) >= $restartWindowStartedEpoch and
+     (.completedAt | epoch) >= (.requestedAt | epoch) and
+     (.lostRunIds | type == "array" and length == 0)' \
     "$hot_restart_report" >/dev/null ||
     die "hot-restart continuity report is missing, stale, or contains lost runs: $hot_restart_report"
   echo "Live smoke passed with main PID $new_pid."
