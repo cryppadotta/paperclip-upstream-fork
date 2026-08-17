@@ -60,6 +60,12 @@ canonical_path() {
   realpath -m -- "$1"
 }
 
+paths_overlap() {
+  local first="${1%/}"
+  local second="${2%/}"
+  [[ "$first" == "$second" || "$first" == "$second/"* || "$second" == "$first/"* ]]
+}
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -170,8 +176,11 @@ fi
 
 [[ "$app_dir" != "/" && "$stage_dir" != "/" && "$backup_dir" != "/" ]] ||
   die "application, stage, and backup paths must not be filesystem root"
-[[ "$app_dir" != "$stage_dir" && "$app_dir" != "$backup_dir" && "$stage_dir" != "$backup_dir" ]] ||
-  die "application, stage, and backup paths must be distinct"
+if paths_overlap "$app_dir" "$stage_dir" ||
+  paths_overlap "$app_dir" "$backup_dir" ||
+  paths_overlap "$stage_dir" "$backup_dir"; then
+  die "application, stage, and backup paths must be distinct and must not contain each other"
+fi
 
 backup_marker=""
 app_backup=""
@@ -290,7 +299,7 @@ printf '%s\n' "$fresh_backup" >"$stage_dir/.paperclip-deploy-db-backup"
 (
   cd "$stage_dir"
   CI=true NODE_ENV=development pnpm install --frozen-lockfile --force --prod=false
-  NODE_ENV=development pnpm build
+  NODE_ENV=production pnpm build
 )
 [[ -f "$stage_dir/server/dist/index.js" ]] || die "production build did not create server/dist/index.js"
 [[ "$(<"$stage_dir/.paperclip-build-version")" == "$build_version" ]] || die "staged version stamp mismatch"
@@ -313,8 +322,8 @@ echo "[3/4] Swapping the staged application"
 app_backup="$(dirname "$app_dir")/app-prev-dotta-dev-$(date -u +'%Y%m%dT%H%M%SZ')"
 [[ ! -e "$app_backup" && ! -L "$app_backup" ]] || die "application backup path already exists: $app_backup"
 mv -- "$app_dir" "$app_backup"
-mv -- "$stage_dir" "$app_dir"
 swapped=true
+mv -- "$stage_dir" "$app_dir"
 printf '%s\n' "$app_backup" >"$app_dir/.previous-app-backup-PAP-service-rebuild"
 
 echo "[4/4] Running the post-swap smoke check"

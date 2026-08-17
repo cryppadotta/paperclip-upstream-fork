@@ -129,7 +129,7 @@ function deployArgs(fixture) {
   ];
 }
 
-function runDeploy(fixture) {
+function runDeploy(fixture, env = {}) {
   return spawnSync("bash", deployArgs(fixture), {
     cwd: fixture.repo,
     encoding: "utf8",
@@ -137,6 +137,7 @@ function runDeploy(fixture) {
       ...process.env,
       PATH: `${fixture.bin}:${process.env.PATH}`,
       EVENT_LOG: fixture.eventLog,
+      ...env,
     },
   });
 }
@@ -221,4 +222,44 @@ test("dry-run refuses the live application directory before invoking backup", ()
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /refuses to use the live application directory/);
   assert.equal(readdirSync(fixture.root).includes("events.log"), false);
+});
+
+test("dry-run rejects nested application, stage, and backup paths before invoking backup", () => {
+  const fixture = setupFixture();
+  const args = deployArgs(fixture);
+  const stageIndex = args.indexOf("--stage-dir") + 1;
+  args[stageIndex] = path.join(fixture.appDir, "stage");
+  const result = spawnSync("bash", args, {
+    cwd: fixture.repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${fixture.bin}:${process.env.PATH}`,
+      EVENT_LOG: fixture.eventLog,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must not contain each other/);
+  assert.equal(readdirSync(fixture.root).includes("events.log"), false);
+  assert.equal(readFileSync(path.join(fixture.appDir, "old.txt"), "utf8"), "old app\n");
+});
+
+test("a failed candidate move restores the previous application", () => {
+  const fixture = setupFixture();
+  writeExecutable(path.join(fixture.bin, "mv"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${2:-}" == "\${FAIL_MV_SOURCE:-}" ]]; then
+  exit 23
+fi
+exec /usr/bin/mv "$@"
+`);
+
+  const result = runDeploy(fixture, { FAIL_MV_SOURCE: fixture.stageDir });
+
+  assert.equal(result.status, 23);
+  assert.match(result.stderr, /restoring .*app-prev-dotta-dev/);
+  assert.equal(readFileSync(path.join(fixture.appDir, "old.txt"), "utf8"), "old app\n");
+  assert.equal(readdirSync(fixture.scratch).some((name) => name.startsWith("app-prev-dotta-dev-")), false);
+  assert.equal(readFileSync(path.join(fixture.stageDir, "source.txt"), "utf8"), "assembled train source\n");
 });
