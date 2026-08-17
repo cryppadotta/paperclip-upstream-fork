@@ -1,7 +1,9 @@
 # Telemetry Data Contract
 
 This document explains how contributors should use Paperclip's public telemetry
-contract. It intentionally does not list individual events or dimensions.
+contract. It does not duplicate the full list of individual events or
+dimensions. It documents extra semantic and privacy rules where the generated
+shape is not sufficient.
 
 The canonical source for first-party event names, dimensions, optionality,
 allowed primitive value types, and enum descriptions is
@@ -55,6 +57,23 @@ If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
 
+## Interaction Resolver Events
+
+`interaction.created` records the interaction kind and whether the create
+request used a deprecated resolver-policy alias. It does not record the prompt,
+title, options, questions, target identifier, creator identifier, or resolver
+identifier.
+
+`interaction.resolved` records the low-cardinality interaction outcome defined
+in the generated contract. Its `legacy_inherited_restriction` dimension is
+`true` only when stored migration provenance preserves a legacy resolver-policy
+restriction. It is `false` for canonical new writes. This dimension describes
+policy provenance. It does not contain user content or an identifier.
+
+Use `trackInteractionCreated()` and `trackInteractionResolved()` from
+`events.ts` to emit these events. The generated contract remains the authority
+for their exact dimensions and optionality.
+
 ## Sandbox Startup Trace Spans
 
 Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are a
@@ -90,21 +109,39 @@ absent, never a misleading `0`.
 | `codex-home.seed` | Managed-home seed step. | `sandbox.startup` |
 | `skills.reconcile` | Skills reconcile step. | `sandbox.startup` |
 | `stage.sync` | Workspace stage-sync step. | `sandbox.startup` |
+| `snapshot.git` | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`). | `stage.sync` |
+| `snapshot.baseline` | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore. | `stage.sync` |
+| `pack` | Host-side workspace tarball build inside `stage.sync`. | `stage.sync` |
 | `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
 | `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
 | `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
 | `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
 | `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
 | `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
+| `sandbox.agentProcess` | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span |
 | `sandbox.exec` | One host-to-sandbox execution. | the active step or wrapper span |
 
 A step span name is the step name. The `sandbox.exec` span parents to the step
-span that runs the execution, so each execution nests under its step. A run-time
+span that runs the execution, so each execution nests under its step. Within
+`stage.sync`, the host-side sub-steps `snapshot.git`, `snapshot.baseline`, and
+`pack` open as child spans of the step, so the host work at the head of the step
+is attributed rather than showing as a gap. A run-time
 `sandbox.exec` span parents instead to the run-time wrapper span that runs it
-(`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`, or
-`sandbox.callbackBridge.relayRequest`). Each run-time wrapper span parents to the
-live run span (`agent.turn` during the turn, `task.run` otherwise). With no
-active trace context the exec span opens unparented.
+(`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`,
+`sandbox.callbackBridge.relayRequest`, or `sandbox.agentProcess`). Each run-time
+wrapper span parents to the live run span (`agent.turn` during the turn,
+`task.run` otherwise). With no active trace context the exec span opens
+unparented.
+
+`sandbox.agentProcess` wraps the persistent streamed agent process. The
+process-session bridge launches it during `bridge.process-session`, so it opens
+under `task.run` — no turn has started yet. It therefore overlaps the sibling
+`agent.turn` rather than nesting under it or dangling off the short-lived bring-up
+step. The span ends when the process settles or when the bridge tears down,
+whichever comes first. The bridge tears down before the run root span ends, so
+the span never outlives `task.run` even when the process lingers past teardown
+(the sandbox `execute` has no cancel, so a lingering process cannot be forced to
+resolve).
 
 The root span sets the error status when the bring-up fails. Each step span sets
 the error status when its step fails. The `sandbox.exec` span sets the error

@@ -22,9 +22,12 @@ function createRequestConfirmation(
     summary: "Review and approve the latest plan.",
     status: "pending",
     continuationPolicy: "wake_assignee",
-    resolverPolicy: "board_only",
-    requestedResolverPolicy: "board_only",
-    effectiveResolverPolicy: "board_only",
+    resolverPolicy: "anyone",
+    requestedResolverPolicy: "anyone",
+    effectiveResolverPolicy: "anyone",
+    resolverPolicyProvenance: "inherited",
+    effectiveResolverPolicySource: "requested",
+    legacyResolverPolicyAliases: { requested: "board_or_agents", effective: "board_or_agents" },
     createdByAgentId: "agent-1",
     createdByUserId: null,
     resolvedByAgentId: null,
@@ -89,12 +92,12 @@ describe("TaskChatInteractionCard", () => {
       );
     });
     const buttons = Array.from(container.querySelectorAll("button"));
-    const confirm = buttons.find((button) => button.textContent === "Confirm");
-    const decline = buttons.find((button) => button.textContent === "Decline");
-    expect(confirm).not.toBeUndefined();
-    expect(decline).not.toBeUndefined();
-    const row = confirm?.parentElement;
-    expect(row).toBe(decline?.parentElement);
+    const approve = buttons.find((button) => button.textContent === "Approve");
+    const reject = buttons.find((button) => button.textContent === "Reject");
+    expect(approve).not.toBeUndefined();
+    expect(reject).not.toBeUndefined();
+    const row = approve?.parentElement;
+    expect(row).toBe(reject?.parentElement);
     expect(row?.className).toContain("flex-row-reverse");
   });
 

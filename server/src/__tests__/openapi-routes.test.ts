@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
+import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes } from "../routes/openapi.js";
 
@@ -43,6 +44,7 @@ const apiPrefixes: Record<string, string> = {
   "issues.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
+  "onboarding-seed.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -79,8 +81,18 @@ function createApp() {
   return app;
 }
 
+// Route files may compose paths from shared path constants inside template
+// literals; substitute the constants' values before normalizing.
+const routePathConstantSubstitutions: Record<string, string> = {
+  "${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}": COMPANY_IMPORT_TRANSFERS_ROUTE_PATH,
+};
+
 function normalizeExpressPath(routePath: string) {
-  return routePath
+  let substituted = routePath;
+  for (const [placeholder, value] of Object.entries(routePathConstantSubstitutions)) {
+    substituted = substituted.split(placeholder).join(value);
+  }
+  return substituted
     .replace(/\*([A-Za-z0-9_]+)/g, "{$1}")
     .replace(/:([A-Za-z0-9_]+)/g, "{$1}")
     .replace(/\/+/g, "/");
@@ -125,6 +137,9 @@ function loadActualRoutes() {
 
     if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_ROUTE_PATH")) {
       routes.add("POST /api/companies/import");
+    }
+    if (file === "companies.ts" && source.includes("router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH")) {
+      routes.add(`POST /api/companies${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}`);
     }
   }
 
@@ -192,6 +207,20 @@ describe("openapi routes", () => {
     expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post.summary,
     ).toBe("Withdraw a pending issue thread interaction");
+    const createInteraction = res.body.paths["/api/issues/{id}/interactions"].post;
+    expect(createInteraction.description).toContain("defaults to canonical `anyone`");
+    const createInteractionSchema = JSON.stringify(
+      createInteraction.requestBody.content["application/json"].schema,
+    );
+    for (const resolverPolicy of [
+      "anyone",
+      "not_creator",
+      "human_only",
+      "board_or_agents",
+      "board_only",
+    ]) {
+      expect(createInteractionSchema).toContain(`\"${resolverPolicy}\"`);
+    }
     expect(res.body.paths["/api/companies/{companyId}/folders/items/move"].post.summary).toBe(
       "Move an item into or out of a folder",
     );

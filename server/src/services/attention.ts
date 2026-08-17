@@ -37,12 +37,16 @@ import type {
   AttentionItemDetail,
   AttentionProjectRef,
   AttentionQueueRef,
+  AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
   AttentionTriageAttribution,
   AttentionWorkspaceRef,
+  IssueThreadInteractionEffectiveResolverPolicySource,
+  IssueThreadInteractionResolverPolicyProvenance,
+  IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
 import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
@@ -57,6 +61,7 @@ import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
+import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -124,6 +129,8 @@ type IssueSummaryRow = {
   title: string;
   status: string;
   priority: string;
+  /** Who may give the `in_review` verdict; `null`/absent ≡ "anyone" (PAP-16506). */
+  reviewPolicy?: IssueReviewPolicy | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   createdAt: Date;
@@ -344,6 +351,9 @@ function issueSubject(prefix: string, issue: IssueSubjectRow): AttentionSubject 
       priority: issue.priority,
       assigneeAgentId: issue.assigneeAgentId,
       assigneeUserId: issue.assigneeUserId,
+      // Only present when the row was selected with the column, so subjects
+      // built from narrower selects do not claim a policy they never read.
+      ...(issue.reviewPolicy !== undefined ? { reviewPolicy: issue.reviewPolicy } : {}),
     },
   };
 }
@@ -408,6 +418,7 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     snoozedUntil: null,
     detail: input.detail ?? null,
     trainingExampleId: null,
+    resolverAudience: input.resolverAudience ?? null,
     rank: 0,
   };
 }
@@ -711,6 +722,45 @@ function interactionVerbs(kind: string, payload: Record<string, unknown>) {
   );
 }
 
+/**
+ * The resolver audience carried by an `issue_thread_interaction` feed row
+ * (PAP-17287). A collapsed queue row offers Accept/Reject long before anything
+ * fetches the interaction itself, so the audience the server will enforce has
+ * to ride along with the item — the queue must never ask for a decision without
+ * saying whose decision it is.
+ *
+ * Facts only. The stored columns are canonicalized through the same helper the
+ * resolution evaluator uses, so a pre-migration row cannot read as `Anyone`
+ * here while the API still treats it as `not_creator`.
+ */
+export function interactionResolverAudience(
+  row: {
+    addresseeAgentId: string | null;
+    createdByAgentId: string | null;
+    requestedResolverPolicy: string;
+    effectiveResolverPolicy: string;
+    resolverPolicyProvenance: string | null;
+    effectiveResolverPolicySource: string | null;
+  },
+  agentName: (agentId: string) => string | null,
+): AttentionResolverAudience {
+  const provenance = (row.resolverPolicyProvenance
+    ?? (row.requestedResolverPolicy === "board_only" || row.requestedResolverPolicy === "board_or_agents"
+      ? "legacy_inherited_restriction"
+      : "inherited")) as IssueThreadInteractionResolverPolicyProvenance;
+  return {
+    requestedResolverPolicy: canonicalizeStoredResolverPolicy(row.requestedResolverPolicy, provenance),
+    effectiveResolverPolicy: canonicalizeStoredResolverPolicy(row.effectiveResolverPolicy, provenance),
+    effectiveResolverPolicySource:
+      (row.effectiveResolverPolicySource ?? "requested") as IssueThreadInteractionEffectiveResolverPolicySource,
+    resolverPolicyProvenance: provenance,
+    addresseeAgentId: row.addresseeAgentId,
+    addresseeName: row.addresseeAgentId ? agentName(row.addresseeAgentId) : null,
+    createdByAgentId: row.createdByAgentId,
+    createdByAgentName: row.createdByAgentId ? agentName(row.createdByAgentId) : null,
+  };
+}
+
 function collapsePendingConfirmationsToNewest<T extends {
   id: string;
   issueId: string;
@@ -784,6 +834,7 @@ async function issueSummaryMap(
       title: issues.title,
       status: issues.status,
       priority: issues.priority,
+      reviewPolicy: issues.reviewPolicy,
       assigneeAgentId: issues.assigneeAgentId,
       assigneeUserId: issues.assigneeUserId,
       createdAt: issues.createdAt,
@@ -814,6 +865,7 @@ async function issueSummaryMap(
     title: row.title,
     status: row.status,
     priority: row.priority,
+    reviewPolicy: row.reviewPolicy ?? null,
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
     createdAt: row.createdAt,
@@ -1165,6 +1217,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           payload: issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
+          requestedResolverPolicy: issueThreadInteractions.requestedResolverPolicy,
+          effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
+          resolverPolicyProvenance: issueThreadInteractions.resolverPolicyProvenance,
+          effectiveResolverPolicySource: issueThreadInteractions.effectiveResolverPolicySource,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
         })
@@ -1174,7 +1230,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
-      const companyAgentRows: AgentOrgRow[] = interactionRows.some((row) => row.addresseeAgentId !== null)
+      // Addressee invokability needs the org graph; the audience line also needs
+      // the creator's name whenever the effective policy excludes it, so a
+      // creator-excluding row pulls the roster in too (PAP-17287).
+      const needsCompanyAgents = interactionRows.some((row) =>
+        row.addresseeAgentId !== null
+        || canonicalizeStoredResolverPolicy(row.effectiveResolverPolicy, row.resolverPolicyProvenance) === "not_creator"
+      );
+      const companyAgentRows: AgentOrgRow[] = needsCompanyAgents
         ? await db
           .select({
             id: agents.id,
@@ -1243,6 +1306,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail,
+          resolverAudience: interactionResolverAudience(
+            interaction,
+            (agentId) => companyAgentMap.get(agentId)?.name ?? null,
+          ),
         }));
       }
 
