@@ -142,6 +142,19 @@ function runDeploy(fixture, env = {}) {
   });
 }
 
+test("live restart intent is written only after the candidate swap", () => {
+  const source = readFileSync(deployScript, "utf8");
+  const candidateMove = source.indexOf('mv -- "$stage_dir" "$app_dir"');
+  const restartIntent = source.indexOf("pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts");
+  const serviceRestart = source.indexOf('systemctl restart "$LIVE_SERVICE"', restartIntent);
+
+  assert.notEqual(candidateMove, -1);
+  assert.notEqual(restartIntent, -1);
+  assert.notEqual(serviceRestart, -1);
+  assert.ok(candidateMove < restartIntent, "the swap must finish before the restart marker is written");
+  assert.ok(restartIntent < serviceRestart, "the restart marker must exist before systemd restarts the service");
+});
+
 test("scratch deploy backs up first, builds dev/dotta, swaps, and stamps the manifest identity", () => {
   const fixture = setupFixture();
   const result = runDeploy(fixture);

@@ -311,10 +311,6 @@ if [[ "$dry_run" == false ]]; then
   [[ "$(systemctl is-active "$LIVE_SERVICE")" == "active" ]] || die "$LIVE_SERVICE is not active"
   old_pid="$(systemctl show "$LIVE_SERVICE" -p MainPID --value)"
   [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] || die "could not resolve the current $LIVE_SERVICE main PID"
-  (
-    cd "$stage_dir"
-    pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --server-pid "$old_pid"
-  )
 fi
 
 echo "[3/4] Swapping the staged application"
@@ -325,6 +321,15 @@ mv -- "$app_dir" "$app_backup"
 swapped=true
 mv -- "$stage_dir" "$app_dir"
 printf '%s\n' "$app_backup" >"$app_dir/.previous-app-backup-PAP-service-rebuild"
+
+if [[ "$dry_run" == false ]]; then
+  # Write the intent only after both moves succeed. A failed swap must not
+  # leave the still-running old service with an unconsumed restart marker.
+  (
+    cd "$app_dir"
+    pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --server-pid "$old_pid"
+  )
+fi
 
 echo "[4/4] Running the post-swap smoke check"
 if [[ "$dry_run" == true ]]; then

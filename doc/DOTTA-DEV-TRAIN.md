@@ -154,8 +154,8 @@ The deploy order is fixed and fail-closed:
 3. Write `.paperclip-build-version` with every included PR number and the full
    SHA-256 of the train manifest. The same manifest and source commit are copied
    into the staged application for inspection.
-4. Request a guarded hot restart, move the old `/srv/paperclip/app` aside, move
-   the stage into place, and restart `paperclip.service`.
+4. Move the old `/srv/paperclip/app` aside, move the stage into place, request
+   a guarded hot restart, and restart `paperclip.service`.
 5. Require a new service PID, an `ok` health response carrying the exact version
    stamp, and a current hot-restart report with no lost runs.
 
