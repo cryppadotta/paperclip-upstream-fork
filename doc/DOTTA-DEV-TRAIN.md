@@ -77,6 +77,8 @@ scripts/dotta-dev-train.sh --manifest /path/to/dotta-dev-manifest.json
 
 The manifest records:
 
+- `schemaVersion` and `generatedBy`: identify a manifest that the train may
+  safely replace on a later run.
 - `baseMasterSha`: the exact `origin/master` commit used as the base.
 - `included`: the PR number, head SHA, title, and migration flag for each merged
   PR.
@@ -89,6 +91,11 @@ permission to apply the migration.
 
 The command also prints the included and skipped lists for a quick operator
 check.
+
+The script refuses to overwrite a tracked manifest path, a symlink, or an
+existing file that is not a prior train manifest. Remove or choose another path
+instead of reusing an operator-owned file. A manifest from a successful train
+run can be reused on later runs.
 
 ## Merge a pull request upstream
 
