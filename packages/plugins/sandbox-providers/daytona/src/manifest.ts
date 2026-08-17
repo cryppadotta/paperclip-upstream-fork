@@ -1,7 +1,10 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.daytona-sandbox-provider";
-const PLUGIN_VERSION = "0.1.1";
+// 0.1.2 adds `supportsSetupTokenLogin` to the driver. The version bump makes
+// the bundled-plugin boot reconcile refresh the persisted manifest for an
+// existing install, so the Claude setup-token login capability propagates.
+const PLUGIN_VERSION = "0.1.2";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -41,6 +44,10 @@ const manifest: PaperclipPluginManifestV1 = {
       },
       templateIdentityPaths: ["apiUrl"],
       supportsTemplateDelete: true,
+      // Daytona hosts the Claude setup-token login on a real pseudo-terminal.
+      // It is the only bundled provider that implements the setup-token
+      // pseudo-terminal methods, so it advertises the capability.
+      supportsSetupTokenLogin: true,
       configSchema: {
         type: "object",
         properties: {
