@@ -2472,13 +2472,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("classifies hot-restart candidates that change during the adoption update", async () => {
-    const finalized = await seedRunFixture({
-      agentStatus: "running",
-      processPid: process.pid,
-      includeIssue: false,
-    });
-    const vanished = await seedRunFixture({
+  it("reports a lost hot-restart candidate when the adoption compare-and-set loses", async () => {
+    const fixture = await seedRunFixture({
       agentStatus: "running",
       processPid: process.pid,
       includeIssue: false,
@@ -2493,43 +2488,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await writeHotRestartShutdownSnapshot({
         intent,
         signal: "SIGTERM",
-        activeRuns: [finalized, vanished].map((candidate) => ({
-          runId: candidate.runId,
-          companyId: candidate.companyId,
-          agentId: candidate.agentId,
+        activeRuns: [{
+          runId: fixture.runId,
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
           issueId: null,
           adapterType: "codex_local",
           status: "running",
           processPid: process.pid,
           processGroupId: null,
-        })),
+        }],
         capturedAt: new Date("2026-08-01T02:11:00.000Z"),
       });
-
-      const heartbeat = heartbeatService(db, {
-        testHooks: {
-          beforeHotRestartAdoptionCas: async ({ runId }) => {
-            if (runId === finalized.runId) {
-              await db
-                .update(heartbeatRuns)
-                .set({ status: "succeeded", finishedAt: new Date("2026-08-01T02:11:30.000Z") })
-                .where(eq(heartbeatRuns.id, runId));
-            } else {
-              await db
-                .update(agentWakeupRequests)
-                .set({ runId: null })
-                .where(eq(agentWakeupRequests.id, vanished.wakeupRequestId));
-              await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-            }
-          },
-        },
-      });
-      const adoption = await heartbeat.reconcileHotRestartAdoption(
+      const race = resolveMatchingQueryOnce(db, /update "heartbeat_runs"/, []);
+      const adoption = await heartbeatService(race.db).reconcileHotRestartAdoption(
         new Date("2026-08-01T02:12:00.000Z"),
       );
 
-      expect(adoption.finalizedWhileDownRunIds).toContain(finalized.runId);
-      expect(adoption.lostRunIds).toContain(vanished.runId);
+      expect(race.wasTriggered()).toBe(true);
+      expect(adoption.lostRunIds).toContain(fixture.runId);
     });
   });
 
@@ -2968,27 +2945,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
-  it("does not overwrite a run finalized during graceful shutdown drain", async () => {
-    const { runId } = await seedRunFixture({
+  it("does not overwrite a run that is no longer running during graceful shutdown drain", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
       agentStatus: "running",
-      includeIssue: false,
     });
-    const heartbeat = heartbeatService(db, {
-      testHooks: {
-        beforeShutdownInterruptCas: async () => {
-          await db
-            .update(heartbeatRuns)
-            .set({ status: "succeeded", finishedAt: new Date("2026-03-19T00:05:30.000Z") })
-            .where(eq(heartbeatRuns.id, runId));
-        },
-      },
-    });
+    const heartbeat = heartbeatService(db);
 
-    await expect(heartbeat.drainRunningRunsForShutdown(
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        finishedAt: new Date("2026-03-19T00:05:30.000Z"),
+        updatedAt: new Date("2026-03-19T00:05:30.000Z"),
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.drainRunningRunsForShutdown(
       "SIGTERM",
       new Date("2026-03-19T00:06:00.000Z"),
-    )).resolves.toMatchObject({ interrupted: 0, retryRunIds: [] });
-    await expect(heartbeat.getRun(runId)).resolves.toMatchObject({ status: "succeeded" });
+    );
+
+    expect(result).toMatchObject({
+      interrupted: 0,
+      interruptedRunIds: [],
+      retryRunIds: [],
+    });
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).toMatchObject({
+      status: "succeeded",
+      errorCode: null,
+      signal: null,
+    });
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
   });
 
   it("does not enqueue duplicate restart recovery for the same interrupted run", async () => {
@@ -10031,6 +10028,201 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originId, issueId)));
     expect(nestedRecoveries).toHaveLength(0);
+  });
+
++  it("contains a persistence failure while escalating a non-retryable plan continuation", async () => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee_on_accept",
+      createdByAgentId: agentId,
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() },
+      },
+      result: { version: 1, outcome: "accepted" },
+    });
+    const interactionContext = {
+      issueId,
+      taskId: issueId,
+      wakeReason: "issue_commented",
+      mutation: "interaction",
+      interactionId,
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+    };
+    await db.update(agentWakeupRequests).set({
+      source: "automation",
+      reason: "issue_commented",
+      payload: interactionContext,
+    }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db.update(heartbeatRuns).set({
+      invocationSource: "automation",
+      contextSnapshot: interactionContext,
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    mockAdapterExecute.mockRejectedValueOnce(new Error("non-retryable configuration failure"));
+    const failure = rejectIssueCommentInsertOnce(db, new Error("synthetic escalation persistence failure"));
+    const heartbeat = heartbeatService(failure.db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    expect((await heartbeat.getRun(runId))?.status).toBe("failed");
+    expect(failure.wasTriggered()).toBe(true);
+  });
+
+  it("does not persist a whitespace-only agent failure reason", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { skipIssueComment: true } }).where(eq(heartbeatRuns.id, runId));
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "   ",
+      summary: null,
+      provider: "test",
+      model: "test-model",
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await waitForHeartbeatIdle(db);
+
+    const agent = await db
+      .select({ status: agents.status, errorReason: agents.errorReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]);
+    expect(agent?.errorReason).toBeNull();
+  });
+
+  it("reports a lost hot-restart candidate when the adoption compare-and-set loses", async () => {
+    const fixture = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      includeIssue: false,
+    });
+
+    await withTempPaperclipHome(async () => {
+      const intent = await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "adoption-race-version",
+        requestedAt: new Date("2026-08-01T02:10:00.000Z"),
+      });
+      await writeHotRestartShutdownSnapshot({
+        intent,
+        signal: "SIGTERM",
+        activeRuns: [{
+          runId: fixture.runId,
+          companyId: fixture.companyId,
+          agentId: fixture.agentId,
+          issueId: null,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: process.pid,
+          processGroupId: null,
+        }],
+        capturedAt: new Date("2026-08-01T02:11:00.000Z"),
+      });
+      const race = resolveMatchingQueryOnce(db, /update "heartbeat_runs"/, []);
+      const adoption = await heartbeatService(race.db).reconcileHotRestartAdoption(
+        new Date("2026-08-01T02:12:00.000Z"),
+      );
+
+      expect(race.wasTriggered()).toBe(true);
+      expect(adoption.lostRunIds).toContain(fixture.runId);
+    });
+  });
+
+  it("suppresses a missing-comment retry when the agent org chain becomes non-invokable", async () => {
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture();
+    const supervisorId = randomUUID();
+    await db.insert(agents).values({
+      id: supervisorId,
+      companyId,
+      name: "Temporary supervisor",
+      role: "manager",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: supervisorId }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, supervisorId));
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: null,
+        resultJson: {},
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await waitForValue(async () => {
+      const run = await heartbeat.getRun(runId);
+      return run?.issueCommentStatus === "retry_exhausted" ? run : null;
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.find((run) => run.id === runId)).toMatchObject({
+      status: "succeeded",
+      issueCommentStatus: "retry_exhausted",
+    });
+    expect(runs.some(
+      (run) => (run.contextSnapshot as Record<string, unknown> | null)?.retryReason === "missing_issue_comment",
+    )).toBe(false);
+  });
+
+  it("does not add a handoff notice when the corrective wake is suppressed", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    await db.update(agents).set({
+      runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Implemented the change but left the issue in progress.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the change but left the issue in progress.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    await heartbeat.waitForRunExecutionDrain(runId);
+
+    const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+    expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(false);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.some((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBe(false);
   });
 
 });
