@@ -341,7 +341,6 @@ function rejectMatchingQueryOnce(
   return {
     db: wrap(db) as ReturnType<typeof createDb>,
     wasTriggered: () => triggered,
-    matchCount: () => matches,
   };
 }
 
