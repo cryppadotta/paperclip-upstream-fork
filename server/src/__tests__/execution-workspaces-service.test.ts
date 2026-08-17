@@ -43,6 +43,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import { workspaceGitOperationScheduler } from "../services/workspace-git-operation-scheduler.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -547,6 +548,54 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     expect(sweep).toMatchObject({ archived: 1, cleanupFailed: 0 });
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
+  }, 20_000);
+
+  it("fails closed before archive when git status inspection is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockRejectedValue(new Error("scan queue unavailable"));
+
+    try {
+      const readiness = await svc.getCloseReadiness(seeded.executionWorkspaceId);
+      expect(readiness).toMatchObject({
+        state: "blocked",
+        isDestructiveCloseAllowed: false,
+        blockingReasons: [
+          "Paperclip could not verify the workspace git status. Retry before destructive cleanup.",
+        ],
+      });
+
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, skippedUndelivered: 1 });
+      const [workspace] = await db
+        .select({ status: executionWorkspaces.status })
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
+      expect(workspace?.status).toBe("active");
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
+  }, 20_000);
+
+  it("fails the final cleanup fence when a later git status scan is unavailable", async () => {
+    const seeded = await seedAncestryTerminalWorkspace();
+    const originalRun = workspaceGitOperationScheduler.run.bind(workspaceGitOperationScheduler);
+    let statusScanCount = 0;
+    const statusSpy = vi.spyOn(workspaceGitOperationScheduler, "run")
+      .mockImplementation(async (input) => {
+        statusScanCount += 1;
+        if (statusScanCount > 1) throw new Error("scan timed out");
+        return originalRun(input);
+      });
+
+    try {
+      const sweep = await svc.sweepTerminalWorkspaces();
+      expect(sweep).toMatchObject({ archived: 0, cleanupFailed: 1 });
+      await expect(fs.access(seeded.worktreePath)).resolves.toBeUndefined();
+    } finally {
+      statusSpy.mockRestore();
+    }
   }, 20_000);
 
   it("skips a sweep that starts while another sweep runs", async () => {
