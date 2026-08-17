@@ -192,7 +192,13 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
 
     const trackedManifestRelativePath = "tracked-manifest.json";
     const trackedManifestPath = path.join(workspace, trackedManifestRelativePath);
-    writeFileSync(trackedManifestPath, "tracked operator content\n");
+    const previousManifest = JSON.stringify({
+      schemaVersion: 1,
+      generatedBy: "scripts/dotta-dev-train.sh",
+      repository: "paperclipai/paperclip",
+      branch: "dev/dotta",
+    });
+    writeFileSync(trackedManifestPath, `${previousManifest}\n`);
     git(workspace, "add", trackedManifestRelativePath);
     git(workspace, "commit", "-m", "add tracked manifest fixture");
     const trackedManifestResult = runFailure(
@@ -204,7 +210,18 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
       trackedManifestResult.stderr,
       /refusing to overwrite tracked manifest path/,
     );
-    assert.equal(readFileSync(trackedManifestPath, "utf8"), "tracked operator content\n");
+    assert.equal(readFileSync(trackedManifestPath, "utf8"), `${previousManifest}\n`);
+
+    const absoluteTrackedManifestResult = runFailure(
+      "bash",
+      [scriptPath, "--manifest", trackedManifestPath],
+      { cwd: workspace, env },
+    );
+    assert.match(
+      absoluteTrackedManifestResult.stderr,
+      /refusing to overwrite tracked manifest path/,
+    );
+    assert.equal(readFileSync(trackedManifestPath, "utf8"), `${previousManifest}\n`);
     git(workspace, "reset", "--hard", "origin/master");
 
     const normalOutput = run("bash", [scriptPath, "--manifest", manifestRelativePath], {
@@ -294,6 +311,30 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
       .split("\n")
       .map((line) => JSON.parse(line));
     assert.ok(!dryRunGhCalls.some((args) => args[0] === "label"));
+
+    rmSync(manifestPath);
+    const pr16Sha = createPullRequest(seed, origin, 16, {
+      [manifestRelativePath]: "content from PR 16\n",
+    });
+    pullRequests.push({
+      number: 16,
+      headRefOid: pr16Sha,
+      title: "Add the manifest destination",
+      files: [manifestRelativePath],
+    });
+    writeFileSync(ghFixturePath, JSON.stringify(pullRequests));
+
+    const introducedManifestResult = runFailure(
+      "bash",
+      [scriptPath, "--manifest", manifestRelativePath],
+      { cwd: workspace, env },
+    );
+    assert.match(
+      introducedManifestResult.stderr,
+      /refusing to overwrite tracked manifest path introduced while assembling/,
+    );
+    assert.equal(readFileSync(manifestPath, "utf8"), "content from PR 16\n");
+    assert.equal(git(origin, "rev-parse", "refs/heads/dev/dotta"), pushedTrainSha);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

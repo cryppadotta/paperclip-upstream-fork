@@ -72,11 +72,16 @@ cd "$repo_root"
 if [[ "$manifest_path" != /* ]]; then
   manifest_worktree_path="${manifest_path#./}"
   manifest_path="$repo_root/$manifest_worktree_path"
+else
+  manifest_dir="$(dirname "$manifest_path")"
+  if [[ -d "$manifest_dir" ]] &&
+    [[ "$(git -C "$manifest_dir" rev-parse --show-toplevel 2>/dev/null || true)" == "$repo_root" ]]; then
+    manifest_worktree_path="$(git -C "$manifest_dir" rev-parse --show-prefix)$(basename "$manifest_path")"
+  fi
 fi
 
-if [[ -n "$manifest_worktree_path" ]] &&
-  git ls-files --error-unmatch -- "$manifest_worktree_path" >/dev/null 2>&1; then
-  echo "error: refusing to overwrite tracked manifest path: $manifest_worktree_path" >&2
+if tracked_manifest_path="$(git ls-files --error-unmatch -- "$manifest_path" 2>/dev/null)"; then
+  echo "error: refusing to overwrite tracked manifest path: $tracked_manifest_path" >&2
   exit 1
 fi
 
@@ -229,6 +234,11 @@ while IFS= read -r pr_json; do
     '{number: $number, headSha: $headSha, title: $title, migrations: $migrations, reason: $reason}' \
     >>"$skipped_path"
 done < <(jq -c 'sort_by(.number)[]' "$pr_list_path")
+
+if tracked_manifest_path="$(git ls-files --error-unmatch -- "$manifest_path" 2>/dev/null)"; then
+  echo "error: refusing to overwrite tracked manifest path introduced while assembling $TRAIN_BRANCH: $tracked_manifest_path" >&2
+  exit 1
+fi
 
 mkdir -p "$(dirname "$manifest_path")"
 manifest_tmp="$tmp_dir/manifest.json"
