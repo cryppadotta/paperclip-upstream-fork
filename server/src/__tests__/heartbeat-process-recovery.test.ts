@@ -7121,12 +7121,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await db.update(heartbeatRuns).set({
       contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned", skipIssueComment: true },
     }).where(eq(heartbeatRuns.id, runId));
-    mockAdapterExecute.mockResolvedValueOnce({
+    mockAdapterExecute.mockResolvedValue({
       exitCode: 0,
       signal: null,
       timedOut: false,
       errorMessage: null,
-      summary: "I will inspect the remaining code and implement it next.",
+      summary: "I will inspect the repo next and then implement the fix.",
       provider: "test",
       model: "test-model",
     });

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { resolveDefaultAgentWorkspaceDir } from "../home-paths.ts";
+import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitWorktreeBaseWorkspaceReady,
@@ -50,7 +50,7 @@ import {
   shouldResetTaskSessionForWake,
   stripWorkspaceRuntimeFromExecutionRunConfig,
   stripHostWorkspaceProvisionForLowTrustSandbox,
-} from "./heartbeat.ts";
+} from "./heartbeat.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -490,13 +490,13 @@ describe("heartbeat top-level helper edge coverage", () => {
 
     expect(await service.recordRuntimeProgress(
       { ...currentRun, status: "succeeded" } as never,
-      { phase: "run_activity", message: "ignored" },
+      { phase: "adapter_startup", message: "ignored" },
       "issue-1",
     )).toBeNull();
     expect(await service.recordRuntimeProgress(
       currentRun as never,
       {
-        phase: "run_activity",
+        phase: "adapter_startup",
         message: "Working",
         currentToolName: " shell ",
         lastAssistantSnippet: " update ",
@@ -510,7 +510,7 @@ describe("heartbeat top-level helper edge coverage", () => {
     });
     expect(await service.recordRuntimeProgress(
       currentRun as never,
-      { phase: "run_activity", message: "" },
+      { phase: "adapter_startup", message: "" },
       "issue-1",
     )).toBeNull();
     expect(service.decorateActiveRunStatus({
@@ -637,7 +637,7 @@ describe("heartbeat top-level helper edge coverage", () => {
       issueRef: null,
       runId: "run-1",
       workspaceConfigFreshness: freshness as never,
-      realizeWorkspace: async () => ({ id: "new" }),
+      realizeWorkspace: async () => ({ id: "new", warnings: [] }),
     })).toMatchObject({ executionWorkspace: { id: "new" }, reusedExecutionWorkspace: null });
     await expect(provisionExecutionWorkspaceForFreshnessDecision({
       requestedShouldReuseExisting: true,
@@ -646,7 +646,7 @@ describe("heartbeat top-level helper edge coverage", () => {
       runId: "run-1",
       workspaceConfigFreshness: freshness as never,
       restoreExistingWorkspace: async () => null,
-      realizeWorkspace: async () => ({ id: "unused" }),
+      realizeWorkspace: async () => ({ id: "unused", warnings: [] }),
     })).rejects.toThrow(/could not be restored/);
 
     expect(buildReferencedProjectRunObservability({

@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("./plan-review-context.js", () => ({
+  buildDocumentReviewContext: vi.fn().mockResolvedValue(null),
   buildPlanReviewContext: vi.fn().mockResolvedValue(null),
 }));
 
-import { buildPaperclipWakePayload } from "./heartbeat.ts";
+import { buildPaperclipWakePayload } from "./heartbeat.js";
 
 function queuedDb(resultSets: unknown[][]) {
   return {

@@ -1473,7 +1473,7 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
 
       const failingManagedWorkspace = await runAndDrain(failingManagedIssueId);
       expect(failingManagedWorkspace.run.stdoutExcerpt).toContain("Failed to prepare managed checkout");
-      expect(failingManagedWorkspace.run.stdoutExcerpt).toContain("has no local cwd configured");
+      expect(failingManagedWorkspace.run.stdoutExcerpt).toContain("Using fallback workspace");
 
       const inheritedResponsibleUserRun = await service.wakeup(agentId, {
         source: "automation",

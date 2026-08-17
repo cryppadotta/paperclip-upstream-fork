@@ -17,7 +17,7 @@ vi.mock("./tool-gateway.js", () => ({
   }),
 }));
 
-import { buildPaperclipRuntimeMcpServers } from "./heartbeat.ts";
+import { buildPaperclipRuntimeMcpServers } from "./heartbeat.js";
 
 describe("heartbeat runtime MCP edge coverage", () => {
   function queuedDb(...results: unknown[][]) {
