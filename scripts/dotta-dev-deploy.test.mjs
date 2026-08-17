@@ -196,6 +196,23 @@ test("backup failure stops before validation, build, or swap", () => {
   assert.equal(readdirSync(fixture.scratch).some((name) => name.startsWith("app-prev-dotta-dev-")), false);
 });
 
+test("live mode rejects a local train ref before invoking backup", () => {
+  const fixture = setupFixture();
+  const result = spawnSync("bash", [deployScript, "--source-ref", "dev/dotta"], {
+    cwd: fixture.repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${fixture.bin}:${process.env.PATH}`,
+      EVENT_LOG: fixture.eventLog,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /live deploys require --source-ref origin\/dev\/dotta/);
+  assert.equal(readdirSync(fixture.root).includes("events.log"), false);
+});
+
 test("a successful backup command without a fresh backup artifact is rejected", () => {
   const fixture = setupFixture({ backupMode: "missing" });
   const result = runDeploy(fixture);

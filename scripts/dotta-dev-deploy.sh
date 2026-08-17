@@ -154,6 +154,9 @@ backup_script="$repo_root/scripts/backup-db.sh"
 if [[ "$source_ref" != "dev/dotta" && "$source_ref" != "origin/dev/dotta" ]]; then
   die "--source-ref must name dev/dotta (local or origin)"
 fi
+if [[ "$dry_run" == false && "$source_ref" != "origin/dev/dotta" ]]; then
+  die "live deploys require --source-ref origin/dev/dotta"
+fi
 
 if [[ "$dry_run" == true ]]; then
   [[ "$app_dir_set" == true && "$stage_dir_set" == true && "$backup_dir_set" == true ]] ||
