@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,7 @@ import { buildProjectMentionHref, buildSkillMentionHref } from "@paperclipai/sha
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   agents,
+  agentWakeupRequests,
   agentRuntimeState,
   agentTaskSessions,
   companies,
@@ -18,6 +19,7 @@ import {
   companySkillVersions,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issues,
   projects,
   projectWorkspaces,
@@ -32,7 +34,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "../__tests__/helpers/drain-heartbeat-runs.js";
-import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { registerServerAdapter, runningProcesses, unregisterServerAdapter } from "../adapters/index.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { heartbeatService } from "./heartbeat.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -136,6 +138,9 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
             errorMessage: "Maximum turns reached",
             resultJson: { stopReason: "max_turns_exhausted" },
           };
+        }
+        if (context.agent.name === "Empty Result Agent") {
+          return { exitCode: 0, signal: null, timedOut: false };
         }
         return {
           exitCode: 0,
@@ -1598,5 +1603,489 @@ describePostgres("heartbeat pre-factory integration coverage", () => {
       }),
     });
     await expect(heartbeatService(db).reportRunActivity(randomUUID())).resolves.toBeNull();
+  });
+
+  it("records daily-cap skips for issue-scoped and unscoped dispatches", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Daily Cap Coverage Company",
+      issuePrefix: "DCC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "daily-cap-owner",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Daily Cap Coverage Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true, intervalSec: 60, maxDailyRuns: 0 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Daily cap issue",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "DCC-1",
+    });
+
+    const service = heartbeatService(db);
+    await expect(service.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "heartbeat_timer",
+      payload: { issueId },
+      contextSnapshot: { issueId },
+    })).resolves.toBeNull();
+    await expect(service.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "system",
+      reason: "manual_daily_cap",
+    })).resolves.toBeNull();
+
+    const skipped = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(skipped).toHaveLength(2);
+    expect(skipped.every((request) => request.status === "skipped")).toBe(true);
+    expect(skipped.map((request) => request.reason)).toEqual([
+      "heartbeat.daily_run_limit",
+      "heartbeat.daily_run_limit",
+    ]);
+    expect(skipped.map((request) => request.payload)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ issueId }),
+      expect.objectContaining({ heartbeatSkip: expect.objectContaining({ observed: 0, limit: 0 }) }),
+    ]));
+
+    const [updatedAgent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(updatedAgent?.lastHeartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it("exercises heartbeat public read and runtime-state service paths", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const otherAgentId = randomUUID();
+    const issueId = randomUUID();
+    const exhaustedRunId = randomUUID();
+    const runningRunId = randomUUID();
+    const providerQuotaRunId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Public Service Coverage Company",
+      issuePrefix: "PSC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "public-service-owner",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Public Service Coverage Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Public service issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: "PSC-1",
+    });
+    await db.insert(heartbeatRuns).values([
+      {
+        id: exhaustedRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "succeeded",
+        responsibleUserId: "public-service-owner",
+        contextSnapshot: { issueId },
+        resultJson: { summary: "complete" },
+        startedAt: new Date("2026-08-17T00:00:00.000Z"),
+        finishedAt: new Date("2026-08-17T00:01:00.000Z"),
+      },
+      {
+        id: runningRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "running",
+        responsibleUserId: "public-service-owner",
+        contextSnapshot: { issueId },
+        startedAt: new Date("2026-08-17T00:02:00.000Z"),
+      },
+      {
+        id: providerQuotaRunId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "failed",
+        errorCode: "provider_quota",
+        responsibleUserId: "public-service-owner",
+        contextSnapshot: {},
+        resultJson: {},
+        startedAt: new Date("2026-08-17T00:03:00.000Z"),
+        finishedAt: new Date("2026-08-17T00:04:00.000Z"),
+      },
+    ]);
+    await db.insert(heartbeatRunEvents).values({
+      companyId,
+      runId: exhaustedRunId,
+      agentId,
+      seq: 1,
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Bounded retry exhausted after coverage attempts",
+    });
+    await db.insert(agentTaskSessions).values({
+      companyId,
+      agentId,
+      adapterType: workspaceAdapterType,
+      taskKey: issueId,
+      sessionParamsJson: { mode: "coverage" },
+      sessionDisplayId: "public-session",
+    });
+
+    const service = heartbeatService(db);
+    expect(await service.getRuntimeState(otherAgentId)).toBeNull();
+    expect(await service.getRuntimeState(agentId)).toMatchObject({
+      agentId,
+      sessionDisplayId: "public-session",
+      sessionParamsJson: { mode: "coverage" },
+    });
+    await expect(service.listTaskSessions(otherAgentId)).rejects.toThrow("Agent not found");
+    expect(await service.listTaskSessions(agentId)).toHaveLength(1);
+    await expect(service.resetRuntimeSession(otherAgentId)).rejects.toThrow("Agent not found");
+    expect(await service.resetRuntimeSession(agentId, { taskKey: issueId })).toMatchObject({
+      sessionDisplayId: null,
+      clearedTaskSessions: 1,
+    });
+    expect(await service.resetRuntimeSession(agentId)).toMatchObject({
+      sessionDisplayId: null,
+      sessionParamsJson: null,
+    });
+
+    expect(await service.listEvents(exhaustedRunId)).toHaveLength(1);
+    expect(await service.listEvents(exhaustedRunId, -1, 5000)).toHaveLength(1);
+    expect(await service.getRetryExhaustedReason(exhaustedRunId)).toContain("Bounded retry exhausted");
+    expect(await service.getRetryExhaustedReason(runningRunId)).toBeNull();
+    await expect(service.readLog(randomUUID())).rejects.toThrow("Heartbeat run not found");
+    await expect(service.readLog(exhaustedRunId)).rejects.toThrow("Run log not found");
+    await expect(service.waitForRunExecutionDrain(randomUUID())).resolves.toBeUndefined();
+    await expect(service.waitForRunExecutionDrain(randomUUID(), { timeoutMs: 1, intervalMs: 1 })).resolves.toBeUndefined();
+
+    expect(await service.list(companyId)).toHaveLength(3);
+    expect(await service.list(companyId, agentId, 1, { summary: true })).toHaveLength(1);
+    expect(await service.list(companyId, otherAgentId)).toHaveLength(0);
+    expect(await service.getRunIssueSummary(exhaustedRunId)).toMatchObject({ id: exhaustedRunId });
+    expect(await service.getRunIssueSummary(randomUUID())).toBeNull();
+    expect(await service.getActiveRunForAgent(agentId)).toMatchObject({ id: runningRunId });
+    expect(await service.getActiveRunForAgent(otherAgentId)).toBeNull();
+    expect(await service.getActiveRunIssueSummaryForAgent(agentId)).toMatchObject({ id: runningRunId });
+    expect(await service.getActiveRunIssueSummaryForAgent(otherAgentId)).toBeNull();
+    await expect(service.scheduleBoundedRetry(randomUUID())).resolves.toEqual({ outcome: "missing_run" });
+    await expect(service.scheduleBoundedRetry(providerQuotaRunId, {
+      now: new Date("2026-08-17T00:05:00.000Z"),
+      random: () => 0.5,
+    })).resolves.toMatchObject({ outcome: "scheduled" });
+
+    await db.insert(agents).values({
+      id: otherAgentId,
+      companyId,
+      name: "Drain Timeout Coverage Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const emptyResultAgentId = randomUUID();
+    const interactionFailureAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: emptyResultAgentId,
+        companyId,
+        name: "Empty Result Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: workspaceAdapterType,
+        adapterConfig: {
+          workspaceStrategy: {},
+          workspaceRuntime: { command: "coverage-runtime" },
+          desiredState: "invalid",
+        },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: interactionFailureAgentId,
+        companyId,
+        name: "Custom Failure Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: workspaceAdapterType,
+        adapterConfig: {
+          workspaceStrategy: {},
+          workspaceRuntime: {},
+          desiredState: "invalid",
+        },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const emptyResultRun = await service.invoke(emptyResultAgentId, "on_demand", {
+      taskKey: `empty-result-${randomUUID()}`,
+      wakeReason: "manual",
+    }, "manual");
+    expect(emptyResultRun).not.toBeNull();
+    expect((await waitForRun(service, emptyResultRun!.id))?.status).toBe("succeeded");
+    await service.waitForRunExecutionDrain(emptyResultRun!.id);
+
+    for (const interactionStatus of ["pending", "accepted"] as const) {
+      const interactionRun = await service.invoke(interactionFailureAgentId, "on_demand", {
+        taskKey: `interaction-${interactionStatus}-${randomUUID()}`,
+        interactionId: randomUUID(),
+        interactionStatus,
+        mutation: "interaction",
+        wakeReason: "issue_commented",
+      }, "manual");
+      expect(interactionRun).not.toBeNull();
+      expect((await waitForRun(service, interactionRun!.id))?.status).toBe("failed");
+      await service.waitForRunExecutionDrain(interactionRun!.id);
+    }
+
+    executionDelayMs = 200;
+    try {
+      const liveRun = await service.invoke(otherAgentId, "on_demand", {
+        taskKey: `drain-timeout-${randomUUID()}`,
+        wakeReason: "manual",
+      }, "manual");
+      expect(liveRun).not.toBeNull();
+      const runningDeadline = Date.now() + 5_000;
+      while (Date.now() < runningDeadline && (await service.getRun(liveRun!.id))?.status !== "running") {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect((await service.getRun(liveRun!.id))?.status).toBe("running");
+      await expect(service.waitForRunExecutionDrain(liveRun!.id, {
+        timeoutMs: 1,
+        intervalMs: 1,
+      })).rejects.toThrow(`Timed out waiting for heartbeat run ${liveRun!.id} execution to drain`);
+      await service.waitForRunExecutionDrain(liveRun!.id);
+    } finally {
+      executionDelayMs = 0;
+    }
+  });
+
+  it("cancels agent, company, and project budget-scope work", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const agentIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Budget Cancellation Coverage Company",
+      issuePrefix: "BCC",
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "budget-owner",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Budget Project",
+      status: "active",
+    });
+    await db.insert(agents).values(agentIds.map((id, index) => ({
+      id,
+      companyId,
+      name: `Budget Coverage Agent ${index}`,
+      role: "engineer",
+      status: "idle" as const,
+      adapterType: workspaceAdapterType,
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    })));
+
+    const service = heartbeatService(db);
+    expect(await service.cancelInvocationsForAgents(["", ""], "nothing to cancel")).toEqual({
+      agentIds: [],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    const seedPending = async (agentId: string, suffix: number, projectScoped = false) => {
+      const issueId = randomUUID();
+      const runId = randomUUID();
+      const wakeupId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        responsibleUserId: "budget-owner",
+        contextSnapshot: projectScoped ? { issueId, projectId } : { issueId },
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId: projectScoped ? projectId : null,
+        title: `Budget issue ${suffix}`,
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        executionRunId: runId,
+        issueNumber: suffix,
+        identifier: `BCC-${suffix}`,
+      });
+      await db.insert(agentWakeupRequests).values({
+        id: wakeupId,
+        companyId,
+        agentId,
+        source: "on_demand",
+        triggerDetail: "manual",
+        reason: "budget coverage pending",
+        payload: projectScoped ? { issueId, projectId } : { issueId },
+        status: "deferred_issue_execution",
+      });
+      return { issueId, runId, wakeupId };
+    };
+
+    const agentWork = await seedPending(agentIds[0]!, 1);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: agentIds[0]!,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "standalone budget coverage pending",
+      payload: {},
+      status: "queued",
+    });
+    expect(await service.cancelInvocationsForAgents([agentIds[0]!, agentIds[0]!, ""], "agent pause")).toEqual({
+      agentIds: [agentIds[0]],
+      runsCancelled: 1,
+      wakeupsCancelled: 1,
+    });
+    expect((await service.getRun(agentWork.runId))?.status).toBe("cancelled");
+
+    const companyWork = await seedPending(agentIds[1]!, 2);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: agentIds[1]!,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "standalone company budget wake",
+      payload: {},
+      status: "queued",
+    });
+    await service.cancelBudgetScopeWork({ companyId, scopeType: "company", scopeId: companyId });
+    expect((await service.getRun(companyWork.runId))?.status).toBe("cancelled");
+
+    const projectWork = await seedPending(agentIds[2]!, 3, true);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: agentIds[2]!,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "standalone project budget wake",
+      payload: { projectId },
+      status: "queued",
+    });
+    await service.cancelBudgetScopeWork({ companyId, scopeType: "project", scopeId: projectId });
+    expect((await service.getRun(projectWork.runId))?.status).toBe("cancelled");
+
+    const agentBudgetWork = await seedPending(agentIds[0]!, 4);
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: agentIds[0]!,
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "standalone agent budget wake",
+      payload: {},
+      status: "queued",
+    });
+    await service.cancelBudgetScopeWork({ companyId, scopeType: "agent", scopeId: agentIds[0]! });
+    expect((await service.getRun(agentBudgetWork.runId))?.status).toBe("cancelled");
+
+    const inMemoryRunId = randomUUID();
+    const persistedProcessRunId = randomUUID();
+    const directCancelProcessRunId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: inMemoryRunId,
+        companyId,
+        agentId: agentIds[2]!,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        processPid: 99_999_991,
+        responsibleUserId: "budget-owner",
+        contextSnapshot: {},
+      },
+      {
+        id: persistedProcessRunId,
+        companyId,
+        agentId: agentIds[2]!,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        processPid: 99_999_992,
+        responsibleUserId: "budget-owner",
+        contextSnapshot: {},
+      },
+      {
+        id: directCancelProcessRunId,
+        companyId,
+        agentId: agentIds[1]!,
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        status: "queued",
+        processPid: 99_999_993,
+        responsibleUserId: "budget-owner",
+        contextSnapshot: {},
+      },
+    ]);
+    runningProcesses.set(inMemoryRunId, {
+      child: { pid: 99_999_991 } as ChildProcess,
+      processGroupId: null,
+      graceSec: 1,
+    });
+    await service.cancelActiveForAgent(agentIds[2]!, "process coverage cancellation");
+    expect(runningProcesses.has(inMemoryRunId)).toBe(false);
+    expect((await service.getRun(persistedProcessRunId))?.status).toBe("cancelled");
+    expect((await service.cancelRun(directCancelProcessRunId))?.status).toBe("cancelled");
+
+    await service.cancelBudgetScopeWork({ companyId, scopeType: "company", scopeId: companyId });
+
+    expect(await service.cancelInvocationsForAgents([agentIds[2]!], "nothing remains")).toEqual({
+      agentIds: [agentIds[2]],
+      runsCancelled: 0,
+      wakeupsCancelled: 0,
+    });
+
+    await expect(service.cancelRun(randomUUID())).rejects.toThrow("Heartbeat run not found");
+    expect(await service.cancelRun(agentBudgetWork.runId)).toMatchObject({ status: "cancelled" });
   });
 });
