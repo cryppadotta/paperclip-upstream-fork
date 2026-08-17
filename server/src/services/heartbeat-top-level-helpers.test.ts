@@ -521,7 +521,7 @@ describe("heartbeat top-level helper edge coverage", () => {
     } as never)).toMatchObject({ currentStatusMessage: null });
   });
 
-  it("checks missing, malformed, and valid git push remotes", async () => {
+  it("checks missing, malformed, and valid push remotes", async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "heartbeat-push-remote-"));
     const input = {
       enabled: true,
