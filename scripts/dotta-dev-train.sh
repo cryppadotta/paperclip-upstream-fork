@@ -9,6 +9,7 @@ readonly MIGRATIONS_PREFIX="packages/db/src/migrations/"
 
 dry_run=false
 manifest_path=".paperclip/dotta-dev-manifest.json"
+manifest_worktree_path=""
 
 usage() {
   cat <<'USAGE'
@@ -67,12 +68,18 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 cd "$repo_root"
 
 if [[ "$manifest_path" != /* ]]; then
-  manifest_path="$repo_root/$manifest_path"
+  manifest_worktree_path="${manifest_path#./}"
+  manifest_path="$repo_root/$manifest_worktree_path"
 fi
 
-if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+status_pathspecs=(.)
+if [[ -n "$manifest_worktree_path" ]]; then
+  status_pathspecs+=(":(exclude,top,literal)$manifest_worktree_path")
+fi
+
+if [[ -n "$(git status --porcelain --untracked-files=all -- "${status_pathspecs[@]}")" ]]; then
   echo "error: the worktree must be clean before rebuilding $TRAIN_BRANCH" >&2
-  git status --short >&2
+  git status --short -- "${status_pathspecs[@]}" >&2
   exit 1
 fi
 
@@ -102,6 +109,7 @@ fi
 gh pr list \
   --repo "$GITHUB_REPOSITORY" \
   --state open \
+  --base master \
   --label "$TRAIN_LABEL" \
   --limit 1000 \
   --json number,headRefOid,title >"$pr_list_path"

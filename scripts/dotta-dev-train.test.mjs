@@ -102,7 +102,8 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
     const fakeBin = path.join(root, "bin");
     const ghFixturePath = path.join(root, "pull-requests.json");
     const ghCallLogPath = path.join(root, "gh-calls.jsonl");
-    const manifestPath = path.join(root, "manifest.json");
+    const manifestRelativePath = "train-manifest.json";
+    const manifestPath = path.join(workspace, manifestRelativePath);
 
     run("git", ["init", "--bare", "--initial-branch=master", origin]);
     run("git", ["init", "--initial-branch=master", seed]);
@@ -162,7 +163,7 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
       TMPDIR: root,
     };
 
-    const normalOutput = run("bash", [scriptPath, "--manifest", manifestPath], {
+    const normalOutput = run("bash", [scriptPath, "--manifest", manifestRelativePath], {
       cwd: workspace,
       env,
     });
@@ -189,7 +190,7 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
 
     assert.equal(readFileSync(path.join(workspace, "feature-two.txt"), "utf8"), "included\n");
     assert.equal(readFileSync(path.join(workspace, "conflict.txt"), "utf8"), "from PR 2\n");
-    assert.equal(git(workspace, "status", "--porcelain"), "");
+    assert.equal(git(workspace, "status", "--porcelain"), `?? ${manifestRelativePath}`);
 
     const mergeOrder = git(
       workspace,
@@ -208,6 +209,11 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
       .split("\n")
       .map((line) => JSON.parse(line));
     assert.ok(normalGhCalls.some((args) => args[0] === "label" && args[1] === "create"));
+    const normalPrListCall = normalGhCalls.find(
+      (args) => args[0] === "pr" && args[1] === "list",
+    );
+    assert.ok(normalPrListCall);
+    assert.equal(normalPrListCall[normalPrListCall.indexOf("--base") + 1], "master");
 
     const pr14Sha = createPullRequest(seed, origin, 14, {
       "dry-run-only.txt": "must not reach the remote train\n",
@@ -223,7 +229,7 @@ test("builds an ordered train, flags migrations, skips conflicts, and keeps dry-
 
     const dryRunOutput = run(
       "bash",
-      [scriptPath, "--dry-run", "--manifest", manifestPath],
+      [scriptPath, "--dry-run", "--manifest", manifestRelativePath],
       { cwd: workspace, env },
     );
     const dryRunManifest = JSON.parse(readFileSync(manifestPath, "utf8"));
