@@ -8,9 +8,10 @@ request that has the `dotta-dev` label.
 > and target master. The train branch is force-updated and can change at any
 > time.
 
-This script only assembles and pushes a Git branch. It does not build or deploy
-Paperclip. It does not access a database, an application install, or a system
-service.
+The train script only assembles and pushes a Git branch. It does not build or
+deploy Paperclip. The separate deploy script described below owns the mandatory
+database backup, production build, application swap, service restart, and smoke
+check.
 
 ## Prerequisites
 
@@ -125,6 +126,95 @@ label or rebuilding the branch does not reverse an applied migration. Back up
 the database before a later deployment step, merge migration PRs upstream
 quickly, and follow the normal migration recovery procedure when a rollback is
 required. Train assembly itself never applies migrations.
+
+## Deploy the assembled train
+
+Run the train first and keep its manifest. A real deploy consumes the pushed
+`origin/dev/dotta` ref and refuses a manifest produced by a train dry run:
+
+```sh
+scripts/dotta-dev-train.sh
+# PAPERCLIP_API_KEY must be set for full health details in authenticated mode.
+scripts/dotta-dev-deploy.sh \
+  --manifest .paperclip/dotta-dev-manifest.json
+```
+
+Pass `PAPERCLIP_API_KEY` only through the environment. The deploy script does
+not print or persist it. A board API key or another bearer accepted by the live
+instance can be used. The authenticated health response is required because the
+final smoke check compares the running `serverVersion` with the new stamp.
+
+The deploy order is fixed and fail-closed:
+
+1. Run `scripts/backup-db.sh` into the live instance backup directory. The
+   deploy stops unless that invocation creates a new, non-empty
+   `dotta-dev-deploy-*.sql.gz` file.
+2. Fetch and archive `origin/dev/dotta` into a new staging directory, install
+   dependencies, and run the production build.
+3. Write `.paperclip-build-version` with every included PR number and the full
+   SHA-256 of the train manifest. The same manifest and source commit are copied
+   into the staged application for inspection.
+4. Request a guarded hot restart, move the old `/srv/paperclip/app` aside, move
+   the stage into place, and restart `paperclip.service`.
+5. Require a new service PID, an `ok` health response carrying the exact version
+   stamp, and a current hot-restart report with no lost runs.
+
+If a failure happens after the directory swap, the script restores the previous
+application directory and restarts the service. It deliberately does not
+restore the database automatically: the operator must first determine whether
+a migration ran and whether restoring data is safe.
+
+The version is visible in the existing account-menu version display and in the
+authenticated `/api/health` response. Its form is:
+
+```text
+dotta-dev.prs-<PR numbers>.manifest-sha256-<full manifest hash>.git-<source SHA>
+```
+
+### Scratch verification
+
+Dry-run mode still invokes and verifies a backup, builds `dev/dotta`, swaps an
+existing scratch application directory, and checks the deployed files. It
+requires explicit scratch paths and refuses `/srv/paperclip/app`; it never calls
+`systemctl`:
+
+```sh
+scratch="$(mktemp -d)"
+mkdir -p "$scratch/app"
+scripts/dotta-dev-deploy.sh \
+  --dry-run \
+  --source-ref dev/dotta \
+  --manifest /path/to/dry-run-manifest.json \
+  --app-dir "$scratch/app" \
+  --stage-dir "$scratch/stage" \
+  --backup-dir "$scratch/backups"
+```
+
+Use an isolated Paperclip instance whose database is running for this command;
+the backup remains mandatory in scratch mode.
+
+## Roll back deployed train code
+
+To remove one PR from the running train, remove its label, rebuild the train,
+and deploy again:
+
+```sh
+gh pr edit <number> --repo paperclipai/paperclip --remove-label dotta-dev
+scripts/dotta-dev-train.sh
+scripts/dotta-dev-deploy.sh --manifest .paperclip/dotta-dev-manifest.json
+```
+
+This is the normal rollback path. It restores the code shape without creating a
+reverse commit, and the new version stamp proves that the PR is absent.
+
+Removing code does not undo a database migration. If the removed PR changed the
+database and the live data is damaged, stop further writes and use the fresh
+backup path printed by the deploy as the escape hatch. Database restoration is
+a separate, coordinated recovery operation: preserve the failed application and
+current database, confirm the matching backup and secrets key are available,
+restore the database with the supported Paperclip recovery procedure, then
+deploy the rebuilt train and repeat the health/version smoke. Do not improvise a
+raw database restore while the service is writing.
 
 ## Conflicts and stale heads
 
