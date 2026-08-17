@@ -53,6 +53,7 @@ import { workspaceOperationService, type WorkspaceOperationRecorder } from "./wo
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import {
   cleanupWorktreeInstanceArtifacts,
   deriveWorktreeInstanceId,
@@ -868,6 +869,22 @@ async function runGit(args: string[], cwd: string, opts?: { env?: NodeJS.Process
   return proc.stdout.trim();
 }
 
+async function runExpensiveGitStatus(input: {
+  args: readonly string[];
+  cwd: string;
+  operation: string;
+  fairnessKeys?: readonly string[];
+}): Promise<string> {
+  const result = await workspaceGitOperationScheduler.run({
+    workspacePath: input.cwd,
+    args: input.args,
+    operation: input.operation,
+    fairnessKeys: input.fairnessKeys,
+    cacheTtlMs: 0,
+  });
+  return result.stdout.trim();
+}
+
 function formatShortSha(value: string | null | undefined) {
   return value ? value.slice(0, 12) : "unknown";
 }
@@ -1294,10 +1311,15 @@ async function inspectGitWorktreeBranchIncoherence(input: {
   sourceIssue: ExecutionWorkspaceIssueRef | null;
   executionWorkspaceId?: string | null;
 }): Promise<GitWorktreeBranchIncoherenceEvidence> {
-  const status = await runGit(
-    ["status", "--porcelain", "--untracked-files=all"],
-    input.worktreePath,
-  ).catch(() => null);
+  const status = await runExpensiveGitStatus({
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd: input.worktreePath,
+    operation: "workspace_runtime.branch_incoherence_status",
+    fairnessKeys: [
+      ...(input.executionWorkspaceId ? [`workspace:${input.executionWorkspaceId}`] : []),
+      ...(input.sourceIssue?.id ? [`issue:${input.sourceIssue.id}`] : []),
+    ],
+  }).catch(() => null);
   const statusLines = status === null
     ? null
     : status.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
@@ -1781,7 +1803,15 @@ async function quarantineDirtyWorktreeBranchIncoherence(input: {
         `dirty quarantine repair checked out ${formatBranchForMessage(repairedBranch)} instead of ${input.expectedBranchName}`;
       throw branchIncoherenceValidationFailure(input.evidence);
     }
-    const repairedStatus = await runGit(["status", "--porcelain", "--untracked-files=all"], input.worktreePath);
+    const repairedStatus = await runExpensiveGitStatus({
+      args: ["status", "--porcelain", "--untracked-files=all"],
+      cwd: input.worktreePath,
+      operation: "workspace_runtime.dirty_quarantine_verify",
+      fairnessKeys: [
+        ...(input.executionWorkspaceId ? [`workspace:${input.executionWorkspaceId}`] : []),
+        ...(input.sourceIssue?.id ? [`issue:${input.sourceIssue.id}`] : []),
+      ],
+    });
     if (repairedStatus.trim().length > 0) {
       input.evidence.safeRepair.succeeded = false;
       input.evidence.safeRepair.reason = "dirty quarantine repair completed but the worktree is still dirty";
@@ -2372,10 +2402,14 @@ async function refreshUnstartedWorktreeToBase(input: {
   // Force `--untracked-files=all` so untracked files are counted regardless of a
   // local `status.showUntrackedFiles=no`; otherwise the clean-tree guard could
   // pass and the `reset --hard` below would destroy untracked work.
-  const status = await runGit(
-    ["status", "--porcelain", "--untracked-files=all"],
-    input.worktreePath,
-  ).catch(() => null);
+  const status = await runExpensiveGitStatus({
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd: input.worktreePath,
+    operation: "workspace_runtime.base_refresh_clean_guard",
+    fairnessKeys: [
+      ...(input.branchName ? [`branch:${input.branchName}`] : []),
+    ],
+  }).catch(() => null);
   if (status === null || status.trim().length > 0) {
     return { refreshed: false, baseRefSha: null };
   }

@@ -169,6 +169,12 @@ export {
   type WorkspaceRuntimeLeaseService,
 } from "./workspace-runtime-leases.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
+export {
+  createWorkspaceGitOperationScheduler,
+  getWorkspaceGitOperationSchedulerSnapshot,
+  workspaceGitOperationScheduler,
+  type WorkspaceGitSchedulerSnapshot,
+} from "./workspace-git-operation-scheduler.js";
 export { workProductService } from "./work-products.js";
 export {
   logActivity,

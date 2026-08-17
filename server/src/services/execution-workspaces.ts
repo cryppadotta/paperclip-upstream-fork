@@ -54,6 +54,7 @@ import {
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { createGitRemoteAuthProvider } from "./git-credentials.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import { workspaceGitOperationScheduler } from "./workspace-git-operation-scheduler.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -374,6 +375,21 @@ async function runGit(args: string[], cwd: string) {
   return await execFileAsync("git", ["-C", cwd, ...args], { cwd });
 }
 
+async function runExpensiveGitStatus(input: {
+  args: readonly string[];
+  cwd: string;
+  operation: string;
+  fairnessKeys?: readonly string[];
+}) {
+  return workspaceGitOperationScheduler.run({
+    workspacePath: input.cwd,
+    args: input.args,
+    operation: input.operation,
+    fairnessKeys: input.fairnessKeys,
+    cacheTtlMs: 0,
+  });
+}
+
 async function readGitStdout(args: string[], cwd: string): Promise<string | null> {
   const output = await runGit(args, cwd);
   return output.stdout.trim() || null;
@@ -502,7 +518,15 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     throw unprocessable("Execution workspace is detached; Paperclip cannot reconcile it to a branch name");
   }
 
-  const status = await runGit(["status", "--porcelain", "--untracked-files=all"], worktreePath)
+  const status = await runExpensiveGitStatus({
+    args: ["status", "--porcelain", "--untracked-files=all"],
+    cwd: worktreePath,
+    operation: "execution_workspaces.branch_reconcile_status",
+    fairnessKeys: [
+      `workspace:${workspace.id}`,
+      ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+    ],
+  })
     .then((output) => output.stdout)
     .catch(() => null);
   const statusLines = status === null
@@ -799,7 +823,16 @@ async function inspectGitCloseReadiness(workspace: ExecutionWorkspace): Promise<
   let untrackedEntryCount = 0;
   if (repoRoot) {
     try {
-      const statusOutput = (await runGit(["status", "--porcelain=v1", "--untracked-files=all"], workspacePath)).stdout;
+      const statusOutput = (await runExpensiveGitStatus({
+        args: ["status", "--porcelain=v1", "--untracked-files=all"],
+        cwd: workspacePath,
+        operation: "execution_workspaces.close_readiness_status",
+        fairnessKeys: [
+          `company:${workspace.companyId}`,
+          `workspace:${workspace.id}`,
+          ...(workspace.sourceIssueId ? [`issue:${workspace.sourceIssueId}`] : []),
+        ],
+      })).stdout;
       for (const line of statusOutput.split(/\r?\n/)) {
         if (!line) continue;
         if (line.startsWith("??")) {
