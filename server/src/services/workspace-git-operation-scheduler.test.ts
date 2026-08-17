@@ -98,6 +98,29 @@ describe("WorkspaceGitOperationScheduler", () => {
     expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
   });
 
+  it("honors per-operation deadlines and keeps different execution bounds out of one flight", async () => {
+    const workspace = await makeWorkspace();
+    const observedTimeouts: number[] = [];
+    const runner: WorkspaceGitRunner = async (input) => {
+      observedTimeouts.push(input.timeoutMs);
+      return { stdout: "", stderr: "" };
+    };
+    const scheduler = createWorkspaceGitOperationScheduler({
+      concurrency: 2,
+      timeoutMs: 8_000,
+      runner,
+    });
+    const input = scanInput(workspace, "same");
+
+    await Promise.all([
+      scheduler.run({ ...input, timeoutMs: 10_000, maxStdoutBytes: 1024 }),
+      scheduler.run({ ...input, timeoutMs: 12_000, maxStdoutBytes: 1024 }),
+    ]);
+
+    expect(observedTimeouts.sort((a, b) => a - b)).toEqual([10_000, 12_000]);
+    expect(scheduler.snapshot().totals.singleFlightJoins).toBe(0);
+  });
+
   it("bounds the queue and fails excess work immediately with a typed retryable error", async () => {
     const workspace = await makeWorkspace();
     const releases: Array<() => void> = [];

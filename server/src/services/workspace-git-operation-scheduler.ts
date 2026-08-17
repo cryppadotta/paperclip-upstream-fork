@@ -65,6 +65,8 @@ export interface WorkspaceGitScanInput {
   signal?: AbortSignal;
   /** Successful-result cache duration. Use zero for correctness-sensitive guards. */
   cacheTtlMs?: number;
+  /** Per-operation wall-clock deadline. Defaults to the process-wide setting. */
+  timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
@@ -142,6 +144,7 @@ interface PendingScan {
   args: readonly string[];
   fairnessKeys: readonly string[];
   env?: NodeJS.ProcessEnv;
+  timeoutMs: number;
   maxStdoutBytes: number;
   maxStderrBytes: number;
   cacheTtlMs: number;
@@ -216,6 +219,9 @@ function scanKey(input: {
   canonicalWorkspacePath: string;
   args: readonly string[];
   env?: NodeJS.ProcessEnv;
+  timeoutMs: number;
+  maxStdoutBytes: number;
+  maxStderrBytes: number;
 }): string {
   // These variables can change status semantics. Hash values so neither keys nor
   // telemetry expose credentials or private config contents.
@@ -233,6 +239,9 @@ function scanKey(input: {
       workspacePath: input.canonicalWorkspacePath,
       args: input.args,
       semanticEnv,
+      timeoutMs: input.timeoutMs,
+      maxStdoutBytes: input.maxStdoutBytes,
+      maxStderrBytes: input.maxStderrBytes,
     }))
     .digest("hex");
 }
@@ -469,7 +478,17 @@ export class WorkspaceGitOperationScheduler {
     if (input.signal?.aborted) throw abortError(workspaceIdentity(canonicalWorkspacePath));
 
     const workspaceHash = workspaceIdentity(canonicalWorkspacePath);
-    const key = scanKey({ canonicalWorkspacePath, args: input.args, env: input.env });
+    const timeoutMs = clampInteger(input.timeoutMs, this.timeoutMs, 1, 120_000);
+    const maxStdoutBytes = clampInteger(input.maxStdoutBytes, this.maxStdoutBytes, 1, 128 * 1024 * 1024);
+    const maxStderrBytes = clampInteger(input.maxStderrBytes, this.maxStderrBytes, 1, 128 * 1024 * 1024);
+    const key = scanKey({
+      canonicalWorkspacePath,
+      args: input.args,
+      env: input.env,
+      timeoutMs,
+      maxStdoutBytes,
+      maxStderrBytes,
+    });
     const cacheTtlMs = clampInteger(input.cacheTtlMs, this.defaultCacheTtlMs, 0, 60_000);
     // A correctness-sensitive caller that explicitly disables caching must not
     // consume a result populated earlier by the file browser.
@@ -538,8 +557,9 @@ export class WorkspaceGitOperationScheduler {
       args: [...input.args],
       fairnessKeys,
       env: input.env,
-      maxStdoutBytes: clampInteger(input.maxStdoutBytes, this.maxStdoutBytes, 1, 128 * 1024 * 1024),
-      maxStderrBytes: clampInteger(input.maxStderrBytes, this.maxStderrBytes, 1, 128 * 1024 * 1024),
+      timeoutMs,
+      maxStdoutBytes,
+      maxStderrBytes,
       cacheTtlMs,
       enqueuedAt: this.now(),
       state: "queued",
@@ -659,7 +679,7 @@ export class WorkspaceGitOperationScheduler {
       args: scan.args,
       env: scan.env,
       signal: scan.controller.signal,
-      timeoutMs: this.timeoutMs,
+      timeoutMs: scan.timeoutMs,
       killGraceMs: this.killGraceMs,
       maxStdoutBytes: scan.maxStdoutBytes,
       maxStderrBytes: scan.maxStderrBytes,
@@ -859,6 +879,7 @@ setExpensiveWorkspaceGitExecutor(async (input) => {
     args: input.args,
     operation: input.operation,
     cacheTtlMs: 0,
+    timeoutMs: input.timeout,
     maxStdoutBytes: input.maxBuffer,
     maxStderrBytes: input.maxBuffer,
   });
