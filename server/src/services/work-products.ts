@@ -1,11 +1,101 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { issueWorkProducts } from "@paperclipai/db";
+import { issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import { insertRowsInChunks } from "./batch-insert.js";
 import type { ImportIssueWorkProductRow } from "./import-write-types.js";
 
 type IssueWorkProductRow = typeof issueWorkProducts.$inferSelect;
+
+export interface RuntimeServiceWorkProductState {
+  id: string;
+  companyId: string;
+  executionWorkspaceId: string | null;
+  serviceName: string;
+  status: string;
+  port: number | null;
+  url: string | null;
+  healthStatus: string;
+  updatedAt: Date;
+}
+
+const ACTIVE_RUNTIME_SERVICE_STATUSES = new Set(["provisioning", "starting", "running"]);
+
+function runtimeServiceWorkProductStatus(status: string): IssueWorkProduct["status"] | null {
+  if (status === "running") return "active";
+  if (status === "provisioning" || status === "starting") return "draft";
+  if (status === "failed") return "failed";
+  if (status === "stopped") return "archived";
+  return null;
+}
+
+function runtimeServiceHealthStatus(status: string): IssueWorkProduct["healthStatus"] {
+  return status === "healthy" || status === "unhealthy" ? status : "unknown";
+}
+
+function compareRuntimeServiceRecency(left: RuntimeServiceWorkProductState, right: RuntimeServiceWorkProductState) {
+  const statusRank = (status: string) => status === "running" ? 0 : status === "starting" ? 1 : status === "provisioning" ? 2 : 3;
+  return statusRank(left.status) - statusRank(right.status)
+    || right.updatedAt.getTime() - left.updatedAt.getTime();
+}
+
+/**
+ * Runtime-service work products are durable pointers, not snapshots. Resolve
+ * their user-facing state from the managed runtime row so a restart that moves
+ * or replaces the service cannot leave a dead URL presented as healthy.
+ */
+export function resolveRuntimeServiceWorkProductState(
+  product: IssueWorkProduct,
+  runtimeServices: RuntimeServiceWorkProductState[],
+): IssueWorkProduct {
+  if (product.type !== "runtime_service") return product;
+
+  const exact = product.runtimeServiceId
+    ? runtimeServices.find((service) => service.id === product.runtimeServiceId && service.companyId === product.companyId)
+    : null;
+  let current = exact && ACTIVE_RUNTIME_SERVICE_STATUSES.has(exact.status) ? exact : null;
+
+  if (!current && product.executionWorkspaceId) {
+    const activeInWorkspace = runtimeServices
+      .filter((service) => (
+        service.companyId === product.companyId
+        && service.executionWorkspaceId === product.executionWorkspaceId
+        && ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.status)
+      ));
+    const serviceName = typeof product.metadata?.serviceName === "string"
+      ? product.metadata.serviceName.trim()
+      : "";
+    const matchingServices = serviceName
+      ? activeInWorkspace.filter((service) => service.serviceName === serviceName)
+      : activeInWorkspace;
+    if (matchingServices.length > 0 && (serviceName || matchingServices.length === 1)) {
+      current = [...matchingServices].sort(compareRuntimeServiceRecency)[0] ?? null;
+    }
+  }
+
+  const resolved = current ?? exact;
+  if (!resolved) return product;
+  const resolvedStatus = runtimeServiceWorkProductStatus(resolved.status);
+
+  return {
+    ...product,
+    runtimeServiceId: resolved.id,
+    externalId: product.provider === "paperclip" ? resolved.id : product.externalId,
+    url: resolved.url,
+    status: resolvedStatus ?? product.status,
+    healthStatus: runtimeServiceHealthStatus(resolved.healthStatus),
+    metadata: {
+      ...(product.metadata ?? {}),
+      runtimeService: {
+        id: resolved.id,
+        serviceName: resolved.serviceName,
+        status: resolved.status,
+        healthStatus: resolved.healthStatus,
+        port: resolved.port,
+      },
+    },
+  };
+}
 
 function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
   return {
@@ -34,6 +124,47 @@ function toIssueWorkProduct(row: IssueWorkProductRow): IssueWorkProduct {
 }
 
 export function workProductService(db: Db) {
+  const resolveRuntimeServiceState = async (products: IssueWorkProduct[]) => {
+    const runtimeProducts = products.filter((product) => (
+      product.type === "runtime_service"
+      && (product.runtimeServiceId || product.executionWorkspaceId)
+    ));
+    if (runtimeProducts.length === 0) return products;
+
+    const companyIds = [...new Set(runtimeProducts.map((product) => product.companyId))];
+    const runtimeServiceIds = [
+      ...new Set(runtimeProducts.flatMap((product) => product.runtimeServiceId ? [product.runtimeServiceId] : [])),
+    ];
+    const executionWorkspaceIds = [
+      ...new Set(runtimeProducts.flatMap((product) => product.executionWorkspaceId ? [product.executionWorkspaceId] : [])),
+    ];
+    const runtimeReferenceCondition = runtimeServiceIds.length > 0
+      ? executionWorkspaceIds.length > 0
+        ? or(
+            inArray(workspaceRuntimeServices.id, runtimeServiceIds),
+            inArray(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceIds),
+          )
+        : inArray(workspaceRuntimeServices.id, runtimeServiceIds)
+      : inArray(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceIds);
+    if (!runtimeReferenceCondition) return products;
+    const runtimeServices = await db
+      .select({
+        id: workspaceRuntimeServices.id,
+        companyId: workspaceRuntimeServices.companyId,
+        executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+        serviceName: workspaceRuntimeServices.serviceName,
+        status: workspaceRuntimeServices.status,
+        port: workspaceRuntimeServices.port,
+        url: workspaceRuntimeServices.url,
+        healthStatus: workspaceRuntimeServices.healthStatus,
+        updatedAt: workspaceRuntimeServices.updatedAt,
+      })
+      .from(workspaceRuntimeServices)
+      .where(and(inArray(workspaceRuntimeServices.companyId, companyIds), runtimeReferenceCondition));
+
+    return products.map((product) => resolveRuntimeServiceWorkProductState(product, runtimeServices));
+  };
+
   return {
     listForIssue: async (issueId: string) => {
       const rows = await db
@@ -41,7 +172,7 @@ export function workProductService(db: Db) {
         .from(issueWorkProducts)
         .where(eq(issueWorkProducts.issueId, issueId))
         .orderBy(desc(issueWorkProducts.isPrimary), desc(issueWorkProducts.updatedAt));
-      return rows.map(toIssueWorkProduct);
+      return await resolveRuntimeServiceState(rows.map(toIssueWorkProduct));
     },
 
     getById: async (id: string) => {
@@ -50,7 +181,8 @@ export function workProductService(db: Db) {
         .from(issueWorkProducts)
         .where(eq(issueWorkProducts.id, id))
         .then((rows) => rows[0] ?? null);
-      return row ? toIssueWorkProduct(row) : null;
+      if (!row) return null;
+      return (await resolveRuntimeServiceState([toIssueWorkProduct(row)]))[0] ?? null;
     },
 
     createForIssue: async (issueId: string, companyId: string, data: Omit<typeof issueWorkProducts.$inferInsert, "issueId" | "companyId">) => {
