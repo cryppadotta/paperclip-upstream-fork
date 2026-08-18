@@ -19,6 +19,8 @@ import {
   type InspectDatabaseBackupHealthOptions,
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { getCloseReadinessDemandSnapshot } from "../services/execution-workspace-close-readiness-demand.js";
+import { getWorkspaceGitOperationSchedulerSnapshot } from "../services/workspace-git-operation-scheduler.js";
 import { serverVersion } from "../version.js";
 
 function shouldExposeFullHealthDetails(
@@ -240,6 +242,7 @@ export function healthRoutes(
       ? inspectDatabaseBackupHealth(opts.databaseBackupHealth)
       : undefined;
     const warnings = databaseBackup?.warnings.length ? databaseBackup.warnings : undefined;
+    const processMemory = process.memoryUsage();
 
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
@@ -273,6 +276,14 @@ export function healthRoutes(
         companyDeletionEnabled: opts.companyDeletionEnabled,
       },
       serverInfo,
+      workspaceGitProtection: {
+        scheduler: getWorkspaceGitOperationSchedulerSnapshot(),
+        closeReadinessDemand: getCloseReadinessDemandSnapshot(),
+        processMemory: {
+          heapUsedBytes: processMemory.heapUsed,
+          rssBytes: processMemory.rss,
+        },
+      },
       ...(databaseBackup ? { databaseBackup } : {}),
       ...(warnings ? { warnings } : {}),
       ...(devServer ? { devServer } : {}),

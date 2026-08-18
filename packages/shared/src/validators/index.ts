@@ -558,6 +558,8 @@ export {
   executionWorkspaceStatusSchema,
   executionWorkspaceCloseActionKindSchema,
   executionWorkspaceCloseActionSchema,
+  executionWorkspaceCloseGitInspectionSchema,
+  executionWorkspaceCloseGitInspectionStateSchema,
   executionWorkspaceCloseGitReadinessSchema,
   executionWorkspaceCloseLinkedIssueSchema,
   executionWorkspaceCloseReadinessSchema,
