@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
+  ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
@@ -236,6 +237,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
+import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
@@ -10798,7 +10800,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           | "issue_execution_lock_changed"
           | "issue_review_participant_changed"
           | "issue_paused"
-          | "issue_dependencies_blocked";
+          | "issue_dependencies_blocked"
+          | "issue_disposition_repair_superseded";
         issueId: string | null;
         details: Record<string, unknown>;
       };
@@ -10853,10 +10856,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const issue = await db
       .select({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
+        executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -10870,6 +10877,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issueId,
         details: { issueId },
       };
+    }
+
+    if (retryReason === ISSUE_DISPOSITION_REPAIR_RETRY_REASON) {
+      const expectedFingerprint = readNonEmptyString(contextSnapshot.dispositionRepairFingerprint);
+      const sourceState = await collectDispositionRepairSourceState(db, {
+        issue,
+        excludeRunId: run.id,
+        excludeWakeupRequestId: run.wakeupRequestId,
+      });
+      if (
+        !expectedFingerprint ||
+        sourceState.fingerprint !== expectedFingerprint ||
+        sourceState.hasActiveExecutionPath ||
+        sourceState.hasDurableWaitingPath
+      ) {
+        return {
+          allowed: false,
+          reason: "Scheduled disposition repair suppressed because the source state changed or gained a durable path",
+          errorCode: "issue_disposition_repair_superseded",
+          issueId,
+          details: {
+            issueId,
+            expectedFingerprint,
+            currentFingerprint: sourceState.fingerprint,
+            hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
+            durablePathReason: sourceState.durablePathReason,
+          },
+        };
+      }
     }
 
     if (issue.assigneeAgentId !== run.agentId) {
@@ -12788,10 +12824,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
       reviewParticipant.agentId === run.agentId;
 
+    const recoveryActionId = readNonEmptyString(context.recoveryActionId);
+    const authorizedSourceScopedRecovery = wakeReason === "source_scoped_recovery_action" && recoveryActionId
+      ? await db
+        .select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.id, recoveryActionId),
+          eq(issueRecoveryActions.companyId, run.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issue.id),
+          eq(issueRecoveryActions.ownerAgentId, run.agentId),
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+        ))
+        .limit(1)
+        .then((rows) => Boolean(rows[0]))
+      : false;
+
     if (
       issue.assigneeAgentId !== run.agentId &&
       !isInteractionWake &&
       !isCurrentReviewParticipant &&
+      !authorizedSourceScopedRecovery &&
       !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
     ) {
       return {
@@ -17355,6 +17408,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
         (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+
+      if (
+        readNonEmptyString(parseObject(run.contextSnapshot).retryReason) ===
+        ISSUE_DISPOSITION_REPAIR_RETRY_REASON
+      ) {
+        return { kind: "released" as const };
+      }
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };

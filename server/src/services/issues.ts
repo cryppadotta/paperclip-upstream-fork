@@ -1873,7 +1873,7 @@ async function watchdogMapForIssues(dbOrTx: any, rows: IssueRow[]): Promise<Map<
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
-const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running"];
+const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"];
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
@@ -2553,8 +2553,22 @@ async function listIssueBlockerAttentionMap(
       explicitWaitingIssueIds.add(parsed.leafIssueId);
     }
 
-    const recoveryActionRows: Array<{ sourceIssueId: string }> = await dbOrTx
-      .select({ sourceIssueId: issueRecoveryActions.sourceIssueId })
+    const recoveryActionRows: Array<{
+      id: string;
+      sourceIssueId: string;
+      status: string;
+      ownerType: string;
+      ownerAgentId: string | null;
+      ownerUserId: string | null;
+    }> = await dbOrTx
+      .select({
+        id: issueRecoveryActions.id,
+        sourceIssueId: issueRecoveryActions.sourceIssueId,
+        status: issueRecoveryActions.status,
+        ownerType: issueRecoveryActions.ownerType,
+        ownerAgentId: issueRecoveryActions.ownerAgentId,
+        ownerUserId: issueRecoveryActions.ownerUserId,
+      })
       .from(issueRecoveryActions)
       .where(
         and(
@@ -2563,7 +2577,38 @@ async function listIssueBlockerAttentionMap(
           inArray(issueRecoveryActions.sourceIssueId, explicitWaitCandidateIds),
         ),
       );
-    for (const row of recoveryActionRows) explicitWaitingIssueIds.add(row.sourceIssueId);
+    const recoveryActionIds = recoveryActionRows.map((row) => row.id);
+    const liveRecoveryActionIds = new Set<string>();
+    for (const chunk of chunkList(recoveryActionIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const [runRows, wakeRows] = await Promise.all([
+        dbOrTx
+          .select({ recoveryActionId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId'` })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.companyId, companyId),
+            inArray(heartbeatRuns.status, BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES),
+            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId'`, chunk),
+          )),
+        dbOrTx
+          .select({ recoveryActionId: sql<string | null>`${agentWakeupRequests.payload} ->> 'recoveryActionId'` })
+          .from(agentWakeupRequests)
+          .where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            inArray(agentWakeupRequests.status, BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES),
+            inArray(sql<string>`${agentWakeupRequests.payload} ->> 'recoveryActionId'`, chunk),
+          )),
+      ]);
+      for (const row of [...runRows, ...wakeRows]) {
+        if (row.recoveryActionId) liveRecoveryActionIds.add(row.recoveryActionId);
+      }
+    }
+    for (const row of recoveryActionRows) {
+      const healthy =
+        (row.status === "escalated" && row.ownerType === "board") ||
+        Boolean(row.ownerUserId) ||
+        (Boolean(row.ownerAgentId) && liveRecoveryActionIds.has(row.id));
+      if (healthy) explicitWaitingIssueIds.add(row.sourceIssueId);
+    }
   }
 
   const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
@@ -2708,7 +2753,12 @@ async function listIssueBlockerAttentionMap(
     if (seen.has(nodeId)) return false;
     const node = nodesById.get(nodeId);
     if (!node || node.companyId !== companyId) return false;
-    if (node.status === "in_progress" || activeIssueIds.has(node.id)) return true;
+    if (
+      node.status === "in_progress" ||
+      activeIssueIds.has(node.id) ||
+      explicitWaitingIssueIds.has(node.id) ||
+      Boolean(node.assigneeUserId)
+    ) return true;
 
     const nextSeen = new Set(seen);
     nextSeen.add(nodeId);

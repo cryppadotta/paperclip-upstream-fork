@@ -119,6 +119,7 @@ import {
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   noticeMetadataReferencesRecoveryAction,
 } from "../services/recovery/index.ts";
+import { collectDispositionRepairSourceState } from "../services/recovery/disposition-repair.ts";
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
@@ -3285,12 +3286,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.scheduleBoundedRetry(runId, {
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
-      maxAttempts: 3,
+      maxAttempts: 5,
     });
 
     expect(result).toMatchObject({
       outcome: "retry_exhausted",
-      maxAttempts: 3,
+      maxAttempts: 5,
     });
 
     const issue = await db
@@ -4300,8 +4301,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).not.toContain("issue_continuation_waiting_on_review");
   });
 
-  it("still escalates a continuation parked for review when no open dependency remains", async () => {
-    const { companyId, issueId } = await seedStrandedIssueFixture({
+  it("repairs the PAP-16986 deliberate wait through the original owner when no target exists", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
       retryReason: "issue_continuation_needed",
@@ -4312,10 +4313,391 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
 
-    // With no real waiting target, the deliberate-wait conversion must not fire;
-    // genuine-strand detection downstream is preserved.
     expect(result.waitingOnReviewResolved).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.dispositionRepairRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      kind: "deliberate_wait_without_target",
+      status: "active",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      attemptCount: 1,
+      maxAttempts: 5,
+    });
+    expect(action?.fingerprint).toMatch(/^disposition_repair:v1:/);
+    expect(action?.wakePolicy).toMatchObject({
+      type: "bounded_owner_disposition_repair",
+      retryAgentId: agentId,
+      attempt: 1,
+      maxAttempts: 5,
+      baseBackoffMs: 0,
+      jitterMs: 0,
+    });
+
+    const repairRun = await waitForValue(async () => {
+      const rows = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      return rows.find((run) =>
+        (run.contextSnapshot as { retryReason?: string } | null)?.retryReason ===
+          "issue_disposition_repair"
+      ) ?? null;
+    });
+    expect(repairRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryReason: "issue_disposition_repair",
+      dispositionRepairFingerprint: action?.fingerprint,
+      dispositionRepairAttempt: 1,
+      dispositionRepairMaxAttempts: 5,
+    });
+    expect(repairRun?.contextSnapshot).not.toHaveProperty("modelProfile");
+    expect(repairRun?.contextSnapshot).not.toHaveProperty("allowDeliverableWork");
+  });
+
+  it("does not reset disposition repair for prose but does reset for durable source state", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    const initial = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "Parked summary: waiting for review, with no typed target.",
+    });
+    const afterProse = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+    expect(afterProse.fingerprint).toBe(initial.fingerprint);
+
+    await db
+      .update(issues)
+      .set({ executionPolicy: { mode: "auto" } })
+      .where(eq(issues.id, issueId));
+    const changedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    const afterDurableChange = await collectDispositionRepairSourceState(db, { issue: changedIssue });
+    expect(afterDurableChange.fingerprint).not.toBe(initial.fingerprint);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_disposition_repair",
+          retryReason: "issue_disposition_repair",
+          dispositionRepairFingerprint: initial.fingerprint,
+          dispositionRepairAttempt: 5,
+          dispositionRepairMaxAttempts: 5,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.dispositionRepairRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      fingerprint: afterDurableChange.fingerprint,
+      attemptCount: 1,
+      maxAttempts: 5,
+      status: "active",
+    });
+  });
+
+  it("escalates after five unchanged disposition repairs without transferring the source", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    const managerId = randomUUID();
+    await db.insert(agents).values({
+      id: managerId,
+      companyId,
+      name: "Recovery CTO",
+      role: "cto",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.update(agents).set({ reportsTo: managerId }).where(eq(agents.id, agentId));
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    const state = await collectDispositionRepairSourceState(db, { issue: sourceIssue });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_disposition_repair",
+          retryReason: "issue_disposition_repair",
+          dispositionRepairFingerprint: state.fingerprint,
+          dispositionRepairAttempt: 5,
+          dispositionRepairMaxAttempts: 5,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.dispositionRepairRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+
+    const sourceAfter = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceAfter).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      kind: "deliberate_wait_without_target",
+      status: "active",
+      ownerAgentId: managerId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      attemptCount: 1,
+      maxAttempts: 3,
+      resolutionNote: "unchanged_source_state_exhausted",
+    });
+    expect(action?.evidence).toMatchObject({
+      terminalReason: "unchanged_source_state_exhausted",
+      sourceAttemptCount: 5,
+      sourceMaxAttempts: 5,
+    });
+    expect(action?.wakePolicy).toMatchObject({
+      type: "bounded_recovery_owner",
+      attempt: 1,
+      maxAttempts: 3,
+      preservesSourceAssignee: true,
+    });
+
+    const firstManagerRun = await waitForValue(async () => db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, managerId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${action!.id}`,
+      ))
+      .then((rows) => rows[0] ?? null));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, firstManagerRun.id));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "completed" })
+      .where(eq(agentWakeupRequests.runId, firstManagerRun.id));
+
+    const restartedHeartbeat = heartbeatService(db);
+    await restartedHeartbeat.reconcileStrandedAssignedIssues();
+    const actionAfterRestart = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(actionAfterRestart).toMatchObject({ status: "active", attemptCount: 2, maxAttempts: 3 });
+    expect(actionAfterRestart?.wakePolicy).toMatchObject({
+      type: "bounded_recovery_owner",
+      attempt: 2,
+      maxAttempts: 3,
+      preservesSourceAssignee: true,
+    });
+
+    const managerRunsAfterRestart = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, managerId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${action!.id}`,
+      ));
+    expect(managerRunsAfterRestart).toHaveLength(2);
+    const scheduledRetry = managerRunsAfterRestart.find((run) => run.id !== firstManagerRun.id);
+    expect(scheduledRetry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "recovery_owner_retry",
+    });
+    expect(scheduledRetry?.scheduledRetryAt?.getTime()).toBeGreaterThan(Date.now() + 59_000);
+    expect(scheduledRetry?.scheduledRetryAt?.getTime()).toBeLessThanOrEqual(Date.now() + 66_000);
+
+    await restartedHeartbeat.reconcileStrandedAssignedIssues();
+    const managerRunsAfterSecondSweep = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, managerId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${action!.id}`,
+      ));
+    expect(managerRunsAfterSecondSweep).toHaveLength(2);
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, scheduledRetry!.id));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "completed" })
+      .where(eq(agentWakeupRequests.runId, scheduledRetry!.id));
+    await restartedHeartbeat.reconcileStrandedAssignedIssues();
+
+    const thirdManagerRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.agentId, managerId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryActionId' = ${action!.id}`,
+        sql`${heartbeatRuns.contextSnapshot} ->> 'recoveryOwnerAttempt' = '3'`,
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(thirdManagerRun).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "recovery_owner_retry",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "failed", errorCode: "process_lost", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, thirdManagerRun!.id));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "completed" })
+      .where(eq(agentWakeupRequests.runId, thirdManagerRun!.id));
+    await restartedHeartbeat.reconcileStrandedAssignedIssues();
+
+    const exhaustedAction = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(exhaustedAction).toMatchObject({
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      attemptCount: 3,
+      maxAttempts: 3,
+      resolutionNote: "recovery_owner_retry_exhausted",
+    });
+    expect(exhaustedAction?.wakePolicy).toMatchObject({
+      type: "board_escalation",
+      reason: "recovery_owner_retry_exhausted",
+      attempt: 3,
+      maxAttempts: 3,
+      preservesSourceAssignee: true,
+    });
+    const sourceAfterManagerExhaustion = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceAfterManagerExhaustion).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+  });
+
+  it("routes a non-invokable source owner to recovery without reassigning the source", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      kind: "deliberate_wait_without_target",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      attemptCount: 0,
+      maxAttempts: 3,
+      resolutionNote: "owner_not_invokable",
+    });
   });
 
   it("clears the detached warning when the run reports activity again", async () => {
@@ -5156,7 +5538,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(sourceIssue).toMatchObject({
       status: "blocked",
-      assigneeAgentId: agentId,
+      assigneeAgentId: sourceAssigneeAgentId,
     });
 
     const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
@@ -5349,7 +5731,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  it("escalates accepted interaction continuation recovery after three review-park cancellations", async () => {
+  it("counts five historical review-park cancellations against the upgraded disposition-repair ceiling", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -5400,7 +5782,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: { version: 1, prompt: "Approve the plan?" },
       result: { outcome: "accepted" },
     });
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
       const finishedAt = new Date(resolvedAt.getTime() + attempt * 60_000);
       await db.insert(heartbeatRuns).values({
         id: randomUUID(),
@@ -5449,8 +5831,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, issueId)),
     ]);
     expect(issue?.status).toBe("blocked");
-    expect(continuationRuns).toHaveLength(3);
-    expect(comments.some((comment) => comment.body.includes(interactionId))).toBe(true);
+    expect(continuationRuns).toHaveLength(5);
+    expect(comments.some((comment) => comment.body.includes("Attempts: 5/5"))).toBe(true);
+    const action = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId),
+        eq(issueRecoveryActions.sourceIssueId, issueId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(action).toMatchObject({
+      kind: "deliberate_wait_without_target",
+      status: "escalated",
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      attemptCount: 0,
+      maxAttempts: 3,
+      resolutionNote: "unchanged_source_state_exhausted",
+    });
+    expect(action?.evidence).toMatchObject({
+      sourceAttemptCount: 5,
+      sourceMaxAttempts: 5,
+    });
   });
 
   it("skips accepted interaction recovery after its continuation succeeds", async () => {
