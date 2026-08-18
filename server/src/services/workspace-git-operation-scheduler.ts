@@ -489,6 +489,7 @@ export class WorkspaceGitOperationScheduler {
   private activeCount = 0;
   private waiterCount = 0;
   private resolvingCount = 0;
+  private shuttingDown = false;
   private serviceSequence = 0;
   private readonly peaks = {
     active: 0,
@@ -556,12 +557,22 @@ export class WorkspaceGitOperationScheduler {
   }
 
   async shutdown(): Promise<void> {
+    // Close admission before inspecting any current work. A call already in
+    // canonical-path resolution remains counted until it observes this flag,
+    // releases its reservation, and fails without starting a child.
+    this.shuttingDown = true;
     for (const scan of [...this.queue]) {
       this.cancelQueuedScan(scan, "scheduler_shutdown");
     }
     for (const scan of this.running) scan.controller.abort();
-    if (this.activeCount === 0) return;
+    if (this.activeCount === 0 && this.resolvingCount === 0) return;
     await new Promise<void>((resolve) => this.shutdownWaiters.add(resolve));
+  }
+
+  private settleShutdownWaiters(): void {
+    if (!this.shuttingDown || this.activeCount > 0 || this.resolvingCount > 0) return;
+    for (const resolve of this.shutdownWaiters) resolve();
+    this.shutdownWaiters.clear();
   }
 
   private totalDemandCount(): number {
@@ -610,6 +621,10 @@ export class WorkspaceGitOperationScheduler {
   }
 
   run(input: WorkspaceGitScanInput): Promise<WorkspaceGitScanResult> {
+    if (this.shuttingDown) {
+      this.totals.cancelled += 1;
+      return Promise.reject(abortError("unresolved", { reason: "scheduler_shutdown" }));
+    }
     if (input.signal?.aborted) {
       this.totals.cancelled += 1;
       this.totals.aborted += 1;
@@ -650,6 +665,7 @@ export class WorkspaceGitOperationScheduler {
       const nextForKey = (this.resolvingByPreliminaryKey.get(preliminaryKey) ?? 1) - 1;
       if (nextForKey <= 0) this.resolvingByPreliminaryKey.delete(preliminaryKey);
       else this.resolvingByPreliminaryKey.set(preliminaryKey, nextForKey);
+      this.settleShutdownWaiters();
     };
 
     let canonicalWorkspacePath: string;
@@ -662,6 +678,11 @@ export class WorkspaceGitOperationScheduler {
         "Workspace Git scan path is unavailable",
         { cause: error instanceof Error ? error.message : String(error) },
       );
+    }
+    if (this.shuttingDown) {
+      releaseResolution();
+      this.totals.cancelled += 1;
+      throw abortError(workspaceIdentity(canonicalWorkspacePath), { reason: "scheduler_shutdown" });
     }
     if (input.signal?.aborted) {
       releaseResolution();
@@ -906,6 +927,7 @@ export class WorkspaceGitOperationScheduler {
   }
 
   private drain(): void {
+    if (this.shuttingDown) return;
     while (this.activeCount < this.concurrency && this.queue.length > 0) {
       const index = this.nextFairQueueIndex();
       const scan = this.queue.splice(index, 1)[0]!;
@@ -1094,10 +1116,7 @@ export class WorkspaceGitOperationScheduler {
     this.activeCount = Math.max(0, this.activeCount - 1);
     this.drain();
     this.pruneFairnessState();
-    if (this.activeCount === 0) {
-      for (const resolve of this.shutdownWaiters) resolve();
-      this.shutdownWaiters.clear();
-    }
+    this.settleShutdownWaiters();
   }
 
   private pruneFairnessState(): void {

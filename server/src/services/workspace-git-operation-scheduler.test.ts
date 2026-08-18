@@ -400,8 +400,8 @@ describe("WorkspaceGitOperationScheduler", () => {
       '  process.on("SIGTERM", () => {});',
       '  setInterval(() => {}, 1000);',
       '} else if (process.argv.includes("flood")) {',
-      '  setTimeout(() => process.stdout.write("x".repeat(65536)), 10);',
-      '  setInterval(() => {}, 1000);',
+      '  process.on("SIGTERM", () => {});',
+      '  setInterval(() => fs.writeSync(1, "x".repeat(1024)), 10);',
       '} else {',
       '  process.stdout.write("ok");',
       '}',
@@ -429,7 +429,9 @@ describe("WorkspaceGitOperationScheduler", () => {
     expect(scheduler.snapshot().totals.forcedKilled).toBe(1);
     const outputScheduler = createWorkspaceGitOperationScheduler({
       concurrency: 1,
-      timeoutMs: 1_000,
+      // Process startup can be slow in a loaded serialized CI shard. This
+      // fixture verifies output-limit termination, not the execution deadline.
+      timeoutMs: 5_000,
       killGraceMs: 50,
       gitBinary: process.execPath,
       gitArgsPrefix: [scriptPath],
@@ -450,7 +452,7 @@ describe("WorkspaceGitOperationScheduler", () => {
       singleFlightJoined: false,
     });
     expect(scheduler.snapshot()).toMatchObject({ activeCount: 0, queuedCount: 0, inFlightCount: 0 });
-  });
+  }, 10_000);
 
   it("reaps a SIGTERM-resistant child before scheduler shutdown completes", async () => {
     const workspace = await makeWorkspace();
@@ -489,6 +491,44 @@ describe("WorkspaceGitOperationScheduler", () => {
       waiterCount: 0,
       totalDemandCount: 0,
       totals: { forcedKilled: 1 },
+    });
+  });
+
+  it("closes admission and waits for canonical-path resolution during shutdown", async () => {
+    const workspace = await makeWorkspace();
+    const realpathGate = deferred<string>();
+    vi.spyOn(fs, "realpath").mockImplementationOnce(() => realpathGate.promise);
+    const runner = vi.fn<WorkspaceGitRunner>(async () => ({ stdout: "", stderr: "" }));
+    const scheduler = createWorkspaceGitOperationScheduler({ runner });
+
+    const resolvingScan = scheduler.run(scanInput(workspace, "resolving")).catch((error) => error);
+    await vi.waitFor(() => expect(scheduler.snapshot().resolvingCount).toBe(1));
+
+    let shutdownSettled = false;
+    const shutdown = scheduler.shutdown().then(() => {
+      shutdownSettled = true;
+    });
+    await Promise.resolve();
+    expect(shutdownSettled).toBe(false);
+    await expect(scheduler.run(scanInput(workspace, "late"))).rejects.toMatchObject({
+      code: WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled,
+      details: expect.objectContaining({ reason: "scheduler_shutdown" }),
+    });
+
+    realpathGate.resolve(workspace);
+    await shutdown;
+    await expect(resolvingScan).resolves.toMatchObject({
+      code: WORKSPACE_GIT_SCAN_ERROR_CODES.cancelled,
+      details: expect.objectContaining({ reason: "scheduler_shutdown" }),
+    });
+    expect(runner).not.toHaveBeenCalled();
+    expect(scheduler.snapshot()).toMatchObject({
+      activeCount: 0,
+      queuedCount: 0,
+      waiterCount: 0,
+      resolvingCount: 0,
+      inFlightCount: 0,
+      totalDemandCount: 0,
     });
   });
 
