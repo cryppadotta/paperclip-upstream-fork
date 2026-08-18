@@ -56,7 +56,6 @@ describe("workProductService", () => {
       port: 42013,
       url: "https://paperclip.example.test:42013",
       healthStatus: "healthy",
-      updatedAt: new Date("2026-08-18T18:02:54.000Z"),
     }]);
 
     expect(resolved).toMatchObject({
@@ -77,7 +76,7 @@ describe("workProductService", () => {
     });
   });
 
-  it("follows a replacement runtime row for the same workspace service", () => {
+  it("does not substitute a different same-name runtime row", () => {
     const product = createWorkProductRow({
       executionWorkspaceId: "workspace-1",
       runtimeServiceId: "runtime-stopped",
@@ -96,7 +95,6 @@ describe("workProductService", () => {
       port: 42001,
       url: null,
       healthStatus: "unknown",
-      updatedAt: new Date("2026-08-18T12:04:25.000Z"),
     };
 
     const resolved = resolveRuntimeServiceWorkProductState(product, [
@@ -108,16 +106,15 @@ describe("workProductService", () => {
         port: 42013,
         url: "https://paperclip.example.test:42013",
         healthStatus: "healthy",
-        updatedAt: new Date("2026-08-18T18:02:54.000Z"),
       },
     ]);
 
     expect(resolved).toMatchObject({
-      runtimeServiceId: "runtime-current",
-      externalId: "runtime-current",
-      url: "https://paperclip.example.test:42013",
-      status: "active",
-      healthStatus: "healthy",
+      runtimeServiceId: "runtime-stopped",
+      externalId: "runtime-stopped",
+      url: null,
+      status: "archived",
+      healthStatus: "unknown",
     });
   });
 
@@ -141,7 +138,6 @@ describe("workProductService", () => {
       port: 42001,
       url: null,
       healthStatus: "unknown",
-      updatedAt: new Date("2026-08-18T12:04:25.000Z"),
     }]);
 
     expect(resolved).toMatchObject({
@@ -176,7 +172,6 @@ describe("workProductService", () => {
       port: 42013,
       url: "https://paperclip.example.test:42013",
       healthStatus: "healthy",
-      updatedAt: new Date("2026-08-18T18:02:54.000Z"),
     }]);
     const runtimeFrom = vi.fn(() => ({ where: runtimeWhere }));
     const select = vi.fn()

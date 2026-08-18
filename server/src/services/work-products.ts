@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueWorkProducts, workspaceRuntimeServices } from "@paperclipai/db";
 import type { IssueWorkProduct } from "@paperclipai/shared";
@@ -16,10 +16,7 @@ export interface RuntimeServiceWorkProductState {
   port: number | null;
   url: string | null;
   healthStatus: string;
-  updatedAt: Date;
 }
-
-const ACTIVE_RUNTIME_SERVICE_STATUSES = new Set(["provisioning", "starting", "running"]);
 
 function runtimeServiceWorkProductStatus(status: string): IssueWorkProduct["status"] | null {
   if (status === "running") return "active";
@@ -33,12 +30,6 @@ function runtimeServiceHealthStatus(status: string): IssueWorkProduct["healthSta
   return status === "healthy" || status === "unhealthy" ? status : "unknown";
 }
 
-function compareRuntimeServiceRecency(left: RuntimeServiceWorkProductState, right: RuntimeServiceWorkProductState) {
-  const statusRank = (status: string) => status === "running" ? 0 : status === "starting" ? 1 : status === "provisioning" ? 2 : 3;
-  return statusRank(left.status) - statusRank(right.status)
-    || right.updatedAt.getTime() - left.updatedAt.getTime();
-}
-
 /**
  * Runtime-service work products are durable pointers, not snapshots. Resolve
  * their user-facing state from the managed runtime row so a restart that moves
@@ -50,30 +41,9 @@ export function resolveRuntimeServiceWorkProductState(
 ): IssueWorkProduct {
   if (product.type !== "runtime_service") return product;
 
-  const exact = product.runtimeServiceId
+  const resolved = product.runtimeServiceId
     ? runtimeServices.find((service) => service.id === product.runtimeServiceId && service.companyId === product.companyId)
     : null;
-  let current = exact && ACTIVE_RUNTIME_SERVICE_STATUSES.has(exact.status) ? exact : null;
-
-  if (!current && product.executionWorkspaceId) {
-    const activeInWorkspace = runtimeServices
-      .filter((service) => (
-        service.companyId === product.companyId
-        && service.executionWorkspaceId === product.executionWorkspaceId
-        && ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.status)
-      ));
-    const serviceName = typeof product.metadata?.serviceName === "string"
-      ? product.metadata.serviceName.trim()
-      : "";
-    const matchingServices = serviceName
-      ? activeInWorkspace.filter((service) => service.serviceName === serviceName)
-      : activeInWorkspace;
-    if (matchingServices.length > 0 && (serviceName || matchingServices.length === 1)) {
-      current = [...matchingServices].sort(compareRuntimeServiceRecency)[0] ?? null;
-    }
-  }
-
-  const resolved = current ?? exact;
   if (!resolved) return product;
   const resolvedStatus = runtimeServiceWorkProductStatus(resolved.status);
 
@@ -127,7 +97,7 @@ export function workProductService(db: Db) {
   const resolveRuntimeServiceState = async (products: IssueWorkProduct[]) => {
     const runtimeProducts = products.filter((product) => (
       product.type === "runtime_service"
-      && (product.runtimeServiceId || product.executionWorkspaceId)
+      && product.runtimeServiceId
     ));
     if (runtimeProducts.length === 0) return products;
 
@@ -135,18 +105,6 @@ export function workProductService(db: Db) {
     const runtimeServiceIds = [
       ...new Set(runtimeProducts.flatMap((product) => product.runtimeServiceId ? [product.runtimeServiceId] : [])),
     ];
-    const executionWorkspaceIds = [
-      ...new Set(runtimeProducts.flatMap((product) => product.executionWorkspaceId ? [product.executionWorkspaceId] : [])),
-    ];
-    const runtimeReferenceCondition = runtimeServiceIds.length > 0
-      ? executionWorkspaceIds.length > 0
-        ? or(
-            inArray(workspaceRuntimeServices.id, runtimeServiceIds),
-            inArray(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceIds),
-          )
-        : inArray(workspaceRuntimeServices.id, runtimeServiceIds)
-      : inArray(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceIds);
-    if (!runtimeReferenceCondition) return products;
     const runtimeServices = await db
       .select({
         id: workspaceRuntimeServices.id,
@@ -157,10 +115,12 @@ export function workProductService(db: Db) {
         port: workspaceRuntimeServices.port,
         url: workspaceRuntimeServices.url,
         healthStatus: workspaceRuntimeServices.healthStatus,
-        updatedAt: workspaceRuntimeServices.updatedAt,
       })
       .from(workspaceRuntimeServices)
-      .where(and(inArray(workspaceRuntimeServices.companyId, companyIds), runtimeReferenceCondition));
+      .where(and(
+        inArray(workspaceRuntimeServices.companyId, companyIds),
+        inArray(workspaceRuntimeServices.id, runtimeServiceIds),
+      ));
 
     return products.map((product) => resolveRuntimeServiceWorkProductState(product, runtimeServices));
   };
