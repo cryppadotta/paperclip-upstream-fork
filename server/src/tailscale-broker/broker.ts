@@ -104,16 +104,21 @@ export class Broker {
     const correlationId = this.deps.correlationId();
     try {
       this.authorizePeer(peer);
-      if (this.failedClosedReason) {
-        throw new ServeStateError("broker_failed_closed", this.failedClosedReason);
-      }
       switch (request.op) {
-        case "list":
+        case "list": {
+          this.assertOperational();
           return this.handleList(peer, correlationId);
+        }
         case "expose":
-          return await this.mutex.run(() => this.handleExpose(request, peer, correlationId));
+          return await this.mutex.run(() => {
+            this.assertOperational();
+            return this.handleExpose(request, peer, correlationId);
+          });
         case "remove":
-          return await this.mutex.run(() => this.handleRemove(request, peer, correlationId));
+          return await this.mutex.run(() => {
+            this.assertOperational();
+            return this.handleRemove(request, peer, correlationId);
+          });
       }
     } catch (err) {
       const { code, message } = classifyError(err);
@@ -163,6 +168,12 @@ export class Broker {
       recovery: null,
     });
     return ok({ leases });
+  }
+
+  private assertOperational(): void {
+    if (this.failedClosedReason) {
+      throw new ServeStateError("broker_failed_closed", this.failedClosedReason);
+    }
   }
 
   private async handleExpose(

@@ -207,6 +207,41 @@ describe("Broker.expose", () => {
     expect(later).toMatchObject({ ok: false, code: "broker_failed_closed" });
   });
 
+  it("stops a mutation that queued before a failed rollback completed", async () => {
+    let markRollbackStarted!: () => void;
+    const rollbackStarted = new Promise<void>((resolve) => {
+      markRollbackStarted = resolve;
+    });
+    let releaseRollback!: () => void;
+    const rollbackRelease = new Promise<void>((resolve) => {
+      releaseRollback = resolve;
+    });
+    const addSpy = vi.fn(async (port: number, target: string) => state.add(port, target));
+    const { broker } = makeBroker(state, {
+      cli: makeCli(state, {
+        serveAddHttps: addSpy,
+        serveRemoveHttps: async () => {
+          markRollbackStarted();
+          await rollbackRelease;
+          throw new Error("tailscale unavailable");
+        },
+      }),
+      saveRegistry: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    const first = broker.handle(exposeReq(39001, "first"), PEER_A);
+    await rollbackStarted;
+    const queued = broker.handle(exposeReq(39002, "queued"), PEER_A);
+    releaseRollback();
+
+    await expect(first).resolves.toMatchObject({ ok: false, code: "registry_rollback_failed" });
+    await expect(queued).resolves.toMatchObject({ ok: false, code: "broker_failed_closed" });
+    expect(addSpy).toHaveBeenCalledTimes(1);
+    expect(state.web[`${HOST}:39002`]).toBeUndefined();
+  });
+
   it("denies a caller outside the uid allowlist", async () => {
     const { broker } = makeBroker(state);
     expect(await broker.handle(exposeReq(39001), PEER_B)).toMatchObject({ ok: false, code: "peer_uid_denied" });
