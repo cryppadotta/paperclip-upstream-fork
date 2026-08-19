@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 type WorktreePortRegistry = {
@@ -9,19 +10,57 @@ type WorktreePortRegistry = {
 
 const WORKTREE_PORT_REGISTRY_FILE = "worktree-port-reservations.json";
 const WORKTREE_PORT_REGISTRY_LOCK_DIR = ".worktree-port-reservations.lock";
+const WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE = "owner.json";
 const WORKTREE_PORT_REGISTRY_LOCK_STALE_MS = 5_000;
 const WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS = 10_000;
 const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
+
+type RegistryLockOwner = {
+  version: 1;
+  pid: number;
+  token: string;
+};
 
 function resolveRegistryLockPath(homeDir: string): string {
   fs.mkdirSync(homeDir, { recursive: true });
   return path.resolve(homeDir, WORKTREE_PORT_REGISTRY_LOCK_DIR);
 }
 
+function readRegistryLockOwner(lockPath: string): RegistryLockOwner | null {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(lockPath, WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE), "utf8"),
+    ) as Partial<RegistryLockOwner>;
+    if (
+      parsed.version !== 1
+      || !Number.isInteger(parsed.pid)
+      || (parsed.pid ?? 0) <= 0
+      || typeof parsed.token !== "string"
+      || parsed.token.length === 0
+    ) {
+      return null;
+    }
+    return parsed as RegistryLockOwner;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+}
+
 function removeStaleRegistryLock(lockPath: string): boolean {
   try {
     const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
     if (ageMs <= WORKTREE_PORT_REGISTRY_LOCK_STALE_MS) return false;
+    const owner = readRegistryLockOwner(lockPath);
+    if (owner && isProcessAlive(owner.pid)) return false;
     fs.rmSync(lockPath, { recursive: true, force: true });
     return true;
   } catch {
@@ -29,33 +68,54 @@ function removeStaleRegistryLock(lockPath: string): boolean {
   }
 }
 
-function acquireRegistryLock(lockPath: string, deadline: number): boolean {
+function acquireRegistryLock(lockPath: string, deadline: number): string | null {
   try {
     fs.mkdirSync(lockPath);
-    return true;
+    const token = `${process.pid}-${randomUUID()}`;
+    const owner: RegistryLockOwner = { version: 1, pid: process.pid, token };
+    try {
+      fs.writeFileSync(
+        path.join(lockPath, WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE),
+        `${JSON.stringify(owner)}\n`,
+        { mode: 0o600 },
+      );
+    } catch (error) {
+      fs.rmSync(lockPath, { recursive: true, force: true });
+      throw error;
+    }
+    return token;
   } catch (error) {
     const code = error instanceof Error && "code" in error ? error.code : null;
     if (code !== "EEXIST") throw error;
-    if (removeStaleRegistryLock(lockPath)) return false;
+    if (removeStaleRegistryLock(lockPath)) return null;
     if (Date.now() >= deadline) {
       throw new Error(`Timed out waiting for worktree port reservation lock at ${lockPath}`);
     }
-    return false;
+    return null;
   }
+}
+
+function releaseRegistryLock(lockPath: string, token: string): void {
+  const owner = readRegistryLockOwner(lockPath);
+  if (owner?.token !== token) {
+    return;
+  }
+  fs.rmSync(lockPath, { recursive: true, force: true });
 }
 
 export function withWorktreePortRegistryLockSync<T>(homeDir: string, run: () => T): T {
   const lockPath = resolveRegistryLockPath(homeDir);
   const deadline = Date.now() + WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS;
+  let token: string | null = null;
 
-  while (!acquireRegistryLock(lockPath, deadline)) {
+  while (!(token = acquireRegistryLock(lockPath, deadline))) {
     Atomics.wait(sleepSyncBuffer, 0, 0, 25);
   }
 
   try {
     return run();
   } finally {
-    fs.rmSync(lockPath, { recursive: true, force: true });
+    releaseRegistryLock(lockPath, token);
   }
 }
 
@@ -65,15 +125,16 @@ export async function withWorktreePortRegistryLock<T>(
 ): Promise<T> {
   const lockPath = resolveRegistryLockPath(homeDir);
   const deadline = Date.now() + WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS;
+  let token: string | null = null;
 
-  while (!acquireRegistryLock(lockPath, deadline)) {
+  while (!(token = acquireRegistryLock(lockPath, deadline))) {
     await delay(25);
   }
 
   try {
     return await run();
   } finally {
-    fs.rmSync(lockPath, { recursive: true, force: true });
+    releaseRegistryLock(lockPath, token);
   }
 }
 
