@@ -24,7 +24,7 @@ import { createTailscaleCli } from "./cli.js";
 import { createProcListenerInspector } from "./listener-ownership.js";
 import { DEFAULT_PORT_POLICY } from "./policy.js";
 import { loadRegistry, persistRegistry, type RegistryFile } from "./registry.js";
-import { fixedPeerCredentialReader, startBrokerServer } from "./server.js";
+import { createNativePeerCredentialReader, startBrokerServer } from "./server.js";
 
 function parseUidList(value: string | undefined, field: string): number[] {
   const list = (value ?? "")
@@ -70,13 +70,11 @@ export function main(env: NodeJS.ProcessEnv = process.env): void {
     correlationId: () => randomUUID(),
   });
 
-  // The socket is group-restricted to the single Paperclip service identity;
-  // report that identity so the broker allowlist still runs per request.
-  const peerIdentity = { uid: allowedUids[0], gid: allowedGids[0] ?? 0, pid: null };
   const server = startBrokerServer({
     socketPath,
     broker,
-    peerReader: fixedPeerCredentialReader(peerIdentity),
+    peerReader: createNativePeerCredentialReader(),
+    onFatal: () => process.exit(1),
   });
 
   const shutdown = () => {
@@ -85,8 +83,10 @@ export function main(env: NodeJS.ProcessEnv = process.env): void {
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
-  // eslint-disable-next-line no-console
-  console.error(`paperclip-tailscale-broker listening on ${socketPath}`);
+  server.once("listening", () => {
+    // eslint-disable-next-line no-console
+    console.error(`paperclip-tailscale-broker listening on ${socketPath}`);
+  });
 }
 
 // Only auto-start when invoked directly.

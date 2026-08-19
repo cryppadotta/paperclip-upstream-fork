@@ -77,6 +77,7 @@ export class Broker {
   private readonly registry: LeaseRegistry;
   private readonly mutex = new Mutex();
   private readonly mkHandle: () => string;
+  private failedClosedReason: string | null = null;
 
   constructor(
     private readonly config: BrokerConfig,
@@ -103,6 +104,9 @@ export class Broker {
     const correlationId = this.deps.correlationId();
     try {
       this.authorizePeer(peer);
+      if (this.failedClosedReason) {
+        throw new ServeStateError("broker_failed_closed", this.failedClosedReason);
+      }
       switch (request.op) {
         case "list":
           return this.handleList(peer, correlationId);
@@ -217,6 +221,7 @@ export class Broker {
     }
 
     // 7. Persist the lease atomically.
+    const currentRegistry = this.registry.snapshot();
     const lease: LeaseRecord = {
       handle: this.mkHandle(),
       runtimeId: request.runtimeId,
@@ -224,12 +229,35 @@ export class Broker {
       target: request.target,
       peerUid: peer.uid,
       peerGid: peer.gid,
-      generation: this.registry.nextGeneration(),
+      generation: currentRegistry.generation + 1,
       entryDigest: entryDigest(port, request.target),
       createdAt: this.deps.now(),
     };
-    this.registry.add(lease);
-    this.deps.saveRegistry(this.registry.snapshot());
+    const nextRegistry: RegistryFile = {
+      version: 1,
+      generation: lease.generation,
+      leases: [...currentRegistry.leases, lease],
+    };
+    try {
+      // Write the durable ownership record before publishing it in memory. If
+      // the write fails, remove and verify the mapping before another request
+      // can enter the serialized mutation section.
+      this.deps.saveRegistry(nextRegistry);
+    } catch (registryErr) {
+      try {
+        await this.rollbackUnpersistedExpose(port, before);
+      } catch (rollbackErr) {
+        this.failedClosedReason =
+          `broker stopped mutations after registry persistence and mapping rollback failed on port ${port}: ` +
+          `${errorMessage(registryErr)}; rollback: ${errorMessage(rollbackErr)}`;
+        throw new ServeStateError("registry_rollback_failed", this.failedClosedReason);
+      }
+      throw new ServeStateError(
+        "registry_persist_failed",
+        `registry persistence failed; the new mapping on port ${port} was rolled back: ${errorMessage(registryErr)}`,
+      );
+    }
+    this.registry.replace(nextRegistry);
 
     this.deps.audit.write({
       ts: this.deps.now(),
@@ -340,6 +368,19 @@ export class Broker {
     this.deps.saveRegistry(this.registry.snapshot());
   }
 
+  private async rollbackUnpersistedExpose(
+    port: number,
+    beforeState: ReturnType<typeof parseServeState>,
+  ): Promise<void> {
+    await this.deps.cli.serveRemoveHttps(port);
+    const rolledBack = parseServeState(await this.deps.cli.serveStatusJson());
+    assertPrimaryPresent(rolledBack);
+    assertOnlyPortChanged(beforeState, rolledBack, port);
+    if (rolledBack.entries.has(port)) {
+      throw new ServeStateError("mapping_still_present", `mapping on port ${port} remained after rollback`);
+    }
+  }
+
   /** Test/inspection helper. */
   snapshotRegistry(): RegistryFile {
     return this.registry.snapshot();
@@ -348,6 +389,10 @@ export class Broker {
 
 function safePort(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function classifyError(err: unknown): { code: string; message: string } {

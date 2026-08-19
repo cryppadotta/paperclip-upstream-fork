@@ -121,6 +121,10 @@ export class LeaseRegistry {
     return { version: 1, generation: this.file.generation, leases: this.file.leases.map((l) => ({ ...l })) };
   }
 
+  replace(file: RegistryFile): void {
+    this.file = { version: 1, generation: file.generation, leases: file.leases.map((lease) => ({ ...lease })) };
+  }
+
   nextGeneration(): number {
     this.file.generation += 1;
     return this.file.generation;

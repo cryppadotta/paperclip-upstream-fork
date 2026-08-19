@@ -7,7 +7,6 @@
 # One-time host setup (see docs/deploy/tailscale-https-branch-runtimes.md):
 #   sudo useradd --system --home /var/lib/paperclip-tailscale-broker --shell /usr/sbin/nologin pcts-broker
 #   sudo tailscale set --operator=pcts-broker
-#   sudo install -d -o root -g paperclip -m 0750 /run/paperclip-tailscale-broker
 #   sudo install -d -o pcts-broker -g pcts-broker -m 0700 /var/lib/paperclip-tailscale-broker
 #   sudo install -d -o pcts-broker -g pcts-broker -m 0750 /var/log/paperclip-tailscale-broker
 
@@ -20,13 +19,12 @@ Requires=tailscaled.service
 [Service]
 Type=simple
 User=pcts-broker
-Group=pcts-broker
-# The socket dir is root-owned; the broker only needs to create the socket file
-# inside it, so grant it via a supplementary directory ACL or a group. The
-# example below assumes /run/paperclip-tailscale-broker is group-writable by the
-# broker's primary group and world-traversable so the paperclip group can reach
-# the 0660 socket.
-SupplementaryGroups=paperclip
+Group=paperclip
+# systemd creates this directory as pcts-broker:paperclip with mode 0750. The
+# broker can create the socket as the owner. Paperclip clients can traverse the
+# directory as group members, but they cannot replace the socket.
+RuntimeDirectory=paperclip-tailscale-broker
+RuntimeDirectoryMode=0750
 Environment=PAPERCLIP_TS_BROKER_SOCKET=/run/paperclip-tailscale-broker/broker.sock
 Environment=PAPERCLIP_TS_BROKER_REGISTRY=/var/lib/paperclip-tailscale-broker/registry.json
 Environment=PAPERCLIP_TS_BROKER_AUDIT=/var/log/paperclip-tailscale-broker/audit.jsonl

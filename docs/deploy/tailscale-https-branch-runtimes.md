@@ -50,17 +50,19 @@ state.
    sudo tailscale set --operator=pcts-broker
    ```
 
-2. **Create state/socket directories** with least privilege. The socket lives in
-   a root-owned directory that the Paperclip group can traverse; the socket file
-   itself is `0660` and group-restricted to the Paperclip service identity.
+2. **Create state directories** with least privilege. systemd creates the socket
+   directory as `pcts-broker:paperclip` with mode `0750`. The broker can create
+   the socket as the directory owner. Paperclip group members can traverse the
+   directory but cannot replace the socket. The socket file is `0660`.
 
    ```sh
-   sudo install -d -o root -g paperclip -m 0750 /run/paperclip-tailscale-broker
    sudo install -d -o pcts-broker -g pcts-broker -m 0700 /var/lib/paperclip-tailscale-broker
    sudo install -d -o pcts-broker -g pcts-broker -m 0750 /var/log/paperclip-tailscale-broker
    ```
 
-3. **Build the broker entry** and install the unit:
+3. **Build the broker entry** and install the unit. On Linux, this build needs a
+   C compiler and the Node.js headers. It compiles the small SO_PEERCRED bridge
+   that identifies each socket client. The broker refuses to start without it.
 
    ```sh
    pnpm --filter @paperclipai/server build   # produces server/dist/tailscale-broker/main.js
@@ -73,7 +75,8 @@ state.
 4. **Verify** the socket appears with the expected ownership and mode:
 
    ```sh
-   sudo ls -l /run/paperclip-tailscale-broker/broker.sock   # srw-rw---- root paperclip (or pcts-broker:paperclip)
+   sudo ls -ld /run/paperclip-tailscale-broker              # drwxr-x--- pcts-broker paperclip
+   sudo ls -l /run/paperclip-tailscale-broker/broker.sock   # srw-rw---- pcts-broker paperclip
    node scripts/tailscale-broker-preflight.mjs
    ```
 

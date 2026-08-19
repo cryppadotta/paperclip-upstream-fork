@@ -64,6 +64,7 @@ function makeBroker(
     registry?: RegistryFile;
     audit?: AuditEvent[];
     handles?: string[];
+    saveRegistry?: (file: RegistryFile) => void;
   } = {},
 ) {
   const audit = opts.audit ?? [];
@@ -81,9 +82,9 @@ function makeBroker(
     inspector: opts.inspector ?? loopbackInspector(),
     audit: { write: (e) => audit.push(e) },
     loadRegistry: () => saved,
-    saveRegistry: (f) => {
+    saveRegistry: opts.saveRegistry ?? ((f) => {
       saved = f;
-    },
+    }),
     now: () => 1_700_000_000_000,
     newHandle: () => handles[handleSeq++] ?? `handle-${handleSeq}`,
     correlationId: () => "corr",
@@ -164,6 +165,46 @@ describe("Broker.expose", () => {
     expect(getSaved().leases.filter((l) => l.port === 39001 && !l.quarantined)).toHaveLength(0);
     // primary :443 remains intact.
     expect(state.tcp["443"]).toEqual({ HTTPS: true });
+  });
+
+  it("removes and verifies a new mapping when registry persistence fails", async () => {
+    const removeSpy = vi.fn(async (port: number) => state.remove(port));
+    const { broker, getSaved } = makeBroker(state, {
+      cli: makeCli(state, { serveRemoveHttps: removeSpy }),
+      saveRegistry: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    const res = await broker.handle(exposeReq(39001), PEER_A);
+
+    expect(res).toMatchObject({ ok: false, code: "registry_persist_failed" });
+    expect(removeSpy).toHaveBeenCalledWith(39001);
+    expect(state.web[`${HOST}:39001`]).toBeUndefined();
+    expect(state.tcp["39001"]).toBeUndefined();
+    expect(getSaved().leases).toHaveLength(0);
+    expect(broker.snapshotRegistry().leases).toHaveLength(0);
+    expect(state.tcp["443"]).toEqual({ HTTPS: true });
+  });
+
+  it("stops all later requests when registry persistence and mapping rollback both fail", async () => {
+    const { broker } = makeBroker(state, {
+      cli: makeCli(state, {
+        serveRemoveHttps: async () => {
+          throw new Error("tailscale unavailable");
+        },
+      }),
+      saveRegistry: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    const res = await broker.handle(exposeReq(39001), PEER_A);
+    expect(res).toMatchObject({ ok: false, code: "registry_rollback_failed" });
+    expect(state.web[`${HOST}:39001`]).toBeDefined();
+
+    const later = await broker.handle({ v: 1, op: "list" }, PEER_A);
+    expect(later).toMatchObject({ ok: false, code: "broker_failed_closed" });
   });
 
   it("denies a caller outside the uid allowlist", async () => {
