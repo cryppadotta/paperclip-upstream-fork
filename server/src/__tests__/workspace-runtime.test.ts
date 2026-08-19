@@ -7412,6 +7412,209 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await expect(fetch(service!.url!)).rejects.toThrow();
   });
 
+  it("re-adopts a desired service when pnpm is represented as the pnpm.cjs launcher", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-pnpm-reconcile-"));
+    const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
+    const previousPaperclipHome = process.env.PAPERCLIP_HOME;
+    const previousInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HOME = paperclipHome;
+    process.env.PAPERCLIP_INSTANCE_ID = `runtime-pnpm-reconcile-${randomUUID()}`;
+
+    const portProbe = net.createServer();
+    await new Promise<void>((resolve) => portProbe.listen(0, "127.0.0.1", resolve));
+    const address = portProbe.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    await new Promise<void>((resolve, reject) => {
+      portProbe.close((error) => error ? reject(error) : resolve());
+    });
+    if (!port) throw new Error("Failed to reserve pnpm reconciliation test port");
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const runtimeServiceId = randomUUID();
+    const command = "pnpm dev";
+    const service = {
+      name: "web",
+      command,
+      port,
+      readiness: {
+        type: "http",
+        urlTemplate: "http://127.0.0.1:{{port}}",
+        timeoutSec: 10,
+        intervalMs: 50,
+      },
+      expose: null,
+      lifecycle: "shared",
+      reuseScope: "execution_workspace",
+      stopPolicy: { type: "manual" },
+    };
+    const reuseKey = createHash("sha256")
+      .update(stableStringifyForTest({
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+        serviceName: service.name,
+        command,
+        cwd: workspaceRoot,
+        port,
+        env: {},
+        expose: null,
+      }))
+      .digest("hex");
+    const wrapperPath = path.join(workspaceRoot, "pnpm.cjs");
+    await fs.writeFile(
+      wrapperPath,
+      [
+        "const http = require('node:http');",
+        "const port = Number(process.argv[3]);",
+        "http.createServer((_req, res) => res.end('ok')).listen(port, '127.0.0.1');",
+      ].join("\n"),
+      "utf8",
+    );
+    const child = spawn(process.execPath, [wrapperPath, "dev", String(port)], {
+      cwd: workspaceRoot,
+      detached: process.platform !== "win32",
+      stdio: "ignore",
+    });
+    child.unref();
+
+    try {
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        try {
+          if ((await fetch(`http://127.0.0.1:${port}`)).ok) break;
+        } catch {
+          // Wait for the simulated package-manager launcher to bind.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await expect(fetch(`http://127.0.0.1:${port}`)).resolves.toMatchObject({ ok: true });
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(projects).values({
+        id: projectId,
+        companyId,
+        name: "Runtime pnpm reconciliation",
+        status: "in_progress",
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: null,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "Runtime pnpm reconciliation workspace",
+        status: "active",
+        cwd: workspaceRoot,
+        providerType: "local_fs",
+        providerRef: workspaceRoot,
+        metadata: {
+          config: {
+            workspaceRuntime: { services: [service] },
+            desiredState: "running",
+            serviceStates: { "0": "running" },
+          },
+        },
+      });
+      await db.insert(workspaceRuntimeServices).values({
+        id: runtimeServiceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: null,
+        executionWorkspaceId,
+        issueId: null,
+        scopeType: "execution_workspace",
+        scopeId: executionWorkspaceId,
+        serviceName: service.name,
+        status: "running",
+        lifecycle: "shared",
+        reuseKey,
+        command,
+        cwd: workspaceRoot,
+        port,
+        url: `http://127.0.0.1:${port}`,
+        provider: "local_process",
+        providerRef: String(child.pid),
+        ownerAgentId: null,
+        startedByRunId: null,
+        lastUsedAt: new Date(),
+        startedAt: new Date(),
+        stoppedAt: null,
+        stopPolicy: { type: "manual" },
+        healthStatus: "healthy",
+      });
+      await writeLocalServiceRegistryRecord({
+        version: 1,
+        serviceKey: `workspace-runtime-web-${randomUUID()}`,
+        profileKind: "workspace-runtime",
+        serviceName: service.name,
+        command,
+        cwd: workspaceRoot,
+        envFingerprint: reuseKey,
+        port,
+        url: `http://127.0.0.1:${port}`,
+        pid: child.pid!,
+        processGroupId: child.pid ?? null,
+        provider: "local_process",
+        runtimeServiceId,
+        reuseKey,
+        startedAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+        metadata: { executionWorkspaceId },
+      });
+
+      const result = await reconcilePersistedRuntimeServicesOnStartup(db);
+
+      expect(result).toMatchObject({
+        reconciled: 1,
+        adopted: 1,
+        stopped: 0,
+        restarted: 0,
+        restartFailed: 0,
+      });
+      const rows = await db
+        .select()
+        .from(workspaceRuntimeServices)
+        .where(eq(workspaceRuntimeServices.executionWorkspaceId, executionWorkspaceId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        id: runtimeServiceId,
+        status: "running",
+        healthStatus: "healthy",
+        port,
+        providerRef: String(child.pid),
+      });
+      expect(await readLocalServicePortOwner(port)).toBe(child.pid);
+      await expect(fetch(`http://127.0.0.1:${port}`)).resolves.toMatchObject({ ok: true });
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId,
+        workspaceCwd: workspaceRoot,
+      }).catch(() => undefined);
+      if (child.pid) {
+        try {
+          if (process.platform === "win32") process.kill(child.pid, "SIGKILL");
+          else process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // The adopted runtime was already stopped through the managed path.
+        }
+      }
+      await resetRuntimeServicesForTests();
+      if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+      if (previousInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = previousInstanceId;
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it("does not reuse a stopped auto-port service port while another process owns it", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-unhealthy-adopt-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));

@@ -262,16 +262,61 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   }
 }
 
+function tokenizeCommandLine(value: string) {
+  return value.match(/"(?:\\.|[^"\\])*"|'[^']*'|\S+/g) ?? [];
+}
+
+function normalizeCommandToken(value: string) {
+  const unquoted = value.replace(/^["']|["']$/g, "");
+  const basename = path.basename(unquoted.replace(/\\/g, "/"));
+  const launcher = basename.replace(/\.(?:cjs|mjs|js|cmd|exe)$/i, "");
+  return /^(?:bun|node|nodejs|npm|npx|pnpm|yarn)$/i.test(launcher) ? launcher : unquoted;
+}
+
+/**
+ * Compare a configured service command with the argv exposed by the OS.
+ *
+ * Package-manager launchers commonly replace `pnpm dev` with
+ * `node /path/to/pnpm.cjs dev` after the shell starts. A literal substring
+ * check rejects that surviving process even though the executable and all
+ * configured arguments are still present. Normalize executable paths and
+ * script extensions, then require the configured argv to remain contiguous.
+ */
+export function doesLocalServiceCommandLineMatch(input: {
+  commandLine: string;
+  recordedCommand: string;
+  serviceName: string;
+}) {
+  const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
+  const normalizedCommandLine = normalize(input.commandLine);
+  const normalizedRecordedCommand = normalize(input.recordedCommand);
+  if (
+    normalizedCommandLine.includes(normalizedRecordedCommand)
+    || normalizedCommandLine.includes(input.serviceName)
+  ) {
+    return true;
+  }
+
+  const actualTokens = tokenizeCommandLine(input.commandLine).map(normalizeCommandToken);
+  const recordedTokens = tokenizeCommandLine(input.recordedCommand).map(normalizeCommandToken);
+  if (recordedTokens.length === 0 || recordedTokens.length > actualTokens.length) return false;
+
+  return actualTokens.some((_, start) => recordedTokens.every(
+    (token, offset) => actualTokens[start + offset] === token,
+  ));
+}
+
 async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
   if (process.platform === "win32") return true;
   try {
     const { stdout } = await execFileAsync("ps", ["-o", "command=", "-p", String(record.pid)]);
     const commandLine = stdout.trim();
     if (!commandLine) return false;
-    const normalize = (value: string) => value.replace(/["']/g, "").replace(/\s+/g, " ").trim();
-    const normalizedCommandLine = normalize(commandLine);
-    const normalizedRecordedCommand = normalize(record.command);
-    return normalizedCommandLine.includes(normalizedRecordedCommand) || normalizedCommandLine.includes(record.serviceName);
+    return doesLocalServiceCommandLineMatch({
+      commandLine,
+      recordedCommand: record.command,
+      serviceName: record.serviceName,
+    });
   } catch {
     return true;
   }
