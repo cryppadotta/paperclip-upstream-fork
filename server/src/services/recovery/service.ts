@@ -5016,7 +5016,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       input.finding.state === "in_review_without_action_path"
       && input.finding.recoveryIssueId === input.finding.issueId
     ) {
-      const updated = await issuesSvc.update(issue.id, { status: "blocked" });
+      const updated = await issuesSvc.update(issue.id, {
+        status: "blocked",
+        assigneeAgentId: ownerSelection.agentId,
+      });
       if (!updated) return { kind: "skipped" as const };
 
       const prefix = await getCompanyIssuePrefix(issue.companyId);

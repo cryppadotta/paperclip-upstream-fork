@@ -852,7 +852,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
-  it("recovers a stalled direct review in place without creating a recovery child", async () => {
+  it("reassigns a stalled direct review to its fallback owner without creating a recovery child", async () => {
     await enableAutoRecovery();
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -904,6 +904,27 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       createdAt: issueTimestamp,
       updatedAt: issueTimestamp,
     });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: coderId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      amount: 1,
+      hardStopEnabled: true,
+      isActive: true,
+    });
+    await db.insert(costEvents).values({
+      companyId,
+      agentId: coderId,
+      issueId: stalledIssueId,
+      provider: "test",
+      biller: "test",
+      billingType: "tokens",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
 
     const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
@@ -911,10 +932,13 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(result.escalationsCreated).toBe(0);
 
     const [stalledIssueAfter] = await db
-      .select({ status: issues.status })
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
       .from(issues)
       .where(eq(issues.id, stalledIssueId));
-    expect(stalledIssueAfter?.status).toBe("blocked");
+    expect(stalledIssueAfter).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: managerId,
+    });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, stalledIssueId));
     expect(comments).toHaveLength(1);
@@ -928,9 +952,9 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const wakeups = await db
       .select()
-      .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.agentId, coderId));
+      .from(agentWakeupRequests);
     expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.agentId).toBe(managerId);
     expect(wakeups[0]?.payload).not.toHaveProperty("modelProfile");
   });
 
