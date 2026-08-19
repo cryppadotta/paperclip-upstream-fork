@@ -247,7 +247,12 @@ type SeedWorktreeDatabase = typeof seedWorktreeDatabase;
 
 export type EnsureWorktreeSeededResult = {
   seeded: boolean;
-  reason: "seeded" | "verified_manifest" | "legacy_database";
+  reason:
+    | "seeded"
+    | "verified_manifest"
+    | "complete_marker"
+    | "legacy_unmarked"
+    | "legacy_database";
   details?: SeedWorktreeDatabaseResult;
 };
 
@@ -2227,14 +2232,12 @@ export async function ensureWorktreeSeeded(
   if (initialManifest?.state === "verified") {
     return { seeded: false, reason: "verified_manifest" };
   }
+  if (!initialManifest && existsSync(markers.complete)) {
+    return { seeded: false, reason: "complete_marker" };
+  }
   const legacyPending = !initialManifest && existsSync(markers.pending)
     ? readLegacyWorktreeSeedPendingMarker(markers.pending)
     : null;
-  if (!initialManifest && !legacyPending && existsSync(markers.lock)) {
-    const releaseExistingLock = await acquireWorktreeSeedLock(markers.lock);
-    await releaseExistingLock();
-  }
-
   const hasExplicitSource = Boolean(opts.fromConfig || opts.fromDataDir || opts.fromInstance);
   const explicitSourceConfigPath = hasExplicitSource
     ? resolveSourceConfigPath({
@@ -2246,6 +2249,13 @@ export async function ensureWorktreeSeeded(
   const registeredBaseWorkspaceCwd = opts.registeredBaseWorkspaceCwd
     ?? nonEmpty(process.env.PAPERCLIP_WORKSPACE_BASE_CWD)
     ?? null;
+  if (!initialManifest && !legacyPending && !hasExplicitSource && !registeredBaseWorkspaceCwd) {
+    if (existsSync(markers.lock)) {
+      const releaseExistingLock = await acquireWorktreeSeedLock(markers.lock);
+      await releaseExistingLock();
+    }
+    return { seeded: false, reason: "legacy_unmarked" };
+  }
   const registeredProjectWorkspaceId = opts.registeredProjectWorkspaceId
     ?? nonEmpty(process.env.PAPERCLIP_PROJECT_WORKSPACE_ID)
     ?? null;

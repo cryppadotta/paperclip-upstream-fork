@@ -571,12 +571,15 @@ describe("worktree helpers", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-legacy-config-"));
     try {
       const configPath = path.join(tempRoot, "config.json");
+      const sourceConfig = buildSourceConfig();
       const config: PaperclipConfig = {
-        ...buildSourceConfig(),
+        ...sourceConfig,
         database: {
+          ...sourceConfig.database,
           mode: "postgres",
           connectionString: tempDb.connectionString,
           backup: {
+            ...sourceConfig.database.backup,
             enabled: false,
             intervalMinutes: 60,
             retentionDays: 30,
@@ -665,6 +668,54 @@ describe("worktree helpers", () => {
         migrationRevision: "0142_test.sql",
         targetInstanceId: "ensure-seeded-test",
       });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an unregistered markerless config as a normal non-worktree boot", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-unregistered-markerless-"));
+    try {
+      const configPath = path.join(tempRoot, "config.json");
+      fs.writeFileSync(configPath, `${JSON.stringify(buildSourceConfig())}\n`);
+      delete process.env.PAPERCLIP_WORKSPACE_BASE_CWD;
+      delete process.env.PAPERCLIP_PROJECT_WORKSPACE_ID;
+      delete process.env.PAPERCLIP_SEED_EXPECTED_COMPANY_ID;
+
+      const inspectLegacyDatabase = vi.fn();
+      const seedDatabase = vi.fn();
+
+      await expect(ensureWorktreeSeeded(
+        { config: configPath },
+        { inspectLegacyDatabase, seedDatabase },
+      )).resolves.toEqual({ seeded: false, reason: "legacy_unmarked" });
+
+      expect(inspectLegacyDatabase).not.toHaveBeenCalled();
+      expect(seedDatabase).not.toHaveBeenCalled();
+      expect(readWorktreeSeedManifest(configPath)).toBeNull();
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("honors a legacy complete marker without resolving a seed source", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-complete-marker-"));
+    try {
+      const configPath = path.join(tempRoot, "config.json");
+      fs.writeFileSync(configPath, `${JSON.stringify(buildSourceConfig())}\n`);
+      fs.writeFileSync(path.join(tempRoot, "seed-complete"), "complete\n");
+      delete process.env.PAPERCLIP_WORKSPACE_BASE_CWD;
+
+      const inspectLegacyDatabase = vi.fn();
+      const seedDatabase = vi.fn();
+
+      await expect(ensureWorktreeSeeded(
+        { config: configPath },
+        { inspectLegacyDatabase, seedDatabase },
+      )).resolves.toEqual({ seeded: false, reason: "complete_marker" });
+
+      expect(inspectLegacyDatabase).not.toHaveBeenCalled();
+      expect(seedDatabase).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
