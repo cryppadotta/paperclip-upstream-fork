@@ -19,6 +19,19 @@ Current implementation status:
 
 GitHub Actions owns `pnpm-lock.yaml`.
 
+Paperclip also ships a pnpmfile guard for run-owned scratch directories. If a
+scratch copy retains a `node_modules` symlink, hard-linked metadata, or a pnpm
+virtual store outside that scratch workspace, `pnpm install` fails before it can
+rewrite the other checkout. Copy scratch workspaces without `node_modules` (or
+with dereferenced, independent contents).
+
+The workspace package preflight and `paperclipai doctor` report an escaped
+`virtualStoreDir` or dangling direct dependency symlink with this repair command:
+
+```sh
+NODE_ENV=development pnpm install --prefer-offline --config.confirmModulesPurge=false
+```
+
 - Do not commit `pnpm-lock.yaml` in pull requests.
 - Pull request CI validates dependency resolution when manifests change.
 - Pushes to `master` regenerate `pnpm-lock.yaml` with `pnpm install --lockfile-only --no-frozen-lockfile`, commit it back if needed, and then run verification with `--frozen-lockfile`.

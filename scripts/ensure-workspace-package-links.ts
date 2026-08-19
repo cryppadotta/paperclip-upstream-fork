@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { workspacePackageStateCheck } from "../cli/src/checks/workspace-package-state-check.ts";
 import { repoRoot } from "./dev-service-profile.ts";
 
 type WorkspaceLinkMismatch = {
@@ -51,6 +52,11 @@ const workspaceDirs = Array.from(
       .filter((workspaceDir) => workspaceDir.length > 0),
   ),
 ).sort();
+
+const packageState = workspacePackageStateCheck(repoRoot);
+if (packageState.status === "fail") {
+  throw new Error(`${packageState.name}: ${packageState.message}\n${packageState.repairHint}`);
+}
 
 function findWorkspaceLinkMismatches(workspaceDir: string): WorkspaceLinkMismatch[] {
   const nodeModulesDir = path.join(repoRoot, workspaceDir, "node_modules");
