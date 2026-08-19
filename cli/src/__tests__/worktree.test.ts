@@ -684,7 +684,7 @@ describe("worktree helpers", () => {
   });
 
   it.each(["sibling", "foreign_instance", "symlink", "instance_mismatch"] as const)(
-    "managed ensure-seeded rejects a %s manifest source before lock or seed mutation",
+    "managed ensure-seeded re-derives a stale %s manifest source from registration",
     async (variant) => {
       const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), `paperclip-worktree-managed-${variant}-`));
       try {
@@ -727,16 +727,31 @@ describe("worktree helpers", () => {
             JSON.stringify({ ...manifest, source: { ...manifest.source, instanceId: "foreign" } }),
           );
         }
-        const seedDatabase = vi.fn();
+        const seedDatabase = vi.fn().mockResolvedValue(mockVerifiedSeedResult());
 
         await expect(ensureWorktreeSeeded({
           config: targetConfigPath,
           registeredBaseWorkspaceCwd: baseRoot,
           registeredProjectWorkspaceId: "project-workspace-1",
           expectedCompanyId: "company-1",
-        }, { seedDatabase })).rejects.toThrow();
+        }, { seedDatabase })).resolves.toMatchObject({ seeded: true, reason: "seeded" });
 
-        expect(seedDatabase).not.toHaveBeenCalled();
+        expect(seedDatabase).toHaveBeenCalledWith(expect.objectContaining({
+          sourceConfigPath: canonicalSource,
+          expectedCompanyId: "company-1",
+        }));
+        expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+          source: {
+            configPath: canonicalSource,
+            instanceId: "registered-source",
+          },
+          state: "verified",
+          diagnostics: expect.arrayContaining([
+            expect.objectContaining({
+              message: "Re-derived seed source diagnostics from the registered canonical source.",
+            }),
+          ]),
+        });
         expect(fs.existsSync(path.join(targetRoot, ".paperclip", "seed.lock"))).toBe(false);
       } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });

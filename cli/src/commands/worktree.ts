@@ -22,7 +22,10 @@ import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { resolveCanonicalWorktreeSeedSource } from "@paperclipai/shared/worktree-seed-source";
+import {
+  resolveCanonicalWorktreeSeedSource,
+  resolveRegisteredWorktreeSeedSource,
+} from "@paperclipai/shared/worktree-seed-source";
 import {
   readWorktreePortRegistry,
   withWorktreePortRegistryLock,
@@ -1862,6 +1865,7 @@ export function markWorktreeSeedPending(input: {
   targetInstanceId?: string;
   seedMode?: WorktreeSeedMode;
   now?: Date;
+  diagnosticMessage?: string;
 }): void {
   const markers = resolveWorktreeSeedMarkerPaths(input.configPath);
   const at = (input.now ?? new Date()).toISOString();
@@ -1880,7 +1884,14 @@ export function markWorktreeSeedPending(input: {
     attemptId: randomUUID(),
     startedAt: null,
     finishedAt: null,
-    diagnostics: [{ phase: "pending", status: "succeeded", at }],
+    diagnostics: [{
+      phase: "pending",
+      status: "succeeded",
+      at,
+      ...(input.diagnosticMessage
+        ? { message: input.diagnosticMessage.slice(0, WORKTREE_SEED_DIAGNOSTIC_MESSAGE_LIMIT) }
+        : {}),
+    }],
   });
   // New manifests are authoritative. Legacy files are removed so no caller can
   // mistake a stale binary marker for current verified seed state.
@@ -2204,26 +2215,21 @@ export async function ensureWorktreeSeeded(
 
   const targetRoot = path.dirname(path.dirname(configPath));
   const targetPaths = resolveWorktreeReseedTargetPaths({ configPath, rootPath: targetRoot });
-  const resolveSeedSource = (manifest: WorktreeSeedManifest | null) => {
-    const diagnosticSource = manifest?.source ?? (legacyPending
-      ? {
-          configPath: legacyPending.sourceConfigPath,
-          instanceId: resolveSeedInstanceId(legacyPending.sourceConfigPath),
-        }
-      : null);
-    return resolveCanonicalWorktreeSeedSource({
-      registeredBaseWorkspaceCwd,
-      explicitSourceConfigPath,
-      targetConfigPath: configPath,
-      expectedTargetInstanceId: targetPaths.instanceId,
-      manifestSource: diagnosticSource,
-      manifestTargetInstanceId: manifest?.targetInstanceId ?? targetPaths.instanceId,
-    });
-  };
+  const registeredSeedSource = resolveRegisteredWorktreeSeedSource({
+    registeredBaseWorkspaceCwd,
+    explicitSourceConfigPath,
+    targetConfigPath: configPath,
+    expectedTargetInstanceId: targetPaths.instanceId,
+  });
 
-  // Fail before creating the seed lock or rewriting a legacy marker. The manifest
-  // is agent-writable diagnostic evidence and can never select this source.
-  let canonicalSource = resolveSeedSource(initialManifest);
+  if (initialManifest && initialManifest.targetInstanceId !== registeredSeedSource.targetInstanceId) {
+    throw new Error("Worktree seed manifest target instance does not match the registered target instance.");
+  }
+
+  // Resolve all authority-bearing paths before creating the lock. The manifest is
+  // agent-writable diagnostic evidence and never selects the source. A stale source
+  // diagnostic is replaced under the lock from this server/operator registration.
+  let canonicalSource = registeredSeedSource;
   mkdirSync(path.dirname(markers.lock), { recursive: true });
   const releaseLock = await acquireWorktreeSeedLock(markers.lock);
   try {
@@ -2244,9 +2250,10 @@ export async function ensureWorktreeSeeded(
       }
       markWorktreeSeedPending({
         configPath,
-        sourceConfigPath: canonicalSource.configPath,
+        sourceConfigPath: registeredSeedSource.configPath,
         targetInstanceId: targetPaths.instanceId,
         seedMode: "minimal",
+        diagnosticMessage: "Re-derived seed source diagnostics from the registered canonical source.",
       });
       manifest = readWorktreeSeedManifest(configPath);
     }
@@ -2255,7 +2262,27 @@ export async function ensureWorktreeSeeded(
       // have neither marker. Preserve that compatibility without re-cloning.
       return { seeded: false, reason: "legacy_unmarked" };
     }
-    canonicalSource = resolveSeedSource(manifest);
+    if (
+      manifest.source.configPath !== registeredSeedSource.configPath
+      || manifest.source.instanceId !== registeredSeedSource.instanceId
+    ) {
+      markWorktreeSeedPending({
+        configPath,
+        sourceConfigPath: registeredSeedSource.configPath,
+        targetInstanceId: manifest.targetInstanceId,
+        seedMode: manifest.seedMode,
+        diagnosticMessage: "Re-derived seed source diagnostics from the registered canonical source.",
+      });
+      manifest = readWorktreeSeedManifest(configPath)!;
+    }
+    canonicalSource = resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd,
+      explicitSourceConfigPath,
+      targetConfigPath: configPath,
+      expectedTargetInstanceId: targetPaths.instanceId,
+      manifestSource: manifest.source,
+      manifestTargetInstanceId: manifest.targetInstanceId,
+    });
     const sourceConfigPath = canonicalSource.configPath;
 
     const sourceConfig = readConfig(sourceConfigPath);
