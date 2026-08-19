@@ -58,6 +58,24 @@ describe("worktree port registry lock", () => {
     expect(secondEntered).toBe(true);
   }, 10_000);
 
+  it("keeps heartbeating after a transient owner-file read failure", async () => {
+    const homeDir = makeTemporaryRoot();
+    const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
+    const ownerPath = path.join(lockPath, "owner.json");
+    const hiddenOwnerPath = path.join(lockPath, "owner-paused.json");
+
+    await withWorktreePortRegistryLock(homeDir, async () => {
+      fs.renameSync(ownerPath, hiddenOwnerPath);
+      await delay(1_500);
+      fs.renameSync(hiddenOwnerPath, ownerPath);
+      await delay(4_500);
+
+      expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeLessThan(2_000);
+    });
+
+    expect(fs.existsSync(lockPath)).toBe(false);
+  }, 10_000);
+
   it("reclaims an old lock after its owner process exits", async () => {
     const homeDir = makeTemporaryRoot();
     const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
