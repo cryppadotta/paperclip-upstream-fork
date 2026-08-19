@@ -1,4 +1,4 @@
-import type { IssueRecoveryAction } from "@paperclipai/shared";
+import type { IssueRecoveryAction, IssueScheduledRetry } from "@paperclipai/shared";
 import { formatMonitorOffset } from "./issue-monitor";
 
 /**
@@ -22,8 +22,20 @@ export interface RecoveryRetryLineage {
   exhausted: boolean;
   /** When the stored next attempt is due, as an ISO string. Null once a lane is exhausted. */
   nextRetryAt: string | null;
+  /**
+   * The stored attempt came due and nothing picked it up. The row still reports the time it
+   * was due — an expired attempt is a missed promise worth showing, not a fact to hide — but
+   * it no longer counts as a path anyone is waiting on.
+   */
+  retryExpired: boolean;
   /** The run the server parked for the next attempt, when it recorded one. */
   scheduledRunId: string | null;
+  /**
+   * The parked run, once a caller has confirmed it is genuinely in flight. A bare
+   * `scheduledRunId` is only a record that a run was once created, so it is never enough on
+   * its own; this field is set only from a liveness signal the caller passed in.
+   */
+  liveRunId: string | null;
   /** The agent the stored attempt will wake. */
   retryAgentId: string | null;
   /** The server recorded that this lane does not move the source deliverable. */
@@ -32,8 +44,10 @@ export interface RecoveryRetryLineage {
   sourceAttempt: number | null;
   sourceMaxAttempts: number | null;
   /**
-   * A stored retry the server will run without anyone intervening. This — not the mere
-   * existence of an open recovery action — is what keeps a surface quiet.
+   * Something will still move this lane forward without anyone intervening: either a stored
+   * attempt that is still ahead of us, or a parked run confirmed to be in flight. This — not
+   * the mere existence of an open recovery action, and not a due time that already passed —
+   * is what keeps a surface quiet.
    */
   hasDurablePath: boolean;
 }
@@ -42,8 +56,38 @@ const SOURCE_LANE_POLICY = "bounded_owner_disposition_repair";
 const RECOVERY_LANE_POLICY = "bounded_recovery_owner";
 const BOARD_LANE_POLICY = "board_escalation";
 
+/** Scheduled-run states that mean the parked attempt is actually in flight right now. */
+const LIVE_SCHEDULED_RUN_STATUSES = new Set(["queued", "running"]);
+
+/**
+ * How far past its due time a stored attempt may sit before it counts as missed.
+ *
+ * `formatMonitorOffset` collapses anything inside a minute-rounded zero to "now", so reusing
+ * that same band keeps the label and the verdict from ever contradicting each other: while a
+ * surface still reads "next try now", the lane is still treated as durable. Past that, the
+ * scheduler had its chance and did not take it.
+ */
+const RETRY_EXPIRY_GRACE_MS = 30_000;
+
 export type RecoveryLineageInput = Pick<IssueRecoveryAction, "wakePolicy"> &
   Partial<Pick<IssueRecoveryAction, "evidence" | "attemptCount" | "maxAttempts" | "timeoutAt">>;
+
+/**
+ * The source issue's scheduled-retry record, which is what lets a surface tell a run that is
+ * really executing from a run id the server wrote down once and never started.
+ */
+export type RecoveryScheduledRetryInput = Partial<Pick<IssueScheduledRetry, "runId" | "status">>;
+
+/**
+ * Everything outside the stored action that decides whether a lane is still live. Callers
+ * that cannot observe the scheduled run leave `scheduledRetry` unset and get the conservative
+ * answer, so a surface can under-promise but never over-promise.
+ */
+export interface RecoveryLivenessContext {
+  /** Epoch ms to treat as now. Defaults to the wall clock. */
+  now?: number;
+  scheduledRetry?: RecoveryScheduledRetryInput | null;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -71,12 +115,30 @@ function asIsoDate(value: unknown): string | null {
 }
 
 /**
+ * Confirm the parked run is in flight. When the policy named a specific run, only that run
+ * counts — a different live run on the issue is someone else's work and says nothing about
+ * whether this retry will happen.
+ */
+function resolveLiveRunId(
+  scheduledRunId: string | null,
+  scheduledRetry: RecoveryScheduledRetryInput | null | undefined,
+): string | null {
+  if (!scheduledRetry) return null;
+  const runId = asNonEmptyString(scheduledRetry.runId);
+  const status = asNonEmptyString(scheduledRetry.status);
+  if (!runId || !status || !LIVE_SCHEDULED_RUN_STATUSES.has(status)) return null;
+  if (scheduledRunId !== null && scheduledRunId !== runId) return null;
+  return runId;
+}
+
+/**
  * Read the bounded retry lineage the server stored on a recovery action, or null when the
  * action does not carry one (older kinds, or a board escalation that is not part of the
  * owner-sticky contract).
  */
 export function readRecoveryRetryLineage(
   action: RecoveryLineageInput,
+  context?: RecoveryLivenessContext,
 ): RecoveryRetryLineage | null {
   const policy = asRecord(action.wakePolicy);
   if (!policy) return null;
@@ -102,6 +164,14 @@ export function readRecoveryRetryLineage(
   const storedRetryAt = asIsoDate(policy.retryAt) ?? asIsoDate(action.timeoutAt);
   const exhausted = lane === "board" || (maxAttempts !== null && attempt >= maxAttempts);
   const nextRetryAt = exhausted ? null : storedRetryAt;
+  const liveRunId = resolveLiveRunId(scheduledRunId, context?.scheduledRetry);
+  // A run that is already executing is the reason its due time is behind us, so a confirmed
+  // live run is never "missed" — it is the attempt happening.
+  const retryExpired =
+    !exhausted &&
+    liveRunId === null &&
+    nextRetryAt !== null &&
+    Date.parse(nextRetryAt) + RETRY_EXPIRY_GRACE_MS < (context?.now ?? Date.now());
 
   return {
     lane,
@@ -110,12 +180,15 @@ export function readRecoveryRetryLineage(
     attemptsRemaining: maxAttempts === null ? null : Math.max(0, maxAttempts - attempt),
     exhausted,
     nextRetryAt,
+    retryExpired,
     scheduledRunId,
+    liveRunId,
     retryAgentId: asNonEmptyString(policy.retryAgentId) ?? asNonEmptyString(policy.ownerAgentId),
     preservesSourceAssignee: preservesSourceAssignee || lane === "source_owner",
     sourceAttempt: lane === "source_owner" ? attempt : evidenceSourceAttempt,
     sourceMaxAttempts: lane === "source_owner" ? maxAttempts : evidenceSourceMaxAttempts,
-    hasDurablePath: !exhausted && (nextRetryAt !== null || scheduledRunId !== null),
+    hasDurablePath:
+      !exhausted && (liveRunId !== null || (nextRetryAt !== null && !retryExpired)),
   };
 }
 
@@ -144,7 +217,16 @@ export function formatRecoveryLineageSummary(lineage: RecoveryRetryLineage): str
   const attempt = formatRecoveryAttemptLabel(lineage);
   if (attempt) parts.push(attempt);
   const offset = formatRecoveryRetryOffset(lineage);
-  if (offset) parts.push(offset === "now" ? "next try now" : `next try ${offset}`);
-  else if (lineage.exhausted) parts.push("retries used up");
+  if (lineage.liveRunId) {
+    parts.push("attempt running now");
+  } else if (lineage.retryExpired) {
+    // Never "next try 5m ago": a due time in the past is a missed attempt, and phrasing it as
+    // an upcoming one is exactly the false healthy state this helper exists to prevent.
+    parts.push(offset ? `retry missed ${offset}` : "retry missed");
+  } else if (offset) {
+    parts.push(offset === "now" ? "next try now" : `next try ${offset}`);
+  } else if (lineage.exhausted) {
+    parts.push("retries used up");
+  }
   return parts.length > 0 ? parts.join(" · ") : null;
 }

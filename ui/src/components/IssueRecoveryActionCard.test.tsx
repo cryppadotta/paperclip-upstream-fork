@@ -918,6 +918,79 @@ describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
     expect(node.textContent).not.toContain("Times out");
   });
 
+  it("warns strongly when the stored retry came due and never ran", () => {
+    // PAP-17561: this exact shape rendered "Recovery in progress · Attempt 1 of 5 · Next try
+    // 5m ago" — a calm card over a lane nothing was working on.
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildSourceLaneAction({
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: returnAgent.id,
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt: at(-5 * 60_000),
+            scheduledRunId: "00000000-0000-0000-0000-0000000000b2",
+          },
+          attemptCount: 1,
+          timeoutAt: at(-5 * 60_000),
+        })}
+        agentMap={bothAgents}
+      />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("needed");
+    expect(node.textContent).toContain("RECOVERY NEEDED");
+    expect(node.textContent).not.toContain("RECOVERY IN PROGRESS");
+    const retry = node.querySelector("[data-testid='recovery-next-retry']");
+    expect(retry?.textContent).toBe("Retry missed 5m ago");
+    expect(retry?.getAttribute("data-recovery-retry-expired")).toBe("true");
+    // Nothing may still read as an upcoming attempt or as needing no action.
+    expect(node.textContent).not.toContain("Next try");
+    expect(node.textContent).not.toContain("no action is needed yet");
+    expect(node.textContent).toContain("came due and did not run");
+    expect(node.textContent).toContain("The scheduled retry did not run");
+    // The repair lane still must not move the deliverable off its original owner.
+    expect(node.querySelector("[data-testid='recovery-source-owner']")?.textContent).toContain(
+      "keeps this task",
+    );
+  });
+
+  it("stays quiet when the overdue attempt is a verified live run", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildSourceLaneAction({
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            retryAgentId: returnAgent.id,
+            attempt: 2,
+            maxAttempts: 5,
+            retryAt: at(-5 * 60_000),
+            scheduledRunId: "00000000-0000-0000-0000-0000000000b2",
+          },
+          timeoutAt: at(-5 * 60_000),
+        })}
+        agentMap={bothAgents}
+        scheduledRetry={{
+          runId: "00000000-0000-0000-0000-0000000000b2",
+          status: "running",
+          agentId: returnAgent.id,
+          agentName: returnAgent.name,
+          retryOfRunId: null,
+          scheduledRetryAt: at(-5 * 60_000),
+          scheduledRetryAttempt: 2,
+          scheduledRetryReason: null,
+        }}
+      />,
+    );
+    const section = node.querySelector("section[aria-label]");
+    expect(section?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(node.querySelector("[data-testid='recovery-next-retry']")?.textContent).toBe(
+      "Attempt running now",
+    );
+    expect(node.textContent).not.toContain("Retry missed");
+  });
+
   it("keeps timing in the retry-progress row only while a lane is live", () => {
     const node = render(
       <IssueRecoveryActionCard action={buildSourceLaneAction()} agentMap={bothAgents} />,

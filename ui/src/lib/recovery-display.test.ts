@@ -116,6 +116,59 @@ describe("deriveRecoveryDisplayState", () => {
     ).toBe("needed");
   });
 
+  it("warns when the stored retry time has already passed", () => {
+    // The PAP-17561 false healthy state: attempts remain, so the lane is not exhausted, but
+    // the attempt it promised came due and never ran. Nothing is moving this task.
+    expect(
+      deriveRecoveryDisplayState({
+        ...waitBase,
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+          retryAt: "2020-01-01T00:00:00.000Z",
+          scheduledRunId: "run-2",
+        },
+      }),
+    ).toBe("needed");
+  });
+
+  it("stays quiet when a verified live run is executing the overdue attempt", () => {
+    expect(
+      deriveRecoveryDisplayState(
+        {
+          ...waitBase,
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt: "2020-01-01T00:00:00.000Z",
+            scheduledRunId: "run-2",
+          },
+        },
+        { scheduledRetry: { runId: "run-2", status: "running" } },
+      ),
+    ).toBe("in_progress");
+  });
+
+  it("still warns when the live run belongs to a different lane", () => {
+    expect(
+      deriveRecoveryDisplayState(
+        {
+          ...waitBase,
+          wakePolicy: {
+            type: "bounded_owner_disposition_repair",
+            attempt: 1,
+            maxAttempts: 5,
+            retryAt: "2020-01-01T00:00:00.000Z",
+            scheduledRunId: "run-2",
+          },
+        },
+        { scheduledRetry: { runId: "run-other", status: "running" } },
+      ),
+    ).toBe("needed");
+  });
+
   it("warns when no next attempt is stored at all", () => {
     expect(
       deriveRecoveryDisplayState({

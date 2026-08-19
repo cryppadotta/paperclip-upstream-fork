@@ -33,14 +33,27 @@ import {
 } from "../lib/recovery-lineage";
 import { StatusGlyph } from "./StatusGlyph";
 
-function BlockerRecoveryIndicator({ action }: { action: IssueRecoveryAction }) {
-  const state = deriveActiveRecoveryDisplayState(action);
+function BlockerRecoveryIndicator({
+  action,
+  scheduledRetry,
+}: {
+  action: IssueRecoveryAction;
+  /**
+   * The blocker's own scheduled retry, when the caller has it. A blocker summary does not
+   * carry one today, so this chip usually judges liveness from the stored due time alone.
+   * That can only make it warn where the source card stays calm — never the reverse — so the
+   * two surfaces cannot disagree about whether a human is needed.
+   */
+  scheduledRetry?: IssueScheduledRetry | null;
+}) {
+  const liveness = { scheduledRetry: scheduledRetry ?? null };
+  const state = deriveActiveRecoveryDisplayState(action, liveness);
   if (!state) return null;
   const tone = RECOVERY_CHIP_DEFAULT_TONE[state];
   const Icon = tone.icon;
   // The blocker chip reads the same stored lineage as the source task's recovery card, so
   // a parent view never contradicts the task it is waiting on.
-  const lineage = readRecoveryRetryLineage(action);
+  const lineage = readRecoveryRetryLineage(action, liveness);
   const label = recoveryChipLabel(state, action.kind, lineage);
   const detail = lineage ? formatRecoveryLineageSummary(lineage) : null;
   return (

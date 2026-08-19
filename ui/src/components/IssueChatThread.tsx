@@ -5183,6 +5183,7 @@ export function IssueChatThread({
                     <IssueRecoveryActionCard
                       action={recoveryAction}
                       agentMap={agentMap}
+                      scheduledRetry={scheduledRetry}
                       onResolve={onResolveRecoveryAction}
                       onReissueIsolated={onReissueIsolatedRecoveryAction}
                       reissuePending={reissueIsolatedRecoveryActionPending}

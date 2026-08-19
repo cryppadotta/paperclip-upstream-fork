@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatRecoveryAttemptLabel,
   formatRecoveryLineageSummary,
@@ -51,6 +51,14 @@ function recoveryLaneAction(overrides: Partial<RecoveryLineageInput> = {}): Reco
     ...overrides,
   };
 }
+
+// Liveness is a question about now, so every case pins the clock. Fixtures date their retry
+// times from NOW; left on the wall clock, a "future" retry silently becomes a past one and the
+// suite would assert the opposite of what it claims.
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -175,6 +183,165 @@ describe("readRecoveryRetryLineage", () => {
   });
 });
 
+describe("durable-path liveness", () => {
+  it("keeps a future retry durable and not expired", () => {
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+          retryAt: at(5 * 60_000),
+          scheduledRunId: "run-2",
+        },
+      }),
+    )!;
+    expect(lineage.retryExpired).toBe(false);
+    expect(lineage.hasDurablePath).toBe(true);
+    expect(lineage.liveRunId).toBeNull();
+  });
+
+  it("treats a retry time in the past as expired with no durable path", () => {
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+          retryAt: at(-5 * 60_000),
+          scheduledRunId: "run-2",
+        },
+        timeoutAt: at(-5 * 60_000),
+      }),
+    )!;
+    // Attempts remain on paper, but the one that was promised never ran.
+    expect(lineage.exhausted).toBe(false);
+    expect(lineage.attemptsRemaining).toBe(4);
+    expect(lineage.retryExpired).toBe(true);
+    expect(lineage.hasDurablePath).toBe(false);
+  });
+
+  it("does not let a bare scheduled run id stand in for liveness", () => {
+    // The id only records that a run was created once. Without a liveness signal it proves
+    // nothing, which is why the past-due lane above stays expired despite carrying one.
+    const lineage = readRecoveryRetryLineage({
+      wakePolicy: {
+        type: "bounded_owner_disposition_repair",
+        attempt: 1,
+        maxAttempts: 5,
+        scheduledRunId: "run-2",
+      },
+    })!;
+    expect(lineage.scheduledRunId).toBe("run-2");
+    expect(lineage.liveRunId).toBeNull();
+    expect(lineage.hasDurablePath).toBe(false);
+  });
+
+  it("holds a past retry durable while a verified live run is executing it", () => {
+    const action = sourceLaneAction({
+      wakePolicy: {
+        type: "bounded_owner_disposition_repair",
+        attempt: 1,
+        maxAttempts: 5,
+        retryAt: at(-5 * 60_000),
+        scheduledRunId: "run-2",
+      },
+      timeoutAt: at(-5 * 60_000),
+    });
+    for (const status of ["queued", "running"] as const) {
+      const lineage = readRecoveryRetryLineage(action, {
+        scheduledRetry: { runId: "run-2", status },
+      })!;
+      expect(lineage.liveRunId).toBe("run-2");
+      // The due time is behind us precisely because the run picked it up.
+      expect(lineage.retryExpired).toBe(false);
+      expect(lineage.hasDurablePath).toBe(true);
+    }
+  });
+
+  it("rejects a scheduled run that is no longer live", () => {
+    const action = sourceLaneAction({
+      wakePolicy: {
+        type: "bounded_owner_disposition_repair",
+        attempt: 1,
+        maxAttempts: 5,
+        retryAt: at(-5 * 60_000),
+        scheduledRunId: "run-2",
+      },
+      timeoutAt: at(-5 * 60_000),
+    });
+    for (const status of ["cancelled", "scheduled_retry"] as const) {
+      const lineage = readRecoveryRetryLineage(action, {
+        scheduledRetry: { runId: "run-2", status },
+      })!;
+      expect(lineage.liveRunId).toBeNull();
+      expect(lineage.retryExpired).toBe(true);
+      expect(lineage.hasDurablePath).toBe(false);
+    }
+  });
+
+  it("ignores a live run that is not the one this lane parked", () => {
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+          retryAt: at(-5 * 60_000),
+          scheduledRunId: "run-2",
+        },
+        timeoutAt: at(-5 * 60_000),
+      }),
+      { scheduledRetry: { runId: "run-somebody-else", status: "running" } },
+    )!;
+    expect(lineage.liveRunId).toBeNull();
+    expect(lineage.hasDurablePath).toBe(false);
+  });
+
+  it("keeps an exhausted lane dead even while a live run is reported", () => {
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 5,
+          maxAttempts: 5,
+          retryAt: at(-60_000),
+          scheduledRunId: "run-2",
+        },
+      }),
+      { scheduledRetry: { runId: "run-2", status: "running" } },
+    )!;
+    expect(lineage.exhausted).toBe(true);
+    expect(lineage.hasDurablePath).toBe(false);
+    // An exhausted lane reports no upcoming attempt, so it is not also "missed".
+    expect(lineage.retryExpired).toBe(false);
+  });
+
+  it("does not call a barely-due retry expired while surfaces still read it as now", () => {
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+          retryAt: at(-5_000),
+        },
+      }),
+    )!;
+    expect(formatRecoveryRetryOffset(lineage)).toBe("now");
+    expect(lineage.retryExpired).toBe(false);
+    expect(lineage.hasDurablePath).toBe(true);
+  });
+
+  it("honours an injected now", () => {
+    const action = sourceLaneAction();
+    expect(readRecoveryRetryLineage(action, { now: NOW.getTime() })!.retryExpired).toBe(false);
+    expect(
+      readRecoveryRetryLineage(action, { now: NOW.getTime() + 60 * 60_000 })!.retryExpired,
+    ).toBe(true);
+  });
+});
+
 describe("recovery lineage formatting", () => {
   it("formats the attempt budget", () => {
     expect(formatRecoveryAttemptLabel(readRecoveryRetryLineage(sourceLaneAction())!)).toBe(
@@ -192,16 +359,47 @@ describe("recovery lineage formatting", () => {
   });
 
   it("formats the next due time relative to now", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(NOW);
     const lineage = readRecoveryRetryLineage(sourceLaneAction())!;
     expect(formatRecoveryRetryOffset(lineage)).toBe("in 3m");
     expect(formatRecoveryLineageSummary(lineage)).toBe("Attempt 2 of 5 · next try in 3m");
   });
 
+  it("reports a missed retry instead of an upcoming one (PAP-17561 regression)", () => {
+    // The reported false healthy state was exactly "Attempt 1 of 5 · next try 5m ago".
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 1,
+          maxAttempts: 5,
+          retryAt: at(-5 * 60_000),
+          scheduledRunId: "run-2",
+        },
+        timeoutAt: at(-5 * 60_000),
+      }),
+    )!;
+    const summary = formatRecoveryLineageSummary(lineage);
+    expect(summary).toBe("Attempt 1 of 5 · retry missed 5m ago");
+    expect(summary).not.toContain("next try");
+  });
+
+  it("says the attempt is running when a live run is verified", () => {
+    const lineage = readRecoveryRetryLineage(
+      sourceLaneAction({
+        wakePolicy: {
+          type: "bounded_owner_disposition_repair",
+          attempt: 2,
+          maxAttempts: 5,
+          retryAt: at(-5 * 60_000),
+          scheduledRunId: "run-2",
+        },
+      }),
+      { scheduledRetry: { runId: "run-2", status: "running" } },
+    )!;
+    expect(formatRecoveryLineageSummary(lineage)).toBe("Attempt 2 of 5 · attempt running now");
+  });
+
   it("says retries are used up when a lane is exhausted", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(NOW);
     const lineage = readRecoveryRetryLineage({
       wakePolicy: {
         type: "board_escalation",

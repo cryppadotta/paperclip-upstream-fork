@@ -6,6 +6,7 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionStatus,
+  IssueScheduledRetry,
 } from "@paperclipai/shared";
 import {
   Eye,
@@ -67,6 +68,12 @@ export interface RecoveryReissueRequest {
 export interface IssueRecoveryActionCardProps {
   action: IssueRecoveryAction;
   agentMap?: ReadonlyMap<string, Agent>;
+  /**
+   * The source issue's scheduled retry. It is the only signal that can confirm the run the
+   * wake policy parked is genuinely in flight, which is what separates a retry the scheduler
+   * is running from one whose due time quietly passed.
+   */
+  scheduledRetry?: IssueScheduledRetry | null;
   /** Preferred state hint (e.g. observe_only when watchdog tone is requested). Falls back to derived state. */
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
@@ -146,6 +153,10 @@ const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   issue_graph_liveness:
     "Paperclip could not find a clear next step for this open task. Choose whether to continue work, send it for review, mark it done, or record what is blocking it.",
 };
+
+/** Shared shell for the retry-timing pill so every timing state reads as the same control. */
+const RETRY_PILL_CLASS =
+  "rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground";
 
 const STATE_TONE: Record<RecoveryCardCardState, {
   label: string;
@@ -890,6 +901,11 @@ function formatTimeAbsolute(value: string | Date | null | undefined): string | n
  * the deliverable.
  */
 function lineageHeadline(lineage: RecoveryRetryLineage): string {
+  // An attempt that came due and never ran leaves nobody working on this task, even though
+  // attempts remain on paper. Say so before any lane wording that ends in "no action needed".
+  if (lineage.retryExpired) {
+    return "This task's automatic retry came due and did not run, so nothing is moving it forward right now. Someone must retry it or record the next step. The task stays with its original owner.";
+  }
   if (lineage.lane === "source_owner") {
     return lineage.exhausted
       ? "This task's last run stopped to wait, but nothing was waiting for it. The original owner has used every automatic repair attempt, so the next step needs a decision. The task stays with its owner."
@@ -961,6 +977,7 @@ const RESOLVE_OPTIONS: Array<{
 export function IssueRecoveryActionCard({
   action,
   agentMap,
+  scheduledRetry = null,
   forcedState,
   onResolve,
   onReissueIsolated,
@@ -975,11 +992,12 @@ export function IssueRecoveryActionCard({
   variant = "full",
   className,
 }: IssueRecoveryActionCardProps) {
-  const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action);
+  const liveness = useMemo(() => ({ scheduledRetry }), [scheduledRetry]);
+  const cardState: RecoveryCardCardState = forcedState ?? deriveRecoveryCardState(action, liveness);
   const tone = STATE_TONE[cardState];
   const ToneIcon = tone.Icon;
   const divergence = useMemo(() => readWorkspaceDivergence(action), [action]);
-  const lineage = useMemo(() => readRecoveryRetryLineage(action), [action]);
+  const lineage = useMemo(() => readRecoveryRetryLineage(action, liveness), [action, liveness]);
 
   const headline = useMemo(() => {
     if (cardState === "resolved" && action.outcome) {
@@ -989,8 +1007,11 @@ export function IssueRecoveryActionCard({
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
   }, [action.kind, action.outcome, cardState, lineage]);
 
-  // An exhausted lane must not keep advertising a retry that will never run.
-  const wakeSummary = lineage?.exhausted && lineage.lane !== "board"
+  // A lane with no path left must not keep advertising a retry that will never run — whether
+  // the budget ran out or the scheduled attempt simply never fired.
+  const wakeSummary = lineage?.retryExpired
+    ? "The scheduled retry did not run — a retry or a decision is needed"
+    : lineage?.exhausted && lineage.lane !== "board"
     ? "Automatic retries are finished — a decision is needed"
     : readWakePolicySummary(action);
   const evidenceSummary = pickEvidenceSummary(action);
@@ -1171,19 +1192,35 @@ export function IssueRecoveryActionCard({
               >
                 <AttemptMeter lineage={lineage} />
                 <span>{attemptLabel ?? "Attempts not bounded"}</span>
-                {retryOffset ? (
+                {lineage.liveRunId ? (
                   <span
-                    className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground"
+                    className={RETRY_PILL_CLASS}
+                    title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
+                    data-testid="recovery-next-retry"
+                  >
+                    Attempt running now
+                  </span>
+                ) : lineage.retryExpired ? (
+                  // The due time is stated plainly as missed. Rendering it as "Next try 5m
+                  // ago" is what made an abandoned lane read as healthy recovery.
+                  <span
+                    className={cn(RETRY_PILL_CLASS, "border-destructive/50 bg-destructive/10 text-destructive")}
+                    title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
+                    data-testid="recovery-next-retry"
+                    data-recovery-retry-expired="true"
+                  >
+                    {retryOffset ? `Retry missed ${retryOffset}` : "Retry missed"}
+                  </span>
+                ) : retryOffset ? (
+                  <span
+                    className={RETRY_PILL_CLASS}
                     title={formatTimeAbsolute(lineage.nextRetryAt) ?? undefined}
                     data-testid="recovery-next-retry"
                   >
                     {retryOffset === "now" ? "Next try now" : `Next try ${retryOffset}`}
                   </span>
                 ) : lineage.exhausted ? (
-                  <span
-                    className="rounded-md border border-border/50 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground"
-                    data-testid="recovery-next-retry"
-                  >
+                  <span className={RETRY_PILL_CLASS} data-testid="recovery-next-retry">
                     Automatic retries used up
                   </span>
                 ) : null}
