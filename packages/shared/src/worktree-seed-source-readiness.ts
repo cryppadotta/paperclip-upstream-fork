@@ -158,9 +158,13 @@ function instanceIdFromPath(resolved: string): string | null {
   return null;
 }
 
-function transientMarkersInPath(resolved: string): string[] {
+function transientMarkersInPath(resolved: string, ignoredSegments: ReadonlySet<string> = new Set()): string[] {
   const markers = new Set<string>();
   for (const segment of pathSegments(resolved)) {
+    // The test runner and a valid workspace may themselves live below a path with a
+    // transient-looking name. Only a new segment introduced by a state pointer is
+    // evidence that the registered config was rewritten to another scratch tree.
+    if (ignoredSegments.has(segment)) continue;
     for (const candidate of TRANSIENT_SEGMENT_MARKERS) {
       if (candidate.test(segment)) markers.add(candidate.marker);
     }
@@ -422,13 +426,14 @@ export async function evaluateWorktreeSeedSourceReadiness(
   }
 
   if (strictIdentity) {
+    const sourcePathSegments = new Set(pathSegments(path.dirname(sourceConfigPath)));
     const identityPaths: Array<{ configKey: string; resolved: string }> = [
       ...watched.map((entry) => ({ configKey: entry.configKey, resolved: entry.resolved })),
       ...(pointer.home ? [{ configKey: ".env PAPERCLIP_HOME", resolved: resolveConfiguredPath(pointer.home) }] : []),
       ...(pointerConfigPath ? [{ configKey: ".env PAPERCLIP_CONFIG", resolved: pointerConfigPath }] : []),
     ];
     for (const entry of identityPaths) {
-      const markers = transientMarkersInPath(entry.resolved);
+      const markers = transientMarkersInPath(entry.resolved, sourcePathSegments);
       if (markers.length === 0) continue;
       addFinding({
         reason: "source_transient_worktree_identity",

@@ -262,6 +262,18 @@ describe("evaluateWorktreeSeedSourceReadiness", () => {
     })).resolves.toMatchObject({ ok: true, findings: [] });
   });
 
+  it("ignores a transient-looking ancestor shared by the source workspace and its state", async () => {
+    const harnessRoot = path.join(makeRoot("harness-ancestor"), "pcvt-test-run", "t");
+    fs.mkdirSync(harnessRoot, { recursive: true });
+    const source = writeSource({ root: harnessRoot, instanceId: "default" });
+
+    await expect(evaluateWorktreeSeedSourceReadiness({
+      sourceConfigPath: source.configPath,
+      registeredPrimaryWorkspace: true,
+      probeTcp: closedPort,
+    })).resolves.toMatchObject({ ok: true, findings: [] });
+  });
+
   it("stays permissive about identity for a manual --from-config source", async () => {
     const root = makeRoot("manual");
     // An operator's explicit source may predate the adjacent instance pointer, so a
