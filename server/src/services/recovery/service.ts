@@ -3254,6 +3254,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
   }
 
+  async function openChildIssues(issue: typeof issues.$inferSelect) {
+    return db
+      .select({ id: issues.id, identifier: issues.identifier })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, issue.companyId),
+          eq(issues.parentId, issue.id),
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      );
+  }
+
   async function healthyOpenChildIssues(issue: typeof issues.$inferSelect) {
     const childCandidates = await db
       .select()
@@ -3279,7 +3293,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
     const [existingBlockers, openChildren] = await Promise.all([
       existingUnresolvedBlockerIssues(issue.companyId, issue.id),
-      healthyOpenChildIssues(issue),
+      openChildIssues(issue),
     ]);
     const blockedByIssueIds = [...new Set([...existingBlockers.map((row) => row.id), ...openChildren.map((row) => row.id)])];
     if (blockedByIssueIds.length === 0) return null;
@@ -3912,6 +3926,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const wakePolicyType = readNonEmptyString(wakePolicy.type);
       if (
         wakePolicyType !== "bounded_recovery_owner" &&
+        wakePolicyType !== "bounded_owner_disposition_repair" &&
         !(action.status === "escalated" && action.ownerType === "board")
       ) {
         continue;
@@ -3970,6 +3985,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         if (resolved) {
           result.resolved += 1;
           result.issueIds.push(issue.id);
+        }
+        continue;
+      }
+
+      if (wakePolicyType === "bounded_owner_disposition_repair") {
+        if (await isAutomaticRecoverySuppressedByPauseHold(
+          db,
+          issue.companyId,
+          issue.id,
+          treeControlSvc,
+        )) {
+          result.skipped += 1;
+          continue;
+        }
+
+        const latestRun = await latestRecoveryOwnerRun(action);
+        const persistedAttempt = Math.max(
+          action.attemptCount,
+          Math.max(0, Math.floor(asNumber(wakePolicy.attempt, action.attemptCount))),
+        );
+        const outcome = await reconcileDispositionRepair(issue, latestRun, {
+          historicalAttemptCount: persistedAttempt,
+        });
+        if (outcome === "queued") {
+          result.requeued += 1;
+          result.issueIds.push(issue.id);
+        } else if (outcome === "escalated") {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
         }
         continue;
       }
