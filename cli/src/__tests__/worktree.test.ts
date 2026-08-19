@@ -1535,6 +1535,61 @@ describe("worktree helpers", () => {
     }
   });
 
+  it("reserves distinct ports for postgres-mode siblings under a custom worktree parent", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-custom-parent-"));
+    const homeDir = path.join(tempRoot, ".paperclip-worktrees");
+    const customParentDir = path.join(tempRoot, "custom", "workspace-lanes");
+    const firstWorktreeRoot = path.join(customParentDir, "lane-one");
+    const secondWorktreeRoot = path.join(customParentDir, "lane-two");
+    const missingSourceConfig = path.join(tempRoot, "missing", "config.json");
+    const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
+    const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
+    const originalCwd = process.cwd();
+
+    try {
+      fs.mkdirSync(firstWorktreeRoot, { recursive: true });
+      fs.mkdirSync(secondWorktreeRoot, { recursive: true });
+
+      process.chdir(firstWorktreeRoot);
+      await worktreeInitCommand({
+        name: "lane-one",
+        seed: false,
+        fromConfig: missingSourceConfig,
+        home: homeDir,
+      });
+
+      const firstConfig = JSON.parse(fs.readFileSync(firstConfigPath, "utf8"));
+      firstConfig.database = {
+        ...firstConfig.database,
+        mode: "postgres",
+        connectionString: "postgres://paperclip:paperclip@127.0.0.1:54330/paperclip",
+      };
+      fs.writeFileSync(firstConfigPath, `${JSON.stringify(firstConfig, null, 2)}\n`, "utf8");
+
+      process.chdir(secondWorktreeRoot);
+      await worktreeInitCommand({
+        name: "lane-two",
+        seed: false,
+        fromConfig: missingSourceConfig,
+        home: homeDir,
+      });
+
+      const secondConfig = JSON.parse(fs.readFileSync(secondConfigPath, "utf8"));
+      const registry = JSON.parse(
+        fs.readFileSync(path.join(homeDir, "worktree-port-reservations.json"), "utf8"),
+      );
+
+      expect(secondConfig.server.port).not.toBe(firstConfig.server.port);
+      expect(secondConfig.database.embeddedPostgresPort).not.toBe(
+        firstConfig.database.embeddedPostgresPort,
+      );
+      expect(registry.configPaths).toEqual([firstConfigPath, secondConfigPath].sort());
+    } finally {
+      process.chdir(originalCwd);
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("defaults the seed source config to the current repo-local Paperclip config", () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-source-config-"));
     const repoRoot = path.join(tempRoot, "repo");
