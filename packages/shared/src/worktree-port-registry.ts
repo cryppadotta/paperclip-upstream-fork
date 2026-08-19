@@ -36,22 +36,27 @@ const { workerData } = require("node:worker_threads");
 const control = new Int32Array(workerData.control);
 const ownerPath = path.join(workerData.lockPath, workerData.ownerFile);
 function touchOwnedLock() {
+  let owner;
   try {
-    const owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
-    if (owner.token !== workerData.token) return false;
+    owner = JSON.parse(fs.readFileSync(ownerPath, "utf8"));
+  } catch {
+    return "retry";
+  }
+  if (owner.token !== workerData.token) return "lost";
+  try {
     const now = new Date();
     fs.utimesSync(workerData.lockPath, now, now);
-    return true;
+    return "refreshed";
   } catch {
-    return false;
+    return "retry";
   }
 }
-if (touchOwnedLock()) {
+if (touchOwnedLock() !== "lost") {
   Atomics.store(control, 0, 1);
   Atomics.notify(control, 0);
   while (Atomics.load(control, 1) === 0) {
     Atomics.wait(control, 1, 0, workerData.heartbeatMs);
-    if (Atomics.load(control, 1) !== 0 || !touchOwnedLock()) break;
+    if (Atomics.load(control, 1) !== 0 || touchOwnedLock() === "lost") break;
   }
 }
 Atomics.store(control, 0, 2);
