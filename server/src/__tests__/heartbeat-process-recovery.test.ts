@@ -5976,9 +5976,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain(`Recovery action: \`${recoveryAction?.id}\``);
-    expect(comments[0]?.body).toContain("Recovery owner: board escalation");
-    expect(comments[0]?.body).toContain("assign an invokable recovery owner");
+    expect(comments[0]?.body).toContain("retried dispatch");
+    expect(comments[0]?.presentation).toMatchObject({ kind: "system_notice", tone: "danger" });
+    expect(noticeMetadataReferencesRecoveryAction(comments[0]?.metadata, recoveryAction?.id ?? "")).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "key_value" &&
+      row.label === "Recovery owner" &&
+      row.value.includes("Board escalation")
+    )).toBe(true);
+    expect(commentMetadataRows(comments[0]).some((row) =>
+      row.type === "key_value" &&
+      row.label === "Next action" &&
+      row.value.includes("assign an invokable recovery owner")
+    )).toBe(true);
   });
 
   it("blocks an already stranded recovery issue without creating a recovery child", async () => {
