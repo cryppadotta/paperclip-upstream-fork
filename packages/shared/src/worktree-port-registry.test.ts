@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
-import { withWorktreePortRegistryLock } from "./worktree-port-registry.js";
+import {
+  withWorktreePortRegistryLock,
+  withWorktreePortRegistryLockSync,
+} from "./worktree-port-registry.js";
 
 const temporaryRoots: string[] = [];
 
@@ -36,12 +39,13 @@ describe("worktree port registry lock", () => {
     let secondEntered = false;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
-      const oldTimestamp = new Date(Date.now() - 10_000);
-      fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
       firstEntered.resolve();
       await releaseFirst.promise;
     });
     await firstEntered.promise;
+    await delay(5_250);
+
+    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeLessThan(2_000);
 
     const second = withWorktreePortRegistryLock(homeDir, async () => {
       secondEntered = true;
@@ -52,7 +56,7 @@ describe("worktree port registry lock", () => {
     releaseFirst.resolve();
     await Promise.all([first, second]);
     expect(secondEntered).toBe(true);
-  });
+  }, 10_000);
 
   it("reclaims an old lock after its owner process exits", async () => {
     const homeDir = makeTemporaryRoot();
@@ -63,7 +67,6 @@ describe("worktree port registry lock", () => {
       `${JSON.stringify({
         version: 1,
         pid: 2_147_483_647,
-        processIdentity: "dead-process",
         token: "dead-owner",
       })}\n`,
     );
@@ -88,7 +91,6 @@ describe("worktree port registry lock", () => {
       `${JSON.stringify({
         version: 1,
         pid: process.pid,
-        processIdentity: "reused-pid-owner",
         token: "abandoned-owner",
       })}\n`,
     );
@@ -101,6 +103,21 @@ describe("worktree port registry lock", () => {
     });
 
     expect(entered).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("refreshes the lease while a synchronous critical section blocks the main thread", () => {
+    const homeDir = makeTemporaryRoot();
+    const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
+    const blocker = new Int32Array(new SharedArrayBuffer(4));
+
+    withWorktreePortRegistryLockSync(homeDir, () => {
+      const oldTimestamp = new Date(Date.now() - 10_000);
+      fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
+      Atomics.wait(blocker, 0, 0, 1_500);
+      expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeLessThan(1_250);
+    });
+
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 });
