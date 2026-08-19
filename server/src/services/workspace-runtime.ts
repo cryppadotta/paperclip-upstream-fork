@@ -2765,6 +2765,20 @@ function quoteShellArg(value: string) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+const BUILTIN_WORKSPACE_PROVISION_COMMAND = "bash ./scripts/provision-worktree.sh";
+
+function resolveWorkspaceProvisionCommand(
+  strategy: Record<string, unknown>,
+  repoRoot: string,
+) {
+  const configuredCommand = asString(strategy.provisionCommand, "").trim();
+  if (configuredCommand) return configuredCommand;
+
+  return existsSync(path.join(repoRoot, "scripts", "provision-worktree.sh"))
+    ? BUILTIN_WORKSPACE_PROVISION_COMMAND
+    : "";
+}
+
 function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
   const patterns = [
     /^(?<prefix>(?:bash|sh|zsh)\s+)(?<quote>["']?)(?<relative>\.\/[^"'\s]+)\k<quote>(?<suffix>(?:\s.*)?)$/s,
@@ -2961,7 +2975,7 @@ async function provisionExecutionWorktree(input: {
   created: boolean;
   recorder?: WorkspaceOperationRecorder | null;
 }) {
-  const provisionCommand = asString(input.strategy.provisionCommand, "").trim();
+  const provisionCommand = resolveWorkspaceProvisionCommand(input.strategy, input.repoRoot);
   if (!provisionCommand) return;
   const resolvedProvisionCommand = resolveRepoManagedWorkspaceCommand(provisionCommand, input.repoRoot);
 
@@ -3442,22 +3456,20 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     });
     realized.warnings = [...repairWarnings, ...baseRefreshWarnings, ...baseDrift.warnings];
     realized.baseRefSha = refresh.baseRefSha ?? recordedBaseRefSha ?? baseDrift.branchBaseRefSha ?? baseDrift.currentBaseRefSha;
-    if (provisionCommand) {
-      await provisionExecutionWorktree({
-        strategy: {
-          type: "git_worktree",
-          provisionCommand,
-        },
-        base: input.base,
-        repoRoot,
-        worktreePath: realized.worktreePath ?? cwd,
-        branchName: realized.branchName ?? "",
-        issue: input.issue,
-        agent: input.agent,
-        created: false,
-        recorder: input.recorder ?? null,
-      });
-    }
+    await provisionExecutionWorktree({
+      strategy: {
+        type: "git_worktree",
+        ...(provisionCommand ? { provisionCommand } : {}),
+      },
+      base: input.base,
+      repoRoot,
+      worktreePath: realized.worktreePath ?? cwd,
+      branchName: realized.branchName ?? "",
+      issue: input.issue,
+      agent: input.agent,
+      created: false,
+      recorder: input.recorder ?? null,
+    });
     return realized;
   }
 
@@ -5147,17 +5159,12 @@ export function resolveRuntimeProvisionCommand(input: {
 
   const stateDir = path.join(input.workspace.cwd, ".paperclip");
   const manifestPath = path.join(stateDir, "seed-manifest.json");
-  const pendingMarker = path.join(stateDir, "seed-pending");
-  const completeMarker = path.join(stateDir, "seed-complete");
   const provisionScript = path.join(
     input.workspace.baseCwd,
     "scripts",
     "provision-worktree-runtime.sh",
   );
-  let needsSeed = existsSync(pendingMarker) && !existsSync(completeMarker);
-  if (existsSync(manifestPath)) {
-    needsSeed = !hasVerifiedWorktreeSeedManifest(manifestPath);
-  }
+  const needsSeed = !existsSync(manifestPath) || !hasVerifiedWorktreeSeedManifest(manifestPath);
   if (!needsSeed || !existsSync(provisionScript)) {
     return "";
   }

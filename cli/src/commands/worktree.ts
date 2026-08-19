@@ -247,8 +247,12 @@ type SeedWorktreeDatabase = typeof seedWorktreeDatabase;
 
 export type EnsureWorktreeSeededResult = {
   seeded: boolean;
-  reason: "seeded" | "verified_manifest" | "complete_marker" | "legacy_unmarked";
+  reason: "seeded" | "verified_manifest" | "legacy_database";
   details?: SeedWorktreeDatabaseResult;
+};
+
+export type LegacyWorktreeDatabaseEvidence = {
+  migrationRevision: string;
 };
 
 export type SeededWorktreeExecutionQuarantineSummary = {
@@ -1476,6 +1480,51 @@ export function resolveWorktreeSeedMigrationRevision(
   return migrationRevision;
 }
 
+/**
+ * Markerless worktrees predate the versioned seed manifest. Adopt one only
+ * after proving that its configured database already has a compatible
+ * migration journal and the core Paperclip tables. The physical PG_VERSION
+ * check prevents this read-only probe from initializing a missing embedded
+ * database and then mistaking that empty cluster for legacy evidence.
+ */
+export async function inspectLegacyWorktreeDatabase(
+  configPath: string,
+): Promise<LegacyWorktreeDatabaseEvidence | null> {
+  const config = readConfig(configPath);
+  if (!config) return null;
+
+  const envEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(configPath));
+  let embeddedHandle: EmbeddedPostgresHandle | null = null;
+  let db: ReturnType<typeof createDb> | null = null;
+  try {
+    if (config.database.mode === "embedded-postgres") {
+      const dataDir = resolveRuntimeLikePath(config.database.embeddedPostgresDataDir, configPath);
+      if (!existsSync(path.join(dataDir, "PG_VERSION"))) return null;
+      embeddedHandle = await ensureEmbeddedPostgres(dataDir, config.database.embeddedPostgresPort);
+    }
+
+    const connectionString = resolveSourceConnectionString(config, envEntries, embeddedHandle?.port);
+    const migrationRevision = resolveWorktreeSeedMigrationRevision(
+      await inspectMigrations(connectionString),
+      "sourcePrefix",
+    );
+    db = createDb(connectionString);
+    await Promise.all([
+      db.select({ id: authUsers.id }).from(authUsers).limit(1),
+      db.select({ id: companies.id }).from(companies).limit(1),
+      db.select({ id: issues.id }).from(issues).limit(1),
+    ]);
+    return { migrationRevision };
+  } catch {
+    return null;
+  } finally {
+    await db?.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+    if (embeddedHandle?.startedByThisProcess) {
+      await embeddedHandle.stop().catch(() => undefined);
+    }
+  }
+}
+
 async function inspectVerifiedSeedDatabase(
   connectionString: string,
   expected?: WorktreeSeedValidationExpectation,
@@ -2167,26 +2216,23 @@ async function runVerifiedWorktreeSeed(input: {
 
 export async function ensureWorktreeSeeded(
   opts: WorktreeEnsureSeededOptions = {},
-  dependencies: { seedDatabase?: SeedWorktreeDatabase } = {},
+  dependencies: {
+    seedDatabase?: SeedWorktreeDatabase;
+    inspectLegacyDatabase?: typeof inspectLegacyWorktreeDatabase;
+  } = {},
 ): Promise<EnsureWorktreeSeededResult> {
   const configPath = resolveConfigPath(opts.config);
   const markers = resolveWorktreeSeedMarkerPaths(configPath);
-  let initialManifest = readWorktreeSeedManifest(configPath);
+  const initialManifest = readWorktreeSeedManifest(configPath);
   if (initialManifest?.state === "verified") {
     return { seeded: false, reason: "verified_manifest" };
-  }
-  if (!initialManifest && existsSync(markers.complete)) {
-    return { seeded: false, reason: "complete_marker" };
   }
   const legacyPending = !initialManifest && existsSync(markers.pending)
     ? readLegacyWorktreeSeedPendingMarker(markers.pending)
     : null;
-  if (!initialManifest && !legacyPending) {
-    if (existsSync(markers.lock)) {
-      const releaseExistingLock = await acquireWorktreeSeedLock(markers.lock);
-      await releaseExistingLock();
-    }
-    return { seeded: false, reason: "legacy_unmarked" };
+  if (!initialManifest && !legacyPending && existsSync(markers.lock)) {
+    const releaseExistingLock = await acquireWorktreeSeedLock(markers.lock);
+    await releaseExistingLock();
   }
 
   const hasExplicitSource = Boolean(opts.fromConfig || opts.fromDataDir || opts.fromInstance);
@@ -2240,9 +2286,6 @@ export async function ensureWorktreeSeeded(
     if (manifest?.state === "verified") {
       return { seeded: false, reason: "verified_manifest" };
     }
-    if (!manifest && existsSync(markers.complete)) {
-      return { seeded: false, reason: "complete_marker" };
-    }
     if (!manifest && existsSync(markers.pending)) {
       const currentLegacyPending = readLegacyWorktreeSeedPendingMarker(markers.pending);
       if (currentLegacyPending.sourceConfigPath !== legacyPending?.sourceConfigPath) {
@@ -2258,9 +2301,41 @@ export async function ensureWorktreeSeeded(
       manifest = readWorktreeSeedManifest(configPath);
     }
     if (!manifest) {
-      // Worktrees created before lazy seeding shipped were seeded eagerly and
-      // have neither marker. Preserve that compatibility without re-cloning.
-      return { seeded: false, reason: "legacy_unmarked" };
+      const legacyEvidence = await (
+        dependencies.inspectLegacyDatabase ?? inspectLegacyWorktreeDatabase
+      )(configPath);
+      if (legacyEvidence) {
+        markWorktreeSeedPending({
+          configPath,
+          sourceConfigPath: registeredSeedSource.configPath,
+          targetInstanceId: targetPaths.instanceId,
+          seedMode: "minimal",
+          diagnosticMessage: "Validated existing legacy worktree database schema before adoption.",
+        });
+        startWorktreeSeedAttempt(configPath);
+        updateWorktreeSeedManifest({
+          configPath,
+          phase: "complete",
+          status: "succeeded",
+          state: "verified",
+          snapshotAt: new Date().toISOString(),
+          migrationRevision: legacyEvidence.migrationRevision,
+          message: "Adopted an existing legacy worktree database after validating its migration journal and core schema.",
+        });
+        return { seeded: false, reason: "legacy_database" };
+      }
+
+      markWorktreeSeedPending({
+        configPath,
+        sourceConfigPath: registeredSeedSource.configPath,
+        targetInstanceId: targetPaths.instanceId,
+        seedMode: "minimal",
+        diagnosticMessage: "No verified seed or compatible legacy database was found; provisioning is required.",
+      });
+      manifest = readWorktreeSeedManifest(configPath);
+      if (!manifest) {
+        throw new Error("Failed to create a pending worktree seed manifest.");
+      }
     }
     if (
       manifest.source.configPath !== registeredSeedSource.configPath
@@ -2510,21 +2585,17 @@ export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOpti
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclipai worktree ensure-seeded ")));
 
-  const markers = resolveWorktreeSeedMarkerPaths(resolveConfigPath(opts.config));
-  if (existsSync(markers.complete) || !existsSync(markers.pending)) {
-    const result = await ensureWorktreeSeeded(opts);
-    const reason = result.reason === "complete_marker"
-      ? "Seed-complete marker already present."
-      : "No seed-pending marker found; treating this legacy worktree as already seeded.";
-    p.outro(pc.green(reason));
-    return;
-  }
-
   const spinner = p.spinner();
-  spinner.start("Seeding isolated worktree database from source instance (minimal)...");
+  spinner.start("Checking isolated worktree database seed state...");
   try {
     const result = await ensureWorktreeSeeded(opts);
-    spinner.stop("Seeded isolated worktree database (minimal).");
+    if (result.seeded) {
+      spinner.stop("Seeded isolated worktree database (minimal).");
+    } else if (result.reason === "legacy_database") {
+      spinner.stop("Validated and adopted an existing legacy worktree database.");
+    } else {
+      spinner.stop("Worktree database already has a verified seed manifest.");
+    }
     if (result.details) {
       p.log.message(pc.dim(`Seed snapshot: ${result.details.backupSummary}`));
       p.log.message(
