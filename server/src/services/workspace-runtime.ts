@@ -5550,7 +5550,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     // still rejected by the broker unless /proc proves loopback-only listeners.
     //
     // Three independent layers force the loopback bind, because a guest checkout
-    // can be arbitrarily old (PAP-17256): the `--bind custom --bind-host` argv
+    // can be arbitrarily old (PAP-17256): the `--bind loopback` argv
     // added above, these env vars for a runner that reads them, and HOST for one
     // old enough to ignore both and infer its bind mode from HOST alone.
     env.PAPERCLIP_BIND = RUNTIME_EXPOSURE_BIND_MODE;
@@ -5787,7 +5787,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     });
   });
   const earlyExitPromise = new Promise<never>((_, reject) => {
-    child.once("exit", (code, signal) => {
+    // `close` follows `exit` after the child's inherited stdout/stderr file
+    // descriptors are closed. Waiting for it makes the startup log excerpt
+    // deterministic instead of racing the final validation line.
+    child.once("close", (code, signal) => {
       reject(new Error(
         `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
       ));
@@ -5964,8 +5967,14 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
     }
     if (bindCollision && port) throw new RuntimeServicePortBindCollision(port);
+    const deploymentBindConflict = /local_trusted requires server\.bind=loopback/i.test(
+      `${failureMessage}\n${serviceOutputExcerpt}`,
+    );
+    const actionableFailure = deploymentBindConflict
+      ? `${failureMessage} | deployment/bind conflict: local_trusted requires server.bind=loopback; the managed runtime requested an incompatible bind mode`
+      : failureMessage;
     throw new Error(
-      `Failed to start runtime service "${serviceName}": ${failureMessage}${serviceOutputExcerpt ? ` | output: ${serviceOutputExcerpt.trim()}` : ""}`,
+      `Failed to start runtime service "${serviceName}": ${actionableFailure}${serviceOutputExcerpt ? ` | output: ${serviceOutputExcerpt.trim()}` : ""}`,
     );
   });
 

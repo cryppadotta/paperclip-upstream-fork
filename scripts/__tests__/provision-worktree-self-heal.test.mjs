@@ -196,6 +196,45 @@ test("falls back to an isolated config when the base CLI cannot boot", () => {
   );
 });
 
+test("reconciles deployment mode from the registered source when reusing a guest config", () => {
+  const baseCwd = makeBaseWorkspace({ helpExit: 1, initExit: 0 });
+  const { result: first, worktreeCwd, worktreesHome } = runProvision(baseCwd);
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(readWorktreeConfig(worktreeCwd).server.deploymentMode, "local_trusted");
+
+  fs.writeFileSync(
+    path.join(baseCwd, ".paperclip", "config.json"),
+    `${JSON.stringify({
+      server: {
+        deploymentMode: "authenticated",
+        exposure: "private",
+      },
+    }, null, 2)}\n`,
+  );
+
+  const second = spawnSync("bash", [script], {
+    cwd: worktreeCwd,
+    encoding: "utf8",
+    env: {
+      PATH: testPath,
+      HOME: os.homedir(),
+      PAPERCLIP_WORKSPACE_BASE_CWD: baseCwd,
+      PAPERCLIP_WORKSPACE_CWD: worktreeCwd,
+      PAPERCLIP_WORKSPACE_BRANCH: "feature/provision-test",
+      PAPERCLIP_WORKTREES_DIR: worktreesHome,
+      PAPERCLIP_HOME: path.join(worktreesHome, "no-such-instance-home"),
+      PAPERCLIP_PROJECT_WORKSPACE_ID: "project-workspace-1",
+      PAPERCLIP_SEED_EXPECTED_COMPANY_ID: "company-1",
+    },
+  });
+
+  assert.equal(second.status, 0, second.stderr);
+  assert.match(second.stderr, /Reusing existing isolated Paperclip worktree config/);
+  assert.match(second.stderr, /Reconciled isolated Paperclip worktree deployment mode/);
+  assert.equal(readWorktreeConfig(worktreeCwd).server.deploymentMode, "authenticated");
+  assert.equal(readWorktreeConfig(worktreeCwd).server.exposure, "private");
+});
+
 test("repairs an unhealthy base install under the lock and then uses the CLI", (t) => {
   const hasTools = ["flock", "git"].every(
     (tool) => spawnSync("bash", ["-lc", `command -v ${tool}`], { env: { PATH: testPath } }).status === 0,
