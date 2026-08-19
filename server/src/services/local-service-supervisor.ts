@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -256,10 +257,47 @@ export function isProcessGroupAlive(processGroupId: number | null | undefined) {
   if (typeof processGroupId !== "number" || !Number.isInteger(processGroupId) || processGroupId <= 0) return false;
   try {
     process.kill(-processGroupId, 0);
-    return true;
   } catch {
     return false;
   }
+
+  if (process.platform === "linux") {
+    const liveMember = readLinuxProcessGroupActivity(processGroupId);
+    if (liveMember !== null) return liveMember;
+  }
+  return true;
+}
+
+function readLinuxProcessGroupActivity(processGroupId: number): boolean | null {
+  let entries: fsSync.Dirent[];
+  try {
+    entries = fsSync.readdirSync("/proc", { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  let foundMember = false;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    try {
+      const stat = fsSync.readFileSync(`/proc/${entry.name}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) continue;
+      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const state = fields[0];
+      const memberProcessGroupId = Number.parseInt(fields[2] ?? "", 10);
+      if (memberProcessGroupId !== processGroupId) continue;
+      foundMember = true;
+      if (state !== "Z" && state !== "X") return true;
+    } catch {
+      // The process can exit while /proc is scanned.
+    }
+  }
+
+  // kill(-pgid, 0) also succeeds for a group that contains only zombies. Such
+  // processes cannot run or own a listener and are waiting only for their
+  // parent to reap them, so termination is complete for service-control use.
+  return foundMember ? false : null;
 }
 
 function tokenizeCommandLine(value: string) {
@@ -480,7 +518,10 @@ export async function terminateLocalService(
       : isPidAlive(record.pid);
     if (targetAlive) return false;
     if (!record.port) return true;
-    return (await readLocalServicePortOwner(record.port)) === null;
+    const portOwnerPid = await readLocalServicePortOwner(record.port);
+    if (!portOwnerPid) return true;
+    const ownerProcessId = targetProcessGroup ? record.processGroupId! : record.pid;
+    return !(await isLocalServiceProcessOwnedBy(portOwnerPid, ownerProcessId));
   };
 
   const waitUntilGone = async (timeoutMs: number) => {
