@@ -7230,7 +7230,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     }
   }, 40_000);
 
-  it("adopts a live auto-port shared service after runtime state is reset", async () => {
+  it("re-adopts a request-logging service on the same auto port after supervisor stdio closes", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reconcile-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
     process.env.PAPERCLIP_HOME = paperclipHome;
@@ -7239,7 +7239,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
-    const executionWorkspaceId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -7273,6 +7272,16 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       projectId: null,
       workspaceId: null,
     };
+    await fs.writeFile(
+      path.join(workspaceRoot, "request-logger.cjs"),
+      [
+        "const http = require('node:http');",
+        "http.createServer((req, res) => {",
+        "  process.stdout.write(`request ${req.url}\\n`, (error) => { if (!error) res.end('ok'); });",
+        "}).listen(Number(process.env.PORT), '127.0.0.1');",
+      ].join("\n"),
+      "utf8",
+    );
     leasedRunIds.add(runId);
 
     const services = await ensureRuntimeServicesForRun({
@@ -7290,8 +7299,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
           services: [
             {
               name: "web",
-              command:
-                "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+              command: "node request-logger.cjs",
               port: { type: "auto" },
               readiness: {
                 type: "http",
@@ -7315,9 +7323,13 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const service = services[0];
     expect(service?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
+    const originalPort = service!.port;
+    const originalProviderRef = service!.providerRef;
 
-    await fs.rm(paperclipHome, { recursive: true, force: true });
-    await resetRuntimeServicesForTests();
+    // Closing the parent's pipe endpoints reproduces a real control-plane exit.
+    // A service whose per-request logger still targets those pipes wedges (or
+    // exits) on the reconciliation health probe instead of answering it.
+    await resetRuntimeServicesForTests({ simulateSupervisorExit: true });
 
     const result = await reconcilePersistedRuntimeServicesOnStartup(db);
     expect(result).toMatchObject({ reconciled: 1, adopted: 1, stopped: 0 });
@@ -7328,13 +7340,14 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       .where(eq(workspaceRuntimeServices.id, service!.id))
       .then((rows) => rows[0] ?? null);
     expect(persisted?.status).toBe("running");
-    expect(persisted?.providerRef).toMatch(/^\d+$/);
+    expect(persisted?.port).toBe(originalPort);
+    expect(persisted?.providerRef).toBe(originalProviderRef);
+    await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
 
-    await stopRuntimeServicesForExecutionWorkspace({
-      db,
-      executionWorkspaceId,
-      workspaceCwd: workspace.cwd,
-    });
+    await resetRuntimeServicesForTests({ terminateProcesses: true });
+    leasedRunIds.delete(runId);
+    await fs.rm(paperclipHome, { recursive: true, force: true });
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
   });
