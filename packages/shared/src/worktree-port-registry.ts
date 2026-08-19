@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
@@ -20,6 +21,7 @@ const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
 type RegistryLockOwner = {
   version: 1;
   pid: number;
+  processIdentity: string;
   token: string;
 };
 
@@ -77,6 +79,8 @@ function readRegistryLockOwner(lockPath: string): RegistryLockOwner | null {
       parsed.version !== 1
       || !Number.isInteger(parsed.pid)
       || (parsed.pid ?? 0) <= 0
+      || typeof parsed.processIdentity !== "string"
+      || parsed.processIdentity.length === 0
       || typeof parsed.token !== "string"
       || parsed.token.length === 0
     ) {
@@ -88,10 +92,64 @@ function readRegistryLockOwner(lockPath: string): RegistryLockOwner | null {
   }
 }
 
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+}
+
+function readProcessIdentity(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === "linux") {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd < 0) return null;
+      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const startTicks = fields[19];
+      if (!startTicks) return null;
+      const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return bootId ? `linux:${bootId}:${startTicks}` : null;
+    } catch {
+      return null;
+    }
+  }
+
+  try {
+    if (process.platform === "win32") {
+      const ticks = execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
+      ], { encoding: "utf8", windowsHide: true }).trim();
+      return ticks ? `win32:${ticks}` : null;
+    }
+    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+    }).trim();
+    return startedAt ? `${process.platform}:${startedAt}` : null;
+  } catch {
+    return null;
+  }
+}
+
 function removeStaleRegistryLock(lockPath: string): boolean {
   try {
     const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
     if (ageMs <= WORKTREE_PORT_REGISTRY_LOCK_STALE_MS) return false;
+    const owner = readRegistryLockOwner(lockPath);
+    if (owner && isProcessAlive(owner.pid)) {
+      const currentIdentity = readProcessIdentity(owner.pid);
+      if (!currentIdentity || owner.processIdentity === currentIdentity) return false;
+    }
+    const currentOwner = readRegistryLockOwner(lockPath);
+    if (owner ? currentOwner?.token !== owner.token : currentOwner !== null) return false;
+    const currentAgeMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+    if (currentAgeMs <= WORKTREE_PORT_REGISTRY_LOCK_STALE_MS) return false;
     fs.rmSync(lockPath, { recursive: true, force: true });
     return true;
   } catch {
@@ -133,9 +191,14 @@ function acquireRegistryLock(lockPath: string, deadline: number): RegistryLockLe
     fs.mkdirSync(lockPath);
     const token = `${process.pid}-${randomUUID()}`;
     try {
+      const processIdentity = readProcessIdentity(process.pid);
+      if (!processIdentity) {
+        throw new Error("Cannot determine worktree port reservation lock owner identity");
+      }
       const owner: RegistryLockOwner = {
         version: 1,
         pid: process.pid,
+        processIdentity,
         token,
       };
       fs.writeFileSync(

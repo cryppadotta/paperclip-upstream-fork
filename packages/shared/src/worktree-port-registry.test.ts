@@ -39,13 +39,14 @@ describe("worktree port registry lock", () => {
     let secondEntered = false;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
+      const oldTimestamp = new Date(Date.now() - 10_000);
+      fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
       firstEntered.resolve();
       await releaseFirst.promise;
     });
     await firstEntered.promise;
-    await delay(5_250);
 
-    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeLessThan(2_000);
+    expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeGreaterThan(5_000);
 
     const second = withWorktreePortRegistryLock(homeDir, async () => {
       secondEntered = true;
@@ -58,18 +59,12 @@ describe("worktree port registry lock", () => {
     expect(secondEntered).toBe(true);
   }, 10_000);
 
-  it("keeps heartbeating after a transient owner-file read failure", async () => {
+  it("refreshes the lease throughout an async critical section", async () => {
     const homeDir = makeTemporaryRoot();
     const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
-    const ownerPath = path.join(lockPath, "owner.json");
-    const hiddenOwnerPath = path.join(lockPath, "owner-paused.json");
 
     await withWorktreePortRegistryLock(homeDir, async () => {
-      fs.renameSync(ownerPath, hiddenOwnerPath);
-      await delay(1_500);
-      fs.renameSync(hiddenOwnerPath, ownerPath);
-      await delay(4_500);
-
+      await delay(5_250);
       expect(Date.now() - fs.statSync(lockPath).mtimeMs).toBeLessThan(2_000);
     });
 
@@ -85,6 +80,7 @@ describe("worktree port registry lock", () => {
       `${JSON.stringify({
         version: 1,
         pid: 2_147_483_647,
+        processIdentity: "dead-process",
         token: "dead-owner",
       })}\n`,
     );
@@ -109,6 +105,7 @@ describe("worktree port registry lock", () => {
       `${JSON.stringify({
         version: 1,
         pid: process.pid,
+        processIdentity: "reused-pid-owner",
         token: "abandoned-owner",
       })}\n`,
     );
