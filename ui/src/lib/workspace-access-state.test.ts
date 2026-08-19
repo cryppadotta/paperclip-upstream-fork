@@ -211,7 +211,7 @@ describe("resolveWorkspaceAccessState", () => {
         },
       })],
     });
-    expect(access).toMatchObject({ state: "failed", action: { kind: "repair", label: "Repair workspace" } });
+    expect(access).toMatchObject({ state: "failed", action: { kind: "view_logs", label: "View provision log" } });
     // The clone never started, so the copy points at the registered source, not the clone.
     expect(access.description).toContain("source_data_dir_missing");
     expect(access.description).toContain("Re-point database.embeddedPostgresDataDir");

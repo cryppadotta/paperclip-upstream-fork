@@ -19,12 +19,6 @@ Current implementation status:
 
 GitHub Actions owns `pnpm-lock.yaml`.
 
-Paperclip also ships a pnpmfile guard for run-owned scratch directories. If a
-scratch copy retains a `node_modules` symlink, hard-linked metadata, or a pnpm
-virtual store outside that scratch workspace, `pnpm install` fails before it can
-rewrite the other checkout. Copy scratch workspaces without `node_modules` (or
-with dereferenced, independent contents).
-
 The workspace package preflight and `paperclipai doctor` report an escaped
 `virtualStoreDir` or dangling direct dependency symlink with this repair command:
 

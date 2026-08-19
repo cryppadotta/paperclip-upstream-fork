@@ -202,7 +202,9 @@ export function resolveWorkspaceAccessState(input: {
         : seedPhase
           ? `The clone failed during ${seedPhase}. Repairing replaces only the isolated database.`
           : "The clone did not finish, so this workspace has no usable database yet.",
-      action: { kind: "repair", label: "Repair workspace" },
+      action: sourcePreflightReason
+        ? { kind: "view_logs", label: "View provision log" }
+        : { kind: "repair", label: "Repair workspace" },
       handoffAvailable,
     };
   }

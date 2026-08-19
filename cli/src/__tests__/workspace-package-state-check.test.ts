@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +8,6 @@ import {
 } from "../checks/workspace-package-state-check.js";
 
 const cleanupDirs: string[] = [];
-const repoRoot = path.resolve(import.meta.dirname, "../../..");
-
 function makeTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   cleanupDirs.push(dir);
@@ -66,30 +63,5 @@ describe("workspace package state diagnostics", () => {
     fs.symlinkSync(target, path.join(root, "node_modules", "healthy-package"), "dir");
 
     expect(workspacePackageStateCheck(root).status).toBe("pass");
-  });
-});
-
-describe("scratch pnpm install guard", () => {
-  it("stops pnpm before it rewrites an external node_modules metadata file", () => {
-    const scratchParent = makeTempDir("paperclip-run-guard-test-");
-    const scratchRoot = path.join(scratchParent, "workspace-copy");
-    const externalRoot = makeTempDir("paperclip-live-worktree-");
-    const externalNodeModules = path.join(externalRoot, "node_modules");
-    fs.mkdirSync(scratchRoot, { recursive: true });
-    fs.mkdirSync(externalNodeModules, { recursive: true });
-    writePackageJson(scratchRoot);
-    fs.copyFileSync(path.join(repoRoot, ".pnpmfile.cjs"), path.join(scratchRoot, ".pnpmfile.cjs"));
-    fs.writeFileSync(path.join(externalNodeModules, ".modules.yaml"), "sentinel: unchanged\n");
-    fs.symlinkSync(externalNodeModules, path.join(scratchRoot, "node_modules"), "dir");
-
-    const result = spawnSync(process.execPath, ["-e", "require('./.pnpmfile.cjs')"], {
-      cwd: scratchRoot,
-      encoding: "utf8",
-      env: { ...process.env, PAPERCLIP_RUN_SCRATCH_DIR: scratchParent },
-    });
-
-    expect(result.status).not.toBe(0);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("Refusing pnpm install in run scratch");
-    expect(fs.readFileSync(path.join(externalNodeModules, ".modules.yaml"), "utf8")).toBe("sentinel: unchanged\n");
   });
 });

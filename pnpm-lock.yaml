@@ -19,8 +19,6 @@ overrides:
   '@lexical/selection': 0.49.0
   '@lexical/utils': 0.49.0
 
-pnpmfileChecksum: dunm42dqchcth4wivlexwugxmq
-
 patchedDependencies:
   acpx@0.12.0:
     hash: x3fethhotv43zektyl5prdwf54
