@@ -448,8 +448,6 @@ describe("resolveRuntimeProvisionCommand", () => {
         path.join(baseCwd, "scripts", "provision-worktree-runtime.sh"),
         "#!/usr/bin/env bash\n",
       );
-      await fs.mkdir(path.join(cwd, ".paperclip"), { recursive: true });
-      await fs.writeFile(path.join(cwd, ".paperclip", "seed-pending"), "{}\n");
       const workspace = {
         ...buildWorkspace(cwd),
         baseCwd,
@@ -460,13 +458,26 @@ describe("resolveRuntimeProvisionCommand", () => {
       expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe(
         "bash ./scripts/provision-worktree-runtime.sh",
       );
+
+      await fs.mkdir(path.join(cwd, ".paperclip"), { recursive: true });
+      await fs.writeFile(path.join(cwd, ".paperclip", "config.json"), "{}\n");
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe(
+        "bash ./scripts/provision-worktree-runtime.sh",
+      );
+
+      await fs.writeFile(path.join(cwd, ".paperclip", "seed-pending"), "{}\n");
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe(
+        "bash ./scripts/provision-worktree-runtime.sh",
+      );
       expect(resolveRuntimeProvisionCommand({
         config: { runtimeProvisionCommand: "./custom-provision.sh" },
         workspace,
       })).toBe("./custom-provision.sh");
 
       await fs.writeFile(path.join(cwd, ".paperclip", "seed-complete"), "{}\n");
-      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe("");
+      expect(resolveRuntimeProvisionCommand({ config: {}, workspace })).toBe(
+        "bash ./scripts/provision-worktree-runtime.sh",
+      );
 
       await fs.writeFile(
         path.join(cwd, ".paperclip", "seed-manifest.json"),
@@ -770,6 +781,55 @@ describe("realizeExecutionWorkspace", () => {
     expect(second.created).toBe(false);
     expect(second.cwd).toBe(first.cwd);
     expect(second.branchName).toBe(first.branchName);
+  });
+
+  it("defaults the repo-provided worktree provisioner for git worktree strategies", async () => {
+    const repoRoot = await createTempRepo();
+    await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
+    await fs.writeFile(
+      path.join(repoRoot, "scripts", "provision-worktree.sh"),
+      [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "mkdir -p .paperclip",
+        "printf 'provisioned\\n' > .paperclip/default-provision-ran",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await runGit(repoRoot, ["add", "scripts/provision-worktree.sh"]);
+    await runGit(repoRoot, ["commit", "-m", "Add repository worktree provisioner"]);
+
+    const workspace = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-default-provision",
+        identifier: "PAP-17684",
+        title: "Default worktree provisioning",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    await expect(
+      fs.readFile(path.join(workspace.cwd, ".paperclip", "default-provision-ran"), "utf8"),
+    ).resolves.toBe("provisioned\n");
   });
 
   it("warns when reusing a git worktree whose base ref has advanced", async () => {
