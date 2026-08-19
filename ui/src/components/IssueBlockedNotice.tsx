@@ -38,12 +38,7 @@ function BlockerRecoveryIndicator({
   scheduledRetry,
 }: {
   action: IssueRecoveryAction;
-  /**
-   * The blocker's own scheduled retry, when the caller has it. A blocker summary does not
-   * carry one today, so this chip usually judges liveness from the stored due time alone.
-   * That can only make it warn where the source card stays calm — never the reverse — so the
-   * two surfaces cannot disagree about whether a human is needed.
-   */
+  /** The blocker's own scheduled retry, used to verify that the stored attempt is in flight. */
   scheduledRetry?: IssueScheduledRetry | null;
 }) {
   const liveness = { scheduledRetry: scheduledRetry ?? null };
@@ -562,7 +557,12 @@ export function IssueBlockedNotice({
         <span className="max-w-(--sz-18rem) truncate font-sans text-(length:--text-micro) text-amber-800 dark:text-amber-200">
           {blocker.title}
         </span>
-        {recoveryAction ? <BlockerRecoveryIndicator action={recoveryAction} /> : null}
+        {recoveryAction ? (
+          <BlockerRecoveryIndicator
+            action={recoveryAction}
+            scheduledRetry={blocker.scheduledRetry}
+          />
+        ) : null}
       </IssueLinkQuicklook>
     );
   };

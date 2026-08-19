@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -4475,9 +4475,18 @@ export function issueService(db: Db) {
     return enriched;
   }
 
-  async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
-    const row = await db
+  async function getCurrentScheduledRetriesForIssues(
+    issueIds: string[],
+    companyId: string,
+    dbOrTx: DbReader = db,
+  ): Promise<Map<string, IssueScheduledRetryRow>> {
+    const uniqueIssueIds = [...new Set(issueIds)];
+    if (uniqueIssueIds.length === 0) return new Map();
+
+    const contextIssueId = sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const rows = await dbOrTx
       .select({
+        issueId: contextIssueId,
         runId: heartbeatRuns.id,
         status: heartbeatRuns.status,
         agentId: heartbeatRuns.agentId,
@@ -4494,15 +4503,35 @@ export function issueService(db: Db) {
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
-          eq(heartbeatRuns.status, "scheduled_retry"),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
+          isNotNull(heartbeatRuns.scheduledRetryReason),
+          inArray(contextIssueId, uniqueIssueIds),
         ),
       )
-      .orderBy(asc(heartbeatRuns.scheduledRetryAt), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .orderBy(
+        sql`case ${heartbeatRuns.status}
+          when 'running' then 0
+          when 'queued' then 1
+          else 2
+        end`,
+        asc(heartbeatRuns.scheduledRetryAt),
+        asc(heartbeatRuns.createdAt),
+        asc(heartbeatRuns.id),
+      );
 
-    return row ? { ...row, status: "scheduled_retry" } : null;
+    const currentByIssueId = new Map<string, IssueScheduledRetryRow>();
+    for (const row of rows) {
+      if (currentByIssueId.has(row.issueId)) continue;
+      const status = row.status;
+      if (status !== "scheduled_retry" && status !== "queued" && status !== "running") continue;
+      currentByIssueId.set(row.issueId, { ...row, status });
+    }
+    return currentByIssueId;
+  }
+
+  async function getCurrentScheduledRetryForIssue(issueId: string, companyId: string): Promise<IssueScheduledRetryRow | null> {
+    const currentByIssueId = await getCurrentScheduledRetriesForIssues([issueId], companyId);
+    return currentByIssueId.get(issueId) ?? null;
   }
 
   function deriveIssueCommentAuthorType(comment: {
@@ -5032,6 +5061,24 @@ export function issueService(db: Db) {
         }
       }
       relations.blocks.sort((a, b) => a.title.localeCompare(b.title));
+    }
+
+    const relationSummaries: IssueRelationIssueSummary[] = [];
+    const collectRelationSummary = (summary: IssueRelationIssueSummary) => {
+      relationSummaries.push(summary);
+      for (const terminal of summary.terminalBlockers ?? []) collectRelationSummary(terminal);
+    };
+    for (const relations of empty.values()) {
+      for (const blocker of relations.blockedBy) collectRelationSummary(blocker);
+      for (const blocking of relations.blocks) collectRelationSummary(blocking);
+    }
+    const scheduledRetryByIssueId = await getCurrentScheduledRetriesForIssues(
+      relationSummaries.map((summary) => summary.id),
+      companyId,
+      dbOrTx,
+    );
+    for (const summary of relationSummaries) {
+      summary.scheduledRetry = scheduledRetryByIssueId.get(summary.id) ?? null;
     }
 
     return empty;

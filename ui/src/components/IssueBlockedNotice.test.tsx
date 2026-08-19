@@ -820,7 +820,10 @@ describe("IssueBlockedNotice", () => {
       };
     }
 
-    function renderBlockerChip(action: IssueRecoveryAction) {
+    function renderBlockerChip(
+      action: IssueRecoveryAction,
+      scheduledRetry?: IssueScheduledRetry | null,
+    ) {
       return render(
         <IssueBlockedNotice
           issueStatus="blocked"
@@ -834,6 +837,7 @@ describe("IssueBlockedNotice", () => {
               assigneeAgentId: null,
               assigneeUserId: null,
               activeRecoveryAction: action,
+              scheduledRetry,
             },
           ]}
         />,
@@ -860,6 +864,31 @@ describe("IssueBlockedNotice", () => {
       // The card the blocker links to must not contradict the chip.
       const cardState = deriveRecoveryCardState(liveAction);
       expect(cardState).toBe(chip?.getAttribute("data-recovery-state"));
+    });
+
+    it("keeps the blocker chip in progress while the named retry run is live", () => {
+      const liveAction = buildDispositionRepairAction({
+        type: "bounded_owner_disposition_repair",
+        retryAgentId: "agent-owner",
+        attempt: 3,
+        maxAttempts: 5,
+        retryAt: "2026-04-18T19:58:00.000Z",
+        scheduledRunId: "run-b2",
+      });
+      const scheduledRetry: IssueScheduledRetry = {
+        ...baseRetry,
+        runId: "run-b2",
+        status: "running",
+        scheduledRetryAt: "2026-04-18T19:58:00.000Z",
+        scheduledRetryAttempt: 3,
+        scheduledRetryReason: "issue_disposition_repair",
+      };
+
+      const chip = renderBlockerChip(liveAction, scheduledRetry);
+      expect(chip?.getAttribute("data-recovery-state")).toBe("in_progress");
+      expect(chip?.textContent).toContain("Recovery in progress · 3/5");
+      expect(chip?.getAttribute("title")).toContain("Attempt 3 of 5 · attempt running now");
+      expect(deriveRecoveryCardState(liveAction, { scheduledRetry })).toBe("in_progress");
     });
 
     it("escalates the blocker chip in step with the card when retries are exhausted", () => {
