@@ -8,6 +8,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
 } from "../services/workspace-runtime.js";
 import {
+  doesLocalServiceCommandLineMatch,
   listLocalServiceRegistryRecords,
   readLocalServicePortOwner,
   resolveLocalServiceLogPath,
@@ -93,4 +94,28 @@ describe("local service supervision", () => {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("recognizes a pnpm command after the launcher becomes pnpm.cjs", () => {
+    expect(doesLocalServiceCommandLineMatch({
+      commandLine: "/usr/bin/node /opt/pnpm/pnpm.cjs dev -- --bind custom --bind-host 127.0.0.1",
+      recordedCommand: "pnpm dev -- --bind custom --bind-host 127.0.0.1",
+      serviceName: "paperclip-dev",
+    })).toBe(true);
+  });
+
+  it("does not accept a different command merely because it uses node", () => {
+    expect(doesLocalServiceCommandLineMatch({
+      commandLine: "/usr/bin/node /workspace/server/dist/index.js",
+      recordedCommand: "pnpm dev -- --bind custom --bind-host 127.0.0.1",
+      serviceName: "paperclip-dev",
+    })).toBe(false);
+  });
+
+  it("does not collapse different script paths to the same basename", () => {
+    expect(doesLocalServiceCommandLineMatch({
+      commandLine: "/usr/bin/node /other-workspace/server.js",
+      recordedCommand: "node ./server.js",
+      serviceName: "web",
+    })).toBe(false);
+  });
 });
