@@ -1456,6 +1456,12 @@ type WorktreeSeedValidationExpectation = {
   representativeIssueId: string;
 };
 
+export function requiresWorktreeSeedCredentialAccount(
+  deploymentMode: PaperclipConfig["server"]["deploymentMode"],
+): boolean {
+  return deploymentMode === "authenticated";
+}
+
 export function resolveWorktreeSeedMigrationRevision(
   migrationState: Awaited<ReturnType<typeof inspectMigrations>>,
   requirement: "sourcePrefix" | "upToDate",
@@ -1532,10 +1538,20 @@ export async function inspectLegacyWorktreeDatabase(
 
 async function inspectVerifiedSeedDatabase(
   connectionString: string,
-  expected?: WorktreeSeedValidationExpectation,
-  migrationRequirement: "sourcePrefix" | "upToDate" = "upToDate",
-  requiredCompanyId?: string,
+  options: {
+    deploymentMode: PaperclipConfig["server"]["deploymentMode"];
+    expected?: WorktreeSeedValidationExpectation;
+    migrationRequirement?: "sourcePrefix" | "upToDate";
+    requiredCompanyId?: string;
+  },
 ): Promise<{ summary: WorktreeSeedValidationSummary; expectation: WorktreeSeedValidationExpectation }> {
+  const {
+    deploymentMode,
+    expected,
+    migrationRequirement = "upToDate",
+    requiredCompanyId,
+  } = options;
+  const requiresCredentialAccount = requiresWorktreeSeedCredentialAccount(deploymentMode);
   const migrationState = await inspectMigrations(connectionString);
   const migrationRevision = resolveWorktreeSeedMigrationRevision(
     migrationState,
@@ -1577,13 +1593,9 @@ async function inspectVerifiedSeedDatabase(
         instanceUserRoles,
         and(eq(instanceUserRoles.userId, authUsers.id), eq(instanceUserRoles.role, "instance_admin")),
       )
-      .innerJoin(
+      .leftJoin(
         authAccounts,
-        and(
-          eq(authAccounts.userId, authUsers.id),
-          sql`length(trim(${authAccounts.providerId})) > 0`,
-          sql`length(trim(${authAccounts.accountId})) > 0`,
-        ),
+        eq(authAccounts.userId, authUsers.id),
       )
       .innerJoin(
         companyMemberships,
@@ -1596,12 +1608,20 @@ async function inspectVerifiedSeedDatabase(
       .where(and(
         expected ? eq(authUsers.id, expected.adminUserId) : undefined,
         requiredCompanyId ? eq(companyMemberships.companyId, requiredCompanyId) : undefined,
+        requiresCredentialAccount
+          ? and(
+              sql`length(trim(${authAccounts.providerId})) > 0`,
+              sql`length(trim(${authAccounts.accountId})) > 0`,
+            )
+          : undefined,
       ))
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!admin) {
       throw new Error(
-        "No auth user has a non-empty credential account, instance-admin role, and active company membership.",
+        requiresCredentialAccount
+          ? "No auth user has a non-empty credential account, instance-admin role, and active company membership. Authenticated worktree seeding requires a credential-backed instance administrator."
+          : "No auth user has an instance-admin role and active company membership for local-trusted worktree seeding.",
       );
     }
 
@@ -1635,7 +1655,7 @@ async function inspectVerifiedSeedDatabase(
     };
     if (
       summary.authUserCount < 1
-      || summary.credentialAccountCount < 1
+      || (requiresCredentialAccount && summary.credentialAccountCount < 1)
       || summary.instanceAdminCount < 1
       || summary.activeMembershipCount < 1
       || summary.companyCount < 1
@@ -1691,9 +1711,11 @@ async function seedWorktreeDatabase(input: {
     input.onPhase?.("source_validation", "started");
     const sourceValidation = await inspectVerifiedSeedDatabase(
       sourceConnectionString,
-      undefined,
-      "sourcePrefix",
-      input.expectedCompanyId,
+      {
+        deploymentMode: input.sourceConfig.server.deploymentMode,
+        migrationRequirement: "sourcePrefix",
+        requiredCompanyId: input.expectedCompanyId,
+      },
     );
     input.onPhase?.(
       "source_validation",
@@ -1762,7 +1784,10 @@ async function seedWorktreeDatabase(input: {
     input.onPhase?.("post_restore_validation", "started");
     const targetValidation = await inspectVerifiedSeedDatabase(
       targetConnectionString,
-      sourceValidation.expectation,
+      {
+        deploymentMode: input.targetConfig.server.deploymentMode,
+        expected: sourceValidation.expectation,
+      },
     );
     input.onPhase?.(
       "post_restore_validation",
@@ -1806,6 +1831,13 @@ export function formatWorktreeSeedFailureDiagnostic(
   }
   if (phase === "restore" && /Cannot seed target embedded PostgreSQL.+already running/i.test(message)) {
     return "Target embedded PostgreSQL is owned by a running worktree service. Stop that service and retry the seed.";
+  }
+  if (
+    /No auth user has a non-empty credential account, instance-admin role, and active company membership/i.test(
+      message,
+    )
+  ) {
+    return "Seed validation could not find a credential-backed instance administrator with an active company membership. Authenticated instances must create or sign in an administrator before seeding.";
   }
   return `Seed failed during ${phase}.`;
 }
