@@ -42,6 +42,23 @@ export function setExpensiveWorkspaceGitExecutor(executor: ExpensiveWorkspaceGit
 
 export const GIT_ARCHIVE_EXCLUDES = [".git", ".git/*"] as const;
 
+/**
+ * Identity flags for commits the sync machinery itself creates (the merge
+ * commits that reconcile concurrent histories). Execution hosts are often
+ * containers with no git config and no resolvable hostname, so git cannot
+ * auto-detect an identity there and `commit-tree` hard-fails with "Author
+ * identity unknown" — which fails the whole run at finalize. Passing the
+ * identity per invocation keeps every deployment working without host
+ * configuration; `GIT_AUTHOR_*` / `GIT_COMMITTER_*` environment variables
+ * still take precedence over `-c` when an operator sets them.
+ */
+export const GIT_SYNC_COMMIT_IDENTITY_ARGS = [
+  "-c",
+  "user.name=Paperclip",
+  "-c",
+  "user.email=noreply@paperclip.ing",
+] as const;
+
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
@@ -416,6 +433,51 @@ export function buildRemoteGitDeltaBundleScript(input: {
   ].filter(Boolean).join("\n");
 }
 
+/**
+ * Preserve imported work whose history does not connect to the local one.
+ *
+ * The dominant real-world cause is a history rewrite inside a transported
+ * workspace: transported clones are depth-1 shallow, so the boundary commit
+ * reads as parentless there and `git commit --amend` rewrites it into a root
+ * commit that shares no ancestor with the host history. A tree merge is
+ * impossible without a common ancestor, and failing the integration would
+ * discard the run's work. Instead, squash-graft the imported tree onto the
+ * current head as a single commit that reuses the imported head's message,
+ * with a trailer recording the graft. Concurrent local-only commits keep
+ * their place in history as the graft's ancestry; the imported tree is taken
+ * wholesale because no base exists to merge against. The caller advances the
+ * branch ref to the returned commit.
+ */
+export async function createUnrelatedHistoryGraftCommit(input: {
+  localDir: string;
+  currentHead: string;
+  importedHead: string;
+  syncLabel: string;
+}): Promise<string> {
+  const importedTree = (await runLocalGit(input.localDir, ["rev-parse", `${input.importedHead}^{tree}`], {
+    timeout: 10_000,
+    maxBuffer: 16 * 1024,
+  })).stdout.trim();
+  const importedMessage = (await runLocalGit(input.localDir, ["log", "-1", "--format=%B", input.importedHead], {
+    timeout: 10_000,
+    maxBuffer: 256 * 1024,
+  })).stdout;
+  const message = [
+    importedMessage.trim(),
+    "",
+    `(${input.syncLabel} graft ${input.importedHead.slice(0, 12)}: imported history shares no ancestor with ${input.currentHead.slice(0, 12)})`,
+  ].join("\n");
+  const graftCommit = await runLocalGit(
+    input.localDir,
+    [...GIT_SYNC_COMMIT_IDENTITY_ARGS, "commit-tree", importedTree, "-p", input.currentHead, "-m", message],
+    {
+      timeout: 60_000,
+      maxBuffer: 64 * 1024,
+    },
+  );
+  return graftCommit.stdout.trim();
+}
+
 export async function integrateImportedGitHead(input: {
   localDir: string;
   importedHead: string;
@@ -433,10 +495,18 @@ export async function integrateImportedGitHead(input: {
     if (!currentHead || currentHead === input.importedHead) return;
 
     const headRef = snapshot.branchName ? `refs/heads/${snapshot.branchName}` : "HEAD";
+    // `git merge-base` exits 1 when the commits share no ancestor — the only
+    // outcome that authorizes the graft fallback below. Every other failure
+    // (timeout, missing object, repository error) must keep failing the
+    // integration instead of silently rewriting the tip.
+    let noCommonAncestor = false;
     const mergeBase = await runLocalGit(input.localDir, ["merge-base", currentHead, input.importedHead], {
       timeout: 10_000,
       maxBuffer: 16 * 1024,
-    }).catch(() => null);
+    }).catch((error: unknown) => {
+      noCommonAncestor = (error as { code?: unknown } | null)?.code === 1;
+      return null;
+    });
     const mergeBaseHead = mergeBase?.stdout.trim() ?? "";
 
     if (mergeBaseHead === input.importedHead) {
@@ -446,6 +516,28 @@ export async function integrateImportedGitHead(input: {
     if (mergeBaseHead === currentHead) {
       try {
         await runLocalGit(input.localDir, ["update-ref", headRef, input.importedHead, currentHead], {
+          timeout: 10_000,
+          maxBuffer: 16 * 1024,
+        });
+        return;
+      } catch (error) {
+        if (isConcurrentRefUpdateError(error) && attempt < 4) continue;
+        throw error;
+      }
+    }
+
+    if (noCommonAncestor) {
+      // No common ancestor — merging is impossible and failing here would
+      // discard the imported work. Graft it onto the current head instead;
+      // see createUnrelatedHistoryGraftCommit.
+      const graftCommit = await createUnrelatedHistoryGraftCommit({
+        localDir: input.localDir,
+        currentHead,
+        importedHead: input.importedHead,
+        syncLabel: "Paperclip remote git sync",
+      });
+      try {
+        await runLocalGit(input.localDir, ["update-ref", headRef, graftCommit, currentHead], {
           timeout: 10_000,
           maxBuffer: 16 * 1024,
         });
@@ -476,6 +568,7 @@ export async function integrateImportedGitHead(input: {
     const mergeCommit = await runLocalGit(
       input.localDir,
       [
+        ...GIT_SYNC_COMMIT_IDENTITY_ARGS,
         "commit-tree",
         mergedTreeId,
         "-p",

@@ -112,6 +112,7 @@ import {
   environmentCustomImageTerminalSessionTokenSchema,
   environmentCustomImageTemplateSchema,
   finishEnvironmentCustomImageSetupSessionSchema,
+  relinkEnvironmentCustomImageTemplateSchema,
   updateEnvironmentSchema,
   probeEnvironmentConfigSchema,
   startEnvironmentCustomImageSetupSessionSchema,
@@ -633,6 +634,11 @@ const environmentCustomImageSetupSessionFinishResultSchema =
 const environmentCustomImageTemplateRollbackResultSchema = z.object({
   activeTemplate: environmentCustomImageTemplateSchema,
   supersededTemplate: environmentCustomImageTemplateSchema,
+}).strict();
+
+const environmentCustomImageTemplateRelinkResultSchema = z.object({
+  template: environmentCustomImageTemplateSchema,
+  classification: z.enum(["knob_only", "boot_source_drift", "unclassified"]),
 }).strict();
 
 const workTimelineQuerySchema = z.object({
@@ -1698,6 +1704,7 @@ registry.registerPath({
 
 const AgentSecretListResponseSchema = z.object({
   secrets: z.array(z.object({
+    secretRef: z.string().uuid(),
     key: z.string(),
     name: z.string(),
     description: z.string().nullable(),
@@ -1720,12 +1727,24 @@ const createAgentSecretProposalSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("binding"),
     secretId: z.string().uuid().optional(),
+    sourceConfigPath: z.string().min(1).optional(),
     secretProposalId: z.string().uuid().optional(),
     targetAgentId: z.string().uuid().optional(),
     configPath: z.string().min(1),
     justification: z.string().min(1),
   }),
-]);
+]).superRefine((value, ctx) => {
+  if (
+    value.kind === "binding"
+    && [value.secretId, value.sourceConfigPath, value.secretProposalId]
+      .filter((reference) => Boolean(reference)).length !== 1
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide exactly one of secretId, sourceConfigPath, or secretProposalId",
+    });
+  }
+});
 
 const approveSecretProposalSchema = z.object({
   cascade: z.boolean().optional(),
@@ -5569,6 +5588,26 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/environments/{environmentId}/custom-image-template/relink",
+  tags: ["environments"],
+  summary: "Relink a detached environment customImage template to the current config",
+  request: {
+    params: z.object({ environmentId: z.string() }),
+    query: environmentCustomImageCompanyQuerySchema,
+    body: jsonBody(relinkEnvironmentCustomImageTemplateSchema),
+  },
+  responses: {
+    200: r.ok(environmentCustomImageTemplateRelinkResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
   },
 });
 

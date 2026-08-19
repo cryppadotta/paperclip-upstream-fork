@@ -1186,6 +1186,17 @@ export interface RequestConfirmationToolActionPayload {
   expiresAt: string;
 }
 
+export interface RequestConfirmationSecretProposalPayload {
+  version: 1;
+  proposalId: string;
+  sourceSecretLabel: string;
+  configPath: string;
+  targetAgentId: string;
+  targetAgentName: string;
+  justification: string;
+  expiresAt: string;
+}
+
 /**
  * Lifecycle status written back onto the resolved interaction once the operator
  * approves. `approve = run`, so the terminal states are executed/failed/expired —
@@ -1198,6 +1209,13 @@ export interface RequestConfirmationToolActionResult {
   errorMessage?: string | null;
   resultSummary?: string | null;
   resultHref?: string | null;
+  updatedAt: string;
+}
+
+export interface RequestConfirmationSecretProposalResult {
+  version: 1;
+  status: "executed" | "failed" | "rejected" | "withdrawn" | "expired";
+  errorCode?: string | null;
   updatedAt: string;
 }
 
@@ -1214,6 +1232,7 @@ export interface RequestConfirmationPayload {
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
+  secretProposal?: RequestConfirmationSecretProposalPayload;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1290,6 +1309,7 @@ export interface RequestConfirmationResult {
     updatedAt?: string | null;
   } | null;
   toolAction?: RequestConfirmationToolActionResult;
+  secretProposal?: RequestConfirmationSecretProposalResult;
 }
 
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {

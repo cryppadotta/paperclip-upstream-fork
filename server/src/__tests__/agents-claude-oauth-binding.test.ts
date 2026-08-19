@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   claudeSetupTokenSessions,
   companies,
@@ -219,6 +220,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
     await db.delete(companySecrets);

@@ -913,6 +913,17 @@ export const requestConfirmationToolActionPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationSecretProposalPayloadSchema = z.object({
+  version: z.literal(1),
+  proposalId: z.string().uuid(),
+  sourceSecretLabel: z.string().trim().min(1).max(500),
+  configPath: z.string().trim().min(1).max(500),
+  targetAgentId: z.string().uuid(),
+  targetAgentName: z.string().trim().min(1).max(500),
+  justification: z.string().trim().min(1).max(20000),
+  expiresAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -926,6 +937,7 @@ export const requestConfirmationPayloadSchema = z.object({
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
+  secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
@@ -1052,6 +1064,13 @@ export const requestConfirmationToolActionResultSchema = z.object({
   updatedAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationSecretProposalResultSchema = z.object({
+  version: z.literal(1),
+  status: z.enum(["executed", "failed", "rejected", "withdrawn", "expired"]),
+  errorCode: z.string().trim().min(1).max(120).nullable().optional(),
+  updatedAt: z.string().datetime({ offset: true }),
+});
+
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
   outcome: z.enum([
@@ -1070,6 +1089,7 @@ export const requestConfirmationResultSchema = z.object({
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
   resumeFailure: requestConfirmationResumeFailureSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionResultSchema.optional(),
+  secretProposal: requestConfirmationSecretProposalResultSchema.optional(),
 });
 
 export const requestCheckboxConfirmationResultSchema = requestConfirmationResultSchema.extend({

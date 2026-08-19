@@ -26,7 +26,12 @@ import {
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { syncAgentAdapterEnvBindings } from "./agent-secret-bindings.js";
+import {
+  collectSecretRefs,
+  collectUserSecretRefs,
+  syncAgentAdapterEnvBindings,
+} from "./agent-secret-bindings.js";
+import { logActivity } from "./activity-log.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -466,6 +471,8 @@ export function agentService(db: Db) {
   async function syncAgentSecretBindings(
     agent: { id: string; companyId: string; adapterConfig: unknown },
     dbClient: Db = db,
+    previousAdapterConfig: unknown = null,
+    actor: RevisionMetadata = {},
   ) {
     const scopedSecretsSvc = dbClient === db ? secretsSvc : secretService(dbClient);
     await syncAgentAdapterEnvBindings({
@@ -474,6 +481,47 @@ export function agentService(db: Db) {
       agentId: agent.id,
       adapterConfig: agent.adapterConfig,
     });
+    const previousRefs = new Set([
+      ...collectSecretRefs(previousAdapterConfig).map((ref) => `secret:${ref.secretId}:${ref.configPath}`),
+      ...collectUserSecretRefs(previousAdapterConfig).map((ref) => `user:${ref.definitionKey}:${ref.configPath}`),
+    ]);
+    const createdRefs = [
+      ...collectSecretRefs(agent.adapterConfig).map((ref) => ({
+        key: `secret:${ref.secretId}:${ref.configPath}`,
+        configPath: ref.configPath,
+        bindingType: "secret_ref",
+        secretId: ref.secretId,
+        definitionKey: null,
+      })),
+      ...collectUserSecretRefs(agent.adapterConfig).map((ref) => ({
+        key: `user:${ref.definitionKey}:${ref.configPath}`,
+        configPath: ref.configPath,
+        bindingType: "user_secret_ref",
+        secretId: null,
+        definitionKey: ref.definitionKey,
+      })),
+    ].filter((ref) => !previousRefs.has(ref.key));
+    const actorType = actor.createdByUserId ? "user" as const : actor.createdByAgentId ? "agent" as const : "system" as const;
+    const actorId = actor.createdByUserId ?? actor.createdByAgentId ?? "system";
+    for (const ref of createdRefs) {
+      await logActivity(dbClient, {
+        companyId: agent.companyId,
+        actorType,
+        actorId,
+        agentId: actor.createdByAgentId ?? null,
+        action: "secret.binding.created",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          targetType: "agent",
+          targetId: agent.id,
+          configPath: ref.configPath,
+          bindingType: ref.bindingType,
+          secretId: ref.secretId,
+          definitionKey: ref.definitionKey,
+        },
+      });
+    }
   }
 
   /**
@@ -667,7 +715,12 @@ export function agentService(db: Db) {
             claudeLogin: options?.claudeLogin,
           });
         }
-        await syncAgentSecretBindings(updated, txDb);
+        await syncAgentSecretBindings(
+          updated,
+          txDb,
+          existing.adapterConfig,
+          options?.recordRevision,
+        );
       }
 
       const normalizedUpdated = await agentService(txDb).getById(updated.id);
@@ -972,7 +1025,7 @@ export function agentService(db: Db) {
             environmentId: null,
           });
         }
-        await syncAgentSecretBindings(updated, txDb);
+        await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
         const agent = await agentService(txDb).getById(updated.id);
         if (!agent) {
           throw notFound("Agent not found");
