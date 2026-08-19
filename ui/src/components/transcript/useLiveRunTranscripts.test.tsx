@@ -63,6 +63,11 @@ class FakeWebSocket {
     this.readyState = FakeWebSocket.OPEN;
     this.onopen?.(new Event("open"));
   }
+
+  triggerClose() {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.(new CloseEvent("close"));
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -222,6 +227,42 @@ describe("useLiveRunTranscripts", () => {
     });
 
     expect(logMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("does not request persisted logs until a queued run starts", async () => {
+    function Harness({ status }: { status: "queued" | "running" }) {
+      useLiveRunTranscripts({
+        companyId: "company-1",
+        runs: [{ id: "run-queued", status, adapterType: "codex_local" }],
+      });
+      return null;
+    }
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(<Harness status="queued" />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).not.toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    await act(async () => {
+      root.render(<Harness status="running" />);
+      await Promise.resolve();
+    });
+
+    expect(logMock).toHaveBeenCalledTimes(1);
+    expect(logMock).toHaveBeenCalledWith("run-queued", 0, 256_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
 
     act(() => {
       root.unmount();
@@ -614,6 +655,93 @@ describe("useLiveRunTranscripts", () => {
         await Promise.resolve();
       });
       expect(captured.value?.transcriptByRun.get("run-1") ?? []).toHaveLength(0);
+
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off exponentially when the live event socket keeps failing", async () => {
+    vi.useFakeTimers();
+    try {
+      function Harness({ lastOutputBytes }: { lastOutputBytes?: number }) {
+        useLiveRunTranscripts({
+          companyId: "company-1",
+          runs: [{ id: "run-1", status: "running", adapterType: "codex_local", lastOutputBytes }],
+        });
+        return null;
+      }
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+
+      await act(async () => {
+        root.render(<Harness />);
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      // Cold backend: every handshake fails. Delays must grow 1.5s → 3s → 6s
+      // instead of hammering a flat interval.
+      await act(async () => {
+        FakeWebSocket.instances[0].triggerClose();
+        await vi.advanceTimersByTimeAsync(1_499);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(2);
+
+      await act(async () => {
+        FakeWebSocket.instances[1].triggerClose();
+        await vi.advanceTimersByTimeAsync(2_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(3);
+
+      await act(async () => {
+        FakeWebSocket.instances[2].triggerClose();
+        await vi.advanceTimersByTimeAsync(5_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(3);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(4);
+
+      // Run-metadata changes restart the socket effect; the progressed delay
+      // must survive the restart instead of resetting to the base delay.
+      await act(async () => {
+        root.render(<Harness lastOutputBytes={512} />);
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      await act(async () => {
+        FakeWebSocket.instances[4].triggerClose();
+        await vi.advanceTimersByTimeAsync(11_999);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(5);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(6);
+
+      // A successful connection resets the backoff to the base delay.
+      await act(async () => {
+        FakeWebSocket.instances[5].triggerOpen();
+        FakeWebSocket.instances[5].triggerClose();
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+      expect(FakeWebSocket.instances).toHaveLength(7);
 
       act(() => {
         root.unmount();

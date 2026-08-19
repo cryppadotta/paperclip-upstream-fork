@@ -1,4 +1,13 @@
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { Loader2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
@@ -34,7 +43,8 @@ import { useAppsEnabled } from "../hooks/useAppsEnabled";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import { useOptionalToastActions } from "../context/ToastContext";
 import {
   applyMainContentScrollTop,
   NavigationScrollMemory,
@@ -95,6 +105,8 @@ export function Layout() {
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
   const { togglePanelVisible } = usePanel();
+  // Optional: Layout also renders in harnesses without a ToastProvider.
+  const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
     companies,
     loading: companiesLoading,
@@ -241,6 +253,27 @@ export function Layout() {
       return;
     }
 
+    // Stale state (remembered paths, history, bookmarks, restored tabs)
+    // deposits users into archived companies long after archiving; a cold
+    // arrival bounces to an active company instead of dwelling there.
+    // Deliberate visits (the company is already the selection) stay put.
+    const bounce = resolveArchivedCompanyBounce({
+      matchedCompany,
+      selectedCompanyId,
+      companies,
+    });
+    if (bounce) {
+      pushToast?.({
+        title: `${matchedCompany.name} is archived`,
+        body: `Switched to ${bounce.name}.`,
+        tone: "info",
+        dedupeKey: `archived-company-bounce:${matchedCompany.id}`,
+      });
+      setSelectedCompanyId(bounce.id, { source: "route_sync" });
+      navigate(`/${bounce.issuePrefix}/dashboard`, { replace: true });
+      return;
+    }
+
     if (
       shouldSyncCompanySelectionFromRoute({
         selectionSource,
@@ -258,6 +291,7 @@ export function Layout() {
     location.pathname,
     location.search,
     navigate,
+    pushToast,
     selectionSource,
     selectedCompanyId,
     setSelectedCompanyId,
@@ -638,6 +672,20 @@ export function Layout() {
               id="main-content"
               ref={mainContentRef}
               tabIndex={-1}
+              // Publish the pinned-composer bottom offset to descendants
+              // (PAP-495): while the auto-hiding mobile nav is on screen, raise
+              // it to the nav height so a sticky composer clears the nav; drop
+              // it back to the safe-area dock when the nav hides. Desktop leaves
+              // the token at its :root default.
+              style={
+                isMobile
+                  ? ({
+                      "--tc-composer-bottom": mobileNavVisible
+                        ? "var(--sz-calc-14)"
+                        : "var(--sz-calc-8)",
+                    } as CSSProperties)
+                  : undefined
+              }
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
                 // Reserve the scrollbar gutter on desktop so pages whose height

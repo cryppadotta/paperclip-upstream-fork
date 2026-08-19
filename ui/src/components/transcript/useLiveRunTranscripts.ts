@@ -72,6 +72,10 @@ function isTerminalStatus(status: string): boolean {
   return status === "failed" || status === "timed_out" || status === "cancelled" || status === "interrupted" || status === "succeeded";
 }
 
+function canReadPersistedLog(run: RunTranscriptSource): boolean {
+  return run.status === "running" || isTerminalStatus(run.status);
+}
+
 function runKnownLogBytes(run: RunTranscriptSource): number | null {
   const bytes = run.status === "queued"
     ? run.logBytes
@@ -132,6 +136,10 @@ export function useLiveRunTranscripts({
   // the effect again once the nearest deadline elapses so a run that stays gone
   // is eventually cleaned up even if the `runs` list never changes again.
   const absenceDeadlineByRunRef = useRef(new Map<string, number>());
+  // Backoff state for the live event socket. Held outside the socket effect
+  // because that effect restarts on run-metadata changes; per-effect state
+  // would reset a progressed delay back to its base mid-outage.
+  const reconnectStateRef = useRef<{ companyId: string; attempt: number } | null>(null);
   const prevKnownRunIdsRef = useRef(new Set<string>());
   const [pruneTick, setPruneTick] = useState(0);
   const transcriptCacheRef = useRef(new Map<string, {
@@ -153,7 +161,7 @@ export function useLiveRunTranscripts({
 
   const runById = useMemo(() => new Map(normalizedRuns.map((run) => [run.id, run])), [normalizedRuns]);
   const activeRunIds = useMemo(
-    () => new Set(normalizedRuns.filter((run) => !isTerminalStatus(run.status)).map((run) => run.id)),
+    () => new Set(normalizedRuns.filter((run) => run.status === "running").map((run) => run.id)),
     [normalizedRuns],
   );
   const runIdsKey = useMemo(
@@ -272,7 +280,8 @@ export function useLiveRunTranscripts({
   }, [normalizedRuns, pruneTick]);
 
   useEffect(() => {
-    if (normalizedRuns.length === 0) return;
+    const readableRuns = normalizedRuns.filter(canReadPersistedLog);
+    if (readableRuns.length === 0) return;
 
     let cancelled = false;
 
@@ -311,11 +320,11 @@ export function useLiveRunTranscripts({
     };
 
     const readAll = async () => {
-      await Promise.all(normalizedRuns.map((run) => readRunLog(run)));
+      await Promise.all(readableRuns.map((run) => readRunLog(run)));
     };
 
     void readAll();
-    const activeRuns = normalizedRuns.filter((run) => !isTerminalStatus(run.status));
+    const activeRuns = readableRuns.filter((run) => run.status === "running");
     // The realtime websocket is the primary live source when enabled, so the
     // recurring poll only needs to run as a slow fallback rather than doubling
     // the live update work every couple of seconds.
@@ -342,9 +351,23 @@ export function useLiveRunTranscripts({
     let reconnectTimer: number | null = null;
     let socket: WebSocket | null = null;
 
+    // The attempt counter lives in a ref keyed to the company: this effect
+    // restarts whenever run metadata changes, and a per-effect counter would
+    // reset the backoff to its base delay mid-outage on every such restart.
+    if (reconnectStateRef.current?.companyId !== companyId) {
+      reconnectStateRef.current = { companyId, attempt: 0 };
+    }
+    const reconnectState = reconnectStateRef.current;
+
+    // Exponential backoff (1.5s → 15s cap), mirroring LiveUpdatesProvider.
+    // A flat retry hammers a backend that is still cold-starting — every
+    // failed handshake immediately queues the next one, so a stack that
+    // takes a minute to come up sees a steady stream of doomed connections.
     const scheduleReconnect = () => {
       if (closed) return;
-      reconnectTimer = window.setTimeout(connect, 1500);
+      reconnectState.attempt += 1;
+      const delayMs = Math.min(15_000, 1_500 * 2 ** Math.min(reconnectState.attempt - 1, 4));
+      reconnectTimer = window.setTimeout(connect, delayMs);
     };
 
     const connect = () => {
@@ -353,6 +376,11 @@ export function useLiveRunTranscripts({
         `/api/companies/${encodeURIComponent(companyId)}/events/ws`,
       );
       socket = new WebSocket(url);
+
+      socket.onopen = () => {
+        if (closed) return;
+        reconnectState.attempt = 0;
+      };
 
       socket.onmessage = (message) => {
         const raw = typeof message.data === "string" ? message.data : "";
@@ -490,7 +518,7 @@ export function useLiveRunTranscripts({
 
   return {
     transcriptByRun,
-    isInitialHydrating: normalizedRuns.some((run) => !hydratedRunIds.has(run.id)),
+    isInitialHydrating: normalizedRuns.some((run) => canReadPersistedLog(run) && !hydratedRunIds.has(run.id)),
     hasOutputForRun(runId: string) {
       return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;
     },
