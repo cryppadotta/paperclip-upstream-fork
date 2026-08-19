@@ -196,9 +196,9 @@ describe("evaluateWorktreeSeedSourceReadiness", () => {
     });
   });
 
-  it("rejects a registered primary workspace contaminated by a pcvt- worktree test (PAP-17625)", async () => {
+  it("rejects a registered primary workspace contaminated by a pcvt- worktree test", async () => {
     const root = makeRoot("pcvt");
-    // Exactly the shape PAP-17625 measured: `paperclip configure` inside a virtualized
+    // Reproduce the observed shape: `paperclip configure` inside a virtualized
     // test run rewrote the shared checkout's config to point at its own scratch tree.
     const contaminated = path.join(
       root,

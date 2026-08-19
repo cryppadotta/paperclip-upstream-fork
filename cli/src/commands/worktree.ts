@@ -1588,8 +1588,8 @@ async function inspectVerifiedSeedDatabase(
  * Reject a contaminated or absent seed source before the seed touches it.
  *
  * A managed source is a registered primary project workspace, so it must name durable
- * host state; PAP-17625 measured one whose config had been overwritten by a `pcvt-`
- * test run and pointed at a deleted instance for 13 days. Failing here turns that into
+ * host state. A config overwritten by a `pcvt-` test run can point at a deleted
+ * instance. Failing here turns that into
  * a named, actionable preflight failure instead of an opaque snapshot error.
  */
 export async function preflightWorktreeSeedSource(input: {

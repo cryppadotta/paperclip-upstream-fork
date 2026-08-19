@@ -435,7 +435,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
       // Source identity resolves, so check that the source it names is actually usable
       // before any operation or service mutation. A registered primary workspace whose
       // config points at deleted or transient worktree state fails here with a stable
-      // reason instead of as an opaque reseed failure (PAP-17625 / PAP-17628).
+      // reason instead of as an opaque reseed failure.
       const sourceReadiness = await evaluateWorktreeSeedSourceReadiness({
         sourceConfigPath: repairSeedSource.configPath,
         registeredPrimaryWorkspace: true,

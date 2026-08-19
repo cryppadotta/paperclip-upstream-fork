@@ -570,7 +570,7 @@ describe.sequential("execution workspace runtime control conflict and failure re
 
   it("returns 422 when the registered source carries pcvt- worktree identity", async () => {
     const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-route-repair-pcvt-scratch-"));
-    // PAP-17625: a virtualized test run rewrote the shared checkout's config to point at
+    // A virtualized test run rewrote the shared checkout's config to point at
     // its own `pcvt-` tree under another instance, and the tree is long gone.
     const fixture = createRegisteredRepairFixture("paperclip-route-repair-pcvt-", {
       sourceInstanceRoot: path.join(

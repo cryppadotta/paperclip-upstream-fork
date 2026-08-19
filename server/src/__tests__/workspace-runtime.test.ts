@@ -4024,10 +4024,14 @@ describe("ensureRuntimeServicesForRun", () => {
       "PAPERCLIP_INSTANCE_ID=\"default\"\n",
       "utf8",
     );
-    const config = runtimeProvisionTestConfig({
-      provisionCommand: "bash ./scripts/provision-worktree-runtime.sh",
-    });
-    const workspace = buildWorkspace(workspaceRoot);
+    await fs.writeFile(path.join(configDir, "seed-pending"), "{}\n", "utf8");
+    const config = runtimeProvisionTestConfig({});
+    const workspace = {
+      ...buildWorkspace(workspaceRoot),
+      source: "task_session" as const,
+      strategy: "git_worktree" as const,
+      worktreePath: workspaceRoot,
+    };
     const { recorder, operations } = createWorkspaceOperationRecorderDouble();
 
     try {

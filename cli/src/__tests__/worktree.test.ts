@@ -691,7 +691,7 @@ describe("worktree helpers", () => {
       const baseRoot = path.join(tempRoot, "base");
       const sourceConfigPath = path.join(baseRoot, ".paperclip", "config.json");
       const liveInstanceRoot = path.join(tempRoot, "home", "instances", "default");
-      // PAP-17625: a `pcvt-` test run pointed the shared checkout at its own scratch tree.
+      // A `pcvt-` test run pointed the shared checkout at its own scratch tree.
       const contaminatedInstanceRoot = path.join(
         tempRoot,
         ".p16582",

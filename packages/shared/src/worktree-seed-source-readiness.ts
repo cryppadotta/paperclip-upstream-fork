@@ -92,7 +92,7 @@ const DATA_DIR_DETAIL_COPY: Record<string, string> = {
 /**
  * Path segments that only a transient worktree or virtualized test run creates.
  * A registered primary workspace that points through one of these is pointing at
- * state that a `pcvt-` run is free to delete (PAP-17625).
+ * state that a `pcvt-` run is free to delete.
  *
  * The sanctioned worktree home is exactly `~/.paperclip-worktrees`, so it carries no
  * marker: a control plane that legitimately runs from a worktree stays provisionable.

@@ -2879,7 +2879,7 @@ async function recordGitOperation(
  * The seed clones the registered base project workspace's database, so a base config
  * that points at deleted or transient worktree state can only fail deep inside the
  * seed. Checking first turns that into a terminal `workspace_seed` operation whose
- * metadata names the preflight phase, a stable reason and the remediation (PAP-17628).
+ * metadata names the preflight phase, a stable reason and the remediation.
  *
  * A base workspace with no Paperclip config is left alone: nothing is registered to
  * validate, and the seed command itself owns that error.
