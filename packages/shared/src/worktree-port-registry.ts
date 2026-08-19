@@ -16,6 +16,8 @@ const WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE = "owner.json";
 const WORKTREE_PORT_REGISTRY_LOCK_STALE_MS = 5_000;
 const WORKTREE_PORT_REGISTRY_LOCK_TIMEOUT_MS = 10_000;
 const WORKTREE_PORT_REGISTRY_LOCK_HEARTBEAT_MS = 1_000;
+const WORKTREE_PORT_REGISTRY_LOCK_FENCE_MS =
+  WORKTREE_PORT_REGISTRY_LOCK_STALE_MS - WORKTREE_PORT_REGISTRY_LOCK_HEARTBEAT_MS;
 const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 type RegistryLockOwner = {
@@ -53,12 +55,30 @@ function touchOwnedLock() {
     return "retry";
   }
 }
-if (touchOwnedLock() !== "lost") {
+function fenceOwner() {
+  try {
+    process.kill(workerData.ownerPid, "SIGKILL");
+  } finally {
+    process.exit(1);
+  }
+}
+let lastRefreshAt = Date.now();
+const initialResult = touchOwnedLock();
+if (initialResult === "lost") {
+  fenceOwner();
+} else {
+  if (initialResult === "refreshed") lastRefreshAt = Date.now();
   Atomics.store(control, 0, 1);
   Atomics.notify(control, 0);
   while (Atomics.load(control, 1) === 0) {
     Atomics.wait(control, 1, 0, workerData.heartbeatMs);
-    if (Atomics.load(control, 1) !== 0 || touchOwnedLock() === "lost") break;
+    if (Atomics.load(control, 1) !== 0) break;
+    const result = touchOwnedLock();
+    if (result === "refreshed") {
+      lastRefreshAt = Date.now();
+    } else if (result === "lost" || Date.now() - lastRefreshAt >= workerData.fenceMs) {
+      fenceOwner();
+    }
   }
 }
 Atomics.store(control, 0, 2);
@@ -144,7 +164,7 @@ function removeStaleRegistryLock(lockPath: string): boolean {
     const owner = readRegistryLockOwner(lockPath);
     if (owner && isProcessAlive(owner.pid)) {
       const currentIdentity = readProcessIdentity(owner.pid);
-      if (!currentIdentity || owner.processIdentity === currentIdentity) return false;
+      if (owner.processIdentity === currentIdentity) return false;
     }
     const currentOwner = readRegistryLockOwner(lockPath);
     if (owner ? currentOwner?.token !== owner.token : currentOwner !== null) return false;
@@ -161,10 +181,13 @@ function startRegistryLockHeartbeat(lockPath: string, token: string): RegistryLo
   const control = new Int32Array(new SharedArrayBuffer(8));
   const worker = new Worker(REGISTRY_LOCK_HEARTBEAT_SOURCE, {
     eval: true,
+    execArgv: [],
     workerData: {
       control: control.buffer,
+      fenceMs: WORKTREE_PORT_REGISTRY_LOCK_FENCE_MS,
       heartbeatMs: WORKTREE_PORT_REGISTRY_LOCK_HEARTBEAT_MS,
       lockPath,
+      ownerPid: process.pid,
       ownerFile: WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE,
       token,
     },
