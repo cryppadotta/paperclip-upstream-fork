@@ -141,8 +141,9 @@ export function readPaperclipEnvPointer(configPath: string): PaperclipEnvPointer
   };
 }
 
-function resolveConfiguredPath(rawValue: string): string {
-  return path.resolve(expandHomePrefix(rawValue.trim()));
+function resolveConfiguredPath(rawValue: string, configDir: string): string {
+  const expanded = expandHomePrefix(rawValue.trim());
+  return path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(configDir, expanded);
 }
 
 function pathSegments(resolved: string): string[] {
@@ -330,6 +331,7 @@ export async function evaluateWorktreeSeedSourceReadiness(
   const probeTcp: WorktreeSeedSourceProbe = input.probeTcp
     ?? ((target) => defaultProbeTcp(target, probeTimeoutMs));
   const sourceConfigPath = path.resolve(input.sourceConfigPath);
+  const sourceConfigDir = path.dirname(sourceConfigPath);
 
   const configInvalid = (detail: string, sourceInstanceId: string | null = null) => finalize({
     findings: [{
@@ -384,7 +386,7 @@ export async function evaluateWorktreeSeedSourceReadiness(
   ]) {
     const rawValue = readStringField(config, configKey);
     if (!rawValue) continue;
-    watched.push({ configKey, resolved: resolveConfiguredPath(rawValue) });
+    watched.push({ configKey, resolved: resolveConfiguredPath(rawValue, sourceConfigDir) });
   }
 
   const expectedInstanceId = safeIdentifier(input.expectedSourceInstanceId);
@@ -400,7 +402,9 @@ export async function evaluateWorktreeSeedSourceReadiness(
 
   const identityRemediation =
     `Re-point the flagged keys at instance ${quotedIdentifier(sourceInstanceId)} with \`paperclip configure\` in the registered base workspace (or re-register the workspace that owns the other instance), then retry.`;
-  const pointerConfigPath = pointer.configPath ? resolveConfiguredPath(pointer.configPath) : null;
+  const pointerConfigPath = pointer.configPath
+    ? resolveConfiguredPath(pointer.configPath, sourceConfigDir)
+    : null;
   if (pointerConfigPath && sourceInstanceId) {
     const pointerInstanceId = instanceIdFromPath(pointerConfigPath);
     if (pointerInstanceId && pointerInstanceId !== sourceInstanceId) {
@@ -429,7 +433,9 @@ export async function evaluateWorktreeSeedSourceReadiness(
     const sourcePathSegments = new Set(pathSegments(path.dirname(sourceConfigPath)));
     const identityPaths: Array<{ configKey: string; resolved: string }> = [
       ...watched.map((entry) => ({ configKey: entry.configKey, resolved: entry.resolved })),
-      ...(pointer.home ? [{ configKey: ".env PAPERCLIP_HOME", resolved: resolveConfiguredPath(pointer.home) }] : []),
+      ...(pointer.home
+        ? [{ configKey: ".env PAPERCLIP_HOME", resolved: resolveConfiguredPath(pointer.home, sourceConfigDir) }]
+        : []),
       ...(pointerConfigPath ? [{ configKey: ".env PAPERCLIP_CONFIG", resolved: pointerConfigPath }] : []),
     ];
     for (const entry of identityPaths) {
@@ -457,7 +463,7 @@ export async function evaluateWorktreeSeedSourceReadiness(
         remediation: DOCTOR_REMEDIATION,
       });
     } else {
-      const dataDir = resolveConfiguredPath(dataDirRaw);
+      const dataDir = resolveConfiguredPath(dataDirRaw, sourceConfigDir);
       const kind = statKind(dataDir);
       const dataDirDetail = kind === "missing"
         ? "missing"

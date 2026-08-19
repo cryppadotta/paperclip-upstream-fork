@@ -115,6 +115,29 @@ describe("evaluateWorktreeSeedSourceReadiness", () => {
     })).resolves.toMatchObject({ ok: true, databaseState: "reachable" });
   });
 
+  it("resolves relative persistent-state paths from the source config directory", async () => {
+    const source = writeSource({ root: makeRoot("relative-paths"), instanceId: "default" });
+    const configDir = path.dirname(source.configPath);
+    const config = JSON.parse(fs.readFileSync(source.configPath, "utf8")) as {
+      database: { embeddedPostgresDataDir: string; backup: { dir: string } };
+      logging: { logDir: string };
+      storage: { localDisk: { baseDir: string } };
+      secrets: { localEncrypted: { keyFilePath: string } };
+    };
+    config.database.embeddedPostgresDataDir = path.relative(configDir, source.dataDir);
+    config.database.backup.dir = path.relative(configDir, path.join(source.instanceRoot, "data", "backups"));
+    config.logging.logDir = path.relative(configDir, path.join(source.instanceRoot, "logs"));
+    config.storage.localDisk.baseDir = path.relative(configDir, path.join(source.instanceRoot, "data", "storage"));
+    config.secrets.localEncrypted.keyFilePath = path.relative(configDir, path.join(source.instanceRoot, "secrets", "master.key"));
+    fs.writeFileSync(source.configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await expect(evaluateWorktreeSeedSourceReadiness({
+      sourceConfigPath: source.configPath,
+      registeredPrimaryWorkspace: true,
+      probeTcp: closedPort,
+    })).resolves.toMatchObject({ ok: true, findings: [], databaseState: "stopped" });
+  });
+
   it("rejects a deleted embedded data directory", async () => {
     const root = makeRoot("deleted-datadir");
     const source = writeSource({ root, instanceId: "default" });
