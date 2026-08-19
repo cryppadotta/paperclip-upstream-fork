@@ -931,6 +931,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, coderId));
     expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.payload).not.toHaveProperty("modelProfile");
   });
 
   it("treats open recovery issues as active waiting paths for non-assigned-backlog states", async () => {

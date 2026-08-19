@@ -5042,7 +5042,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceIssueId: issue.id,
           recoveryIssueId: recoveryIssue.id,
           incidentKey: input.finding.incidentKey,
-        }),
+        }, "normal_model"),
         requestedByActorType: "system",
         requestedByActorId: null,
         contextSnapshot: withRecoveryModelProfileHint({
@@ -5053,7 +5053,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           sourceIssueId: issue.id,
           recoveryIssueId: recoveryIssue.id,
           incidentKey: input.finding.incidentKey,
-        }),
+        }, "normal_model"),
       });
 
       return { kind: "skipped" as const };
