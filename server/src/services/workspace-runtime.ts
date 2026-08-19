@@ -36,6 +36,16 @@ import { and, desc, eq, gte, inArray, isNull, lte, ne, or } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict } from "../errors.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
+import { hasVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
+import {
+  buildManagedWorkspaceGuestEnv,
+  logManagedWorkspaceReadinessRejection,
+  probeManagedWorkspaceHandoffSubjects,
+  probeManagedWorkspaceReadiness,
+  resolveManagedWorkspaceIdentity,
+  shouldBlockPublicationOnReadiness,
+  waitForManagedWorkspaceReadiness,
+} from "./managed-workspace-identity.js";
 import {
   createLocalServiceKey,
   findLocalServiceRegistryRecordByRuntimeServiceId,
@@ -4728,14 +4738,74 @@ function resolveRuntimeServiceHealthUrl(
   return url;
 }
 
+type RuntimeServiceHealthProbeInput = {
+  db?: Db;
+  serviceName?: string | null;
+  command?: string | null;
+  provider?: string | null;
+  port?: number | null;
+  /**
+   * Workspace identity, when the caller knows it. Supplying all three upgrades
+   * the probe from "the port answered with status ok" to the full protected
+   * readiness contract, which is what stops a relocated port or a half-restored
+   * clone from masquerading as healthy (PAP-17572).
+   */
+  cwd?: string | null;
+  executionWorkspaceId?: string | null;
+  companyId?: string | null;
+};
+
+/**
+ * Whether a managed workspace runtime satisfies the *user* readiness contract.
+ *
+ * Returns null when this service is not an identity-resolvable managed workspace
+ * runtime, so non-workspace services keep their existing behavior.
+ *
+ * For a workspace runtime this *replaces* the semantic transport check rather
+ * than adding to it. The probe reads the same `/api/health` response the legacy
+ * check read, so every legacy verdict is already implied: reaching
+ * `readiness_missing` means the response was `200` with `status: ok` (exactly
+ * what the legacy check asserted), and every other rejection means it was not.
+ * Stacking a second request on top would double the latency of every reuse
+ * decision for no extra information.
+ */
+async function probeManagedWorkspaceRuntimeReadiness(
+  healthUrl: string,
+  input: RuntimeServiceHealthProbeInput,
+): Promise<boolean | null> {
+  if (!isPaperclipDevRuntimeService(input)) return null;
+  const identity = resolveManagedWorkspaceIdentity({
+    workspaceCwd: input.cwd ?? null,
+    executionWorkspaceId: input.executionWorkspaceId ?? null,
+    companyId: input.companyId ?? null,
+  });
+  if (!identity) return null;
+
+  const result = await probeManagedWorkspaceReadiness({ healthUrl, identity });
+  const verified = !result.ok
+    ? result
+    : input.db
+      ? await probeManagedWorkspaceHandoffSubjects({ db: input.db, healthUrl, identity })
+      : {
+          ok: false as const,
+          reason: "not_ready" as const,
+          readiness: result.readiness,
+          detail: "control-plane database is unavailable for board identity verification",
+        };
+  if (verified.ok) return true;
+  logManagedWorkspaceReadinessRejection({
+    executionWorkspaceId: identity.executionWorkspaceId,
+    healthUrl,
+    result: verified,
+  });
+  // A guest that does not implement the readiness contract yet is not evidence of
+  // an unhealthy clone; it is only evidence that the contract cannot be checked.
+  return !shouldBlockPublicationOnReadiness(verified);
+}
+
 async function isRuntimeServiceUrlHealthy(
   url: string | null,
-  input?: {
-    serviceName?: string | null;
-    command?: string | null;
-    provider?: string | null;
-    port?: number | null;
-  },
+  input?: RuntimeServiceHealthProbeInput,
 ) {
   const localProbeUrl = input?.provider === "local_process" && input.port && isPaperclipDevRuntimeService(input)
     ? `http://127.0.0.1:${input.port}`
@@ -4744,6 +4814,10 @@ async function isRuntimeServiceUrlHealthy(
   if (!probeUrl) return true;
   const healthUrl = resolveRuntimeServiceHealthUrl(probeUrl, input);
   if (!healthUrl) return false;
+
+  const readiness = await probeManagedWorkspaceRuntimeReadiness(healthUrl, input ?? {});
+  if (readiness !== null) return readiness;
+
   try {
     const response = await fetch(healthUrl, { signal: AbortSignal.timeout(2_000) });
     if (!response.ok) return false;
@@ -5015,6 +5089,7 @@ export function resolveRuntimeProvisionCommand(input: {
   if (input.workspace.strategy !== "git_worktree") return "";
 
   const stateDir = path.join(input.workspace.cwd, ".paperclip");
+  const manifestPath = path.join(stateDir, "seed-manifest.json");
   const pendingMarker = path.join(stateDir, "seed-pending");
   const completeMarker = path.join(stateDir, "seed-complete");
   const provisionScript = path.join(
@@ -5022,11 +5097,11 @@ export function resolveRuntimeProvisionCommand(input: {
     "scripts",
     "provision-worktree-runtime.sh",
   );
-  if (
-    !existsSync(pendingMarker)
-    || existsSync(completeMarker)
-    || !existsSync(provisionScript)
-  ) {
+  let needsSeed = existsSync(pendingMarker) && !existsSync(completeMarker);
+  if (existsSync(manifestPath)) {
+    needsSeed = !hasVerifiedWorktreeSeedManifest(manifestPath);
+  }
+  if (!needsSeed || !existsSync(provisionScript)) {
     return "";
   }
 
@@ -5371,6 +5446,21 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     env[portEnvKey] = String(port);
   }
 
+  // Per-workspace handoff key, readiness token, and workspace id. Injected for
+  // the Paperclip dev runtime whether or not it is HTTPS-exposed, because the
+  // password-independent login handoff and the protected readiness probe are
+  // both needed for a plain-HTTP loopback workspace too (PAP-17572).
+  const managedWorkspaceIdentity = isPaperclipDevRuntimeService({ serviceName, command })
+    ? resolveManagedWorkspaceIdentity({
+        workspaceCwd: input.workspace.cwd,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        companyId: input.agent.companyId,
+      })
+    : null;
+  if (managedWorkspaceIdentity) {
+    Object.assign(env, buildManagedWorkspaceGuestEnv(managedWorkspaceIdentity));
+  }
+
   if (exposureConfig) {
     // Paperclip dev-runtime-specific hardening. Other managed processes are
     // still rejected by the broker unless /proc proves loopback-only listeners.
@@ -5426,7 +5516,14 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   });
   if (adoptedRecord) {
     const adoptedUrl = adoptedRecord.url ?? backendUrl;
-    if (!(await isRuntimeServiceUrlHealthy(adoptedUrl, { serviceName, command }))) {
+    if (!(await isRuntimeServiceUrlHealthy(adoptedUrl, {
+      db: input.db,
+      serviceName,
+      command,
+      cwd: input.workspace.cwd,
+      executionWorkspaceId: input.executionWorkspaceId ?? null,
+      companyId: input.agent.companyId,
+    }))) {
       await terminateLocalService(adoptedRecord);
       await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
     } else {
@@ -5698,6 +5795,45 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         );
       }
     }
+    // Transport readiness only proves a listener answered. A managed workspace
+    // must additionally satisfy the protected readiness contract — own database,
+    // cloned rows, login handoff, and matching instance/workspace identity —
+    // before it may be published as running/healthy (PAP-17572).
+    if (managedWorkspaceIdentity) {
+      const publishHealthUrl = resolveRuntimeServiceHealthUrl(
+        record.port ? `http://127.0.0.1:${record.port}` : rewriteUrlHostToLoopback(record.url ?? backendUrl),
+        { serviceName, command },
+      );
+      if (!publishHealthUrl) {
+        throw new Error("Managed workspace readiness gate could not resolve a health URL");
+      }
+      let gate = await waitForManagedWorkspaceReadiness({
+        healthUrl: publishHealthUrl,
+        identity: managedWorkspaceIdentity,
+      });
+      if (gate.ok) {
+        if (!record.db) {
+          throw new Error("Managed workspace readiness gate could not resolve the control-plane database");
+        }
+        gate = await probeManagedWorkspaceHandoffSubjects({
+          db: record.db,
+          healthUrl: publishHealthUrl,
+          identity: managedWorkspaceIdentity,
+        });
+      }
+      if (!gate.ok) {
+        logManagedWorkspaceReadinessRejection({
+          executionWorkspaceId: managedWorkspaceIdentity.executionWorkspaceId,
+          healthUrl: publishHealthUrl,
+          result: gate,
+        });
+        if (shouldBlockPublicationOnReadiness(gate)) {
+          throw new Error(
+            `Workspace is not ready to publish (${gate.reason}${gate.detail ? `: ${gate.detail}` : ""})`,
+          );
+        }
+      }
+    }
     record.status = "running";
     record.healthStatus = "healthy";
     record.lastUsedAt = new Date().toISOString();
@@ -5952,10 +6088,14 @@ async function findHealthyRunningRuntimeService(reuseKey: string | null) {
   const existing = existingId ? runtimeServicesById.get(existingId) : null;
   if (!existing || existing.status !== "running") return null;
   const healthInput = {
+    db: existing.db,
     serviceName: existing.serviceName,
     command: existing.command,
     provider: existing.provider,
     port: existing.port,
+    cwd: existing.cwd,
+    executionWorkspaceId: existing.executionWorkspaceId,
+    companyId: existing.companyId,
   };
   let healthy = await isRuntimeServiceUrlHealthy(existing.url, healthInput);
   if (!healthy) {
@@ -7231,6 +7371,9 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
       port: workspaceRuntimeServices.port,
       url: workspaceRuntimeServices.url,
       healthStatus: workspaceRuntimeServices.healthStatus,
+      cwd: workspaceRuntimeServices.cwd,
+      executionWorkspaceId: workspaceRuntimeServices.executionWorkspaceId,
+      companyId: workspaceRuntimeServices.companyId,
     })
     .from(workspaceRuntimeServices)
     .where(and(
@@ -7241,7 +7384,9 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
     ));
   const results = await Promise.all(rows.map(async (row) => ({
     row,
-    healthStatus: await isRuntimeServiceUrlHealthy(row.url, row) ? "healthy" as const : "unhealthy" as const,
+    healthStatus: await isRuntimeServiceUrlHealthy(row.url, { ...row, db: input.db })
+      ? "healthy" as const
+      : "unhealthy" as const,
   })));
   await Promise.all(results.map(async ({ row, healthStatus }) => {
     const liveRecord = runtimeServicesById.get(row.id);
@@ -7442,10 +7587,14 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
         backfillDecision.action === "reprovision"
         || !exposureHealthMatches
         || !(await isRuntimeServiceUrlHealthy(adoptedUrl, {
+          db,
           serviceName: row.serviceName,
           command: row.command,
           provider: "local_process",
           port: adoptedRecord.port ?? row.port,
+          cwd: row.cwd,
+          executionWorkspaceId: row.executionWorkspaceId ?? null,
+          companyId: row.companyId,
         }))
       ) {
         if (backfillDecision.action === "reprovision") backfilled += 1;
