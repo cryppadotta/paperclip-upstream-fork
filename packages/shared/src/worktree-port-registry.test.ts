@@ -60,7 +60,37 @@ describe("worktree port registry lock", () => {
     fs.mkdirSync(lockPath);
     fs.writeFileSync(
       path.join(lockPath, "owner.json"),
-      `${JSON.stringify({ version: 1, pid: 2_147_483_647, token: "dead-owner" })}\n`,
+      `${JSON.stringify({
+        version: 1,
+        pid: 2_147_483_647,
+        processIdentity: "dead-process",
+        token: "dead-owner",
+      })}\n`,
+    );
+    const oldTimestamp = new Date(Date.now() - 10_000);
+    fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
+
+    let entered = false;
+    await withWorktreePortRegistryLock(homeDir, async () => {
+      entered = true;
+    });
+
+    expect(entered).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("reclaims an old lock when its pid belongs to a different process", async () => {
+    const homeDir = makeTemporaryRoot();
+    const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(
+      path.join(lockPath, "owner.json"),
+      `${JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        processIdentity: "reused-pid-owner",
+        token: "abandoned-owner",
+      })}\n`,
     );
     const oldTimestamp = new Date(Date.now() - 10_000);
     fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
