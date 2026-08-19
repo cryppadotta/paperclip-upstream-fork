@@ -1,5 +1,7 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -94,6 +96,38 @@ describe("local service supervision", () => {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("does not wait for an unrelated process that takes over the service port", async () => {
+    if (process.platform === "win32") return;
+    const unrelatedListener = net.createServer();
+    await new Promise<void>((resolve) => unrelatedListener.listen(0, "127.0.0.1", resolve));
+    const address = unrelatedListener.address();
+    const port = typeof address === "object" && address ? address.port : null;
+    if (!port) throw new Error("Failed to allocate unrelated listener port");
+    const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+
+    try {
+      await terminateLocalService({
+        pid: child.pid!,
+        processGroupId: child.pid!,
+        port,
+      });
+      expect(await readLocalServicePortOwner(port)).toBe(process.pid);
+    } finally {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        // The target process group was already terminated.
+      }
+      await new Promise<void>((resolve, reject) => {
+        unrelatedListener.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
 
   it("recognizes a pnpm command after the launcher becomes pnpm.cjs", () => {
     expect(doesLocalServiceCommandLineMatch({
