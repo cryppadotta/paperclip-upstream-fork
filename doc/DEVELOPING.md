@@ -327,6 +327,8 @@ Every local install keeps runtime state directly under the selected instance roo
     storage/                                     # local_disk uploads
     backups/                                     # automatic DB backups
   logs/
+  runtime-services/                             # managed local-service registry
+  runtime-service-logs/                         # append-only managed-service stdout/stderr
   secrets/master.key                             # local_encrypted master key
   workspaces/<agent-id>/                         # default agent workspaces
   projects/                                      # project execution workspaces
@@ -694,6 +696,11 @@ For project execution worktrees, Paperclip can also run a project-defined provis
 Heavier setup that is only needed by a managed runtime service can use `workspaceStrategy.runtimeProvisionCommand`. Paperclip runs this command lazily before spawning the first service in a start batch, serializes concurrent provisioning for the same workspace, and records the attempt as `workspace_runtime_provision`. The command receives the same workspace environment as `provisionCommand` and should be idempotent because later service-start batches invoke it again.
 
 Managed runtime control actions (`start`, `stop`, `restart`, and job `run`) are mutually exclusive per execution workspace. An overlapping control is rejected with `409 workspace_runtime_control_in_progress` instead of racing the active operation, and authorization is still checked first, so the conflict never widens who may control a workspace.
+
+Local managed runtime services write stdout and stderr directly to append-only
+files under the instance's `runtime-service-logs/` directory. The child inherits
+the file descriptors rather than supervisor-owned pipes, so request-logging
+servers remain responsive and adoptable when the control plane restarts.
 
 Every managed control reaches a terminal operation state. Each one stamps the owning server process and pid on its `workspace_operations` row and heartbeats while it runs, and each one carries a wall-clock ceiling (30 minutes for lifecycle controls, 4 hours for workspace jobs) so a hung provider or listener fails the operation rather than leaving it active. When a start fails part-way, Paperclip tears the workspace's runtime services down through the ordinary stop path and records a stopped desired state, so the lane is retryable and a startup reconcile will not resurrect a service that never came up.
 

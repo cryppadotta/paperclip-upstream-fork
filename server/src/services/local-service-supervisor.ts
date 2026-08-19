@@ -63,6 +63,32 @@ function getRuntimeServicesDir() {
   return path.resolve(resolvePaperclipInstanceRoot(), "runtime-services");
 }
 
+function getRuntimeServiceLogsDir() {
+  return path.resolve(resolvePaperclipInstanceRoot(), "runtime-service-logs");
+}
+
+export function resolveLocalServiceLogPath(serviceKey: string) {
+  if (!/^[a-z0-9._-]+$/.test(serviceKey)) {
+    throw new Error("Invalid local service key for log path");
+  }
+  return path.resolve(getRuntimeServiceLogsDir(), `${serviceKey}.log`);
+}
+
+/**
+ * Open a managed service's durable append-only output file.
+ *
+ * The returned descriptor is intended to be passed directly to spawn(). The
+ * child receives its own duplicate, so the caller can close this handle as soon
+ * as spawn returns without tying the service's stdio lifetime to Paperclip's.
+ */
+export async function openLocalServiceLogFile(serviceKey: string) {
+  await fs.mkdir(getRuntimeServiceLogsDir(), { recursive: true });
+  const logPath = resolveLocalServiceLogPath(serviceKey);
+  const handle = await fs.open(logPath, "a+", 0o600);
+  const startOffset = (await handle.stat()).size;
+  return { handle, logPath, startOffset };
+}
+
 function getRuntimeServiceRegistryPath(serviceKey: string) {
   return path.resolve(getRuntimeServicesDir(), `${serviceKey}.json`);
 }
@@ -396,11 +422,31 @@ export async function touchLocalServiceRegistryRecord(
 }
 
 export async function terminateLocalService(
-  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
-  opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
+  record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId"> &
+    Partial<Pick<LocalServiceRegistryRecord, "port">>,
+  opts?: { signal?: NodeJS.Signals; forceAfterMs?: number; verifyAfterMs?: number },
 ) {
   const signal = opts?.signal ?? "SIGTERM";
   const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
+
+  const targetIsGone = async () => {
+    const targetAlive = targetProcessGroup
+      ? isProcessGroupAlive(record.processGroupId)
+      : isPidAlive(record.pid);
+    if (targetAlive) return false;
+    if (!record.port) return true;
+    return (await readLocalServicePortOwner(record.port)) === null;
+  };
+
+  const waitUntilGone = async (timeoutMs: number) => {
+    const deadline = Date.now() + timeoutMs;
+    do {
+      if (await targetIsGone()) return true;
+      await delay(100);
+    } while (Date.now() < deadline);
+    return await targetIsGone();
+  };
+
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);
@@ -408,24 +454,10 @@ export async function terminateLocalService(
       process.kill(record.pid, signal);
     }
   } catch {
-    return;
+    if (await targetIsGone()) return;
   }
 
-  const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
-  while (Date.now() < deadline) {
-    const targetAlive = targetProcessGroup
-      ? isProcessGroupAlive(record.processGroupId)
-      : isPidAlive(record.pid);
-    if (!targetAlive) {
-      return;
-    }
-    await delay(100);
-  }
-
-  const stillAlive = targetProcessGroup
-    ? isProcessGroupAlive(record.processGroupId)
-    : isPidAlive(record.pid);
-  if (!stillAlive) return;
+  if (await waitUntilGone(opts?.forceAfterMs ?? 2_000)) return;
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, "SIGKILL");
@@ -435,6 +467,14 @@ export async function terminateLocalService(
   } catch {
     // Ignore cleanup races.
   }
+
+  if (await waitUntilGone(opts?.verifyAfterMs ?? 2_000)) return;
+
+  const target = targetProcessGroup
+    ? `process group ${record.processGroupId}`
+    : `process ${record.pid}`;
+  const listener = record.port ? ` and listener on port ${record.port}` : "";
+  throw new Error(`Failed to terminate local service ${target}${listener}`);
 }
 
 export async function readLocalServicePortOwner(port: number) {
