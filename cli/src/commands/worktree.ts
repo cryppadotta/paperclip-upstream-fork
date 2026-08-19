@@ -24,6 +24,11 @@ import pc from "picocolors";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { resolveCanonicalWorktreeSeedSource } from "@paperclipai/shared/worktree-seed-source";
 import {
+  readWorktreePortRegistry,
+  withWorktreePortRegistryLock,
+  writeWorktreePortRegistry,
+} from "@paperclipai/shared/worktree-port-registry";
+import {
   applyPendingMigrations,
   agents,
   authAccounts,
@@ -584,13 +589,24 @@ function resolveRepoManagedWorktreesRoot(cwd: string): string | null {
   return path.resolve(repoRoot, ".paperclip", "worktrees");
 }
 
-function collectClaimedWorktreePorts(homeDir: string, currentInstanceId: string, cwd: string): {
+function collectClaimedWorktreePorts(
+  homeDir: string,
+  currentInstanceId: string,
+  cwd: string,
+  registeredConfigPaths: Iterable<string> = [],
+): {
   serverPorts: Set<number>;
   databasePorts: Set<number>;
 } {
   const serverPorts = new Set<number>();
   const databasePorts = new Set<number>();
   const configPaths = new Set<string>();
+  for (const configPath of registeredConfigPaths) {
+    const resolvedConfigPath = path.resolve(configPath);
+    if (resolvedConfigPath !== path.resolve(cwd, ".paperclip", "config.json") && existsSync(resolvedConfigPath)) {
+      configPaths.add(resolvedConfigPath);
+    }
+  }
   const instancesDir = path.resolve(homeDir, "instances");
   if (existsSync(instancesDir)) {
     for (const entry of readdirSync(instancesDir, { withFileTypes: true })) {
@@ -620,8 +636,13 @@ function collectClaimedWorktreePorts(homeDir: string, currentInstanceId: string,
       if (config?.server.port) {
         serverPorts.add(config.server.port);
       }
-      if (config?.database.mode === "embedded-postgres") {
-        databasePorts.add(config.database.embeddedPostgresPort);
+      const databasePort = config?.database.embeddedPostgresPort;
+      if (
+        typeof databasePort === "number" &&
+        Number.isInteger(databasePort) &&
+        databasePort > 0
+      ) {
+        databasePorts.add(databasePort);
       }
     } catch {
       // Ignore malformed sibling configs.
@@ -2313,22 +2334,48 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 
-  const claimedPorts = collectClaimedWorktreePorts(paths.homeDir, paths.instanceId, paths.cwd);
-  const preferredServerPort = opts.serverPort ?? ((sourceConfig?.server.port ?? 3100) + 1);
-  const serverPort = await findAvailablePort(preferredServerPort, claimedPorts.serverPorts);
-  const preferredDbPort = opts.dbPort ?? ((sourceConfig?.database.embeddedPostgresPort ?? 54329) + 1);
-  const databasePort = await findAvailablePort(
-    preferredDbPort,
-    new Set([...claimedPorts.databasePorts, serverPort]),
-  );
-  const targetConfig = buildWorktreeConfig({
-    sourceConfig,
-    paths,
-    serverPort,
-    databasePort,
-  });
+  const { serverPort, databasePort, targetConfig } = await withWorktreePortRegistryLock(
+    paths.homeDir,
+    async () => {
+      const registeredConfigPaths = readWorktreePortRegistry(paths.homeDir);
+      const claimedPorts = collectClaimedWorktreePorts(
+        paths.homeDir,
+        paths.instanceId,
+        paths.cwd,
+        registeredConfigPaths,
+      );
+      const preferredServerPort = opts.serverPort ?? ((sourceConfig?.server.port ?? 3100) + 1);
+      const selectedServerPort = await findAvailablePort(preferredServerPort, claimedPorts.serverPorts);
+      const preferredDbPort = opts.dbPort ?? ((sourceConfig?.database.embeddedPostgresPort ?? 54329) + 1);
+      const selectedDatabasePort = await findAvailablePort(
+        preferredDbPort,
+        new Set([...claimedPorts.databasePorts, selectedServerPort]),
+      );
+      const selectedConfig = buildWorktreeConfig({
+        sourceConfig,
+        paths,
+        serverPort: selectedServerPort,
+        databasePort: selectedDatabasePort,
+      });
 
-  writeConfig(targetConfig, paths.configPath);
+      try {
+        writeConfig(selectedConfig, paths.configPath);
+        writeWorktreePortRegistry(paths.homeDir, [
+          ...registeredConfigPaths,
+          paths.configPath,
+        ]);
+      } catch (error) {
+        rmSync(paths.configPath, { force: true });
+        throw error;
+      }
+
+      return {
+        serverPort: selectedServerPort,
+        databasePort: selectedDatabasePort,
+        targetConfig: selectedConfig,
+      };
+    },
+  );
   markWorktreeSeedPending({
     configPath: paths.configPath,
     sourceConfigPath,
