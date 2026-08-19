@@ -495,7 +495,7 @@ Both `minimal` and `full` modes use the same terminal data-validation contract. 
 
 The seed process must own the target embedded PostgreSQL lifecycle for that entire sequence. It refuses to restore into a target postmaster that is already running, suppresses the embedded provider's process-global exit hooks, and stops its owned target only after validation or failure cleanup. A shutdown detected during restore is recorded as a target-database shutdown diagnostic rather than a generic restore failure.
 
-The seed manifest never grants source-path authority. Its source path and instance are diagnostic assertions that must exactly match the realpath-canonical registered source before any lock, backup, service stop, spawn, or database mutation. Missing registration, sibling or foreign paths, symlink aliases, source/target identity collisions, and company mismatches fail closed.
+The seed manifest never grants source-path authority. Its source path and instance are diagnostic assertions derived from the realpath-canonical registered source. Deferred seeding resolves registration independently before taking the seed lock; under that lock it replaces stale source diagnostics from the registered value and then revalidates the manifest before any backup, service stop, spawn, or database mutation. Missing registration, invalid registered paths, source/target identity collisions, target-instance mismatches, and company mismatches fail closed.
 
 **Unverified-seed guard.** `pnpm dev` (the dev-runner) refuses to boot a worktree whose manifest is pending, running, failed, malformed, or missing required verification evidence and points you at the fix:
 
