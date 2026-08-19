@@ -37,6 +37,7 @@ import {
   readWorktreeSeedManifest,
   readSourceAttachmentBody,
   rebindWorkspaceCwd,
+  requiresWorktreeSeedCredentialAccount,
   resolveSourceConfigPath,
   resolveWorktreeReseedSource,
   resolveWorktreeReseedTargetPaths,
@@ -104,30 +105,36 @@ function mockVerifiedSeedResult() {
   };
 }
 
-async function seedValidWorktreeSource(connectionString: string) {
+async function seedValidWorktreeSource(
+  connectionString: string,
+  options: { includeCredentialAccount?: boolean; userId?: string } = {},
+) {
   const db = createDb(connectionString);
   const companyId = randomUUID();
   const issueId = randomUUID();
+  const userId = options.userId ?? "user-existing";
   const now = new Date();
   await db.insert(authUsers).values({
-    id: "user-existing",
-    email: "existing@paperclip.ing",
-    name: "Existing User",
+    id: userId,
+    email: userId === "local-board" ? "local@paperclip.local" : "existing@paperclip.ing",
+    name: userId === "local-board" ? "Board" : "Existing User",
     emailVerified: true,
     createdAt: now,
     updatedAt: now,
   });
-  await db.insert(authAccounts).values({
-    id: "credential-existing",
-    accountId: "existing@paperclip.ing",
-    providerId: "credential",
-    userId: "user-existing",
-    password: "fixture-password-hash",
-    createdAt: now,
-    updatedAt: now,
-  });
+  if (options.includeCredentialAccount !== false) {
+    await db.insert(authAccounts).values({
+      id: "credential-existing",
+      accountId: "existing@paperclip.ing",
+      providerId: "credential",
+      userId,
+      password: "fixture-password-hash",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
   await db.insert(instanceUserRoles).values({
-    userId: "user-existing",
+    userId,
     role: "instance_admin",
   });
   await db.insert(companies).values({
@@ -139,7 +146,7 @@ async function seedValidWorktreeSource(connectionString: string) {
   await db.insert(companyMemberships).values({
     companyId,
     principalType: "user",
-    principalId: "user-existing",
+    principalId: userId,
     status: "active",
   });
   await db.insert(issues).values({
@@ -517,6 +524,22 @@ describe("worktree helpers", () => {
     );
     expect(formatWorktreeSeedFailureDiagnostic("migrations", new Error("secret connection failure")))
       .toBe("Seed failed during migrations.");
+  });
+
+  it("surfaces the missing credential artifact for authenticated seed validation", () => {
+    expect(formatWorktreeSeedFailureDiagnostic(
+      "source_validation",
+      new Error(
+        "No auth user has a non-empty credential account, instance-admin role, and active company membership. Authenticated worktree seeding requires a credential-backed instance administrator.",
+      ),
+    )).toBe(
+      "Seed validation could not find a credential-backed instance administrator with an active company membership. Authenticated instances must create or sign in an administrator before seeding.",
+    );
+  });
+
+  it("requires credential accounts only for authenticated worktree seeds", () => {
+    expect(requiresWorktreeSeedCredentialAccount("local_trusted")).toBe(false);
+    expect(requiresWorktreeSeedCredentialAccount("authenticated")).toBe(true);
   });
 
   it("rejects a source migration journal that diverges from the code journal", () => {
@@ -1502,6 +1525,93 @@ describe("worktree helpers", () => {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  itEmbeddedPostgres(
+    "seeds a local-trusted implicit board user without a credential account",
+    async () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-worktree-local-board-seed-"));
+      const worktreeRoot = path.join(tempRoot, "PAP-17696-local-board-seed");
+      const sourceConfigDir = path.join(tempRoot, "source");
+      const sourceConfigPath = path.join(sourceConfigDir, "config.json");
+      const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
+      const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
+      const originalCwd = process.cwd();
+      const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-local-board-source-");
+
+      try {
+        await seedValidWorktreeSource(sourceDb.connectionString, {
+          includeCredentialAccount: false,
+          userId: "local-board",
+        });
+        fs.mkdirSync(path.dirname(sourceKeyPath), { recursive: true });
+        fs.mkdirSync(worktreeRoot, { recursive: true });
+
+        const sourceConfig = buildSourceConfig();
+        sourceConfig.database = {
+          ...sourceConfig.database,
+          mode: "postgres",
+          connectionString: sourceDb.connectionString,
+        };
+        sourceConfig.server.deploymentMode = "local_trusted";
+        sourceConfig.server.exposure = "private";
+        sourceConfig.auth.baseUrlMode = "auto";
+        delete sourceConfig.auth.publicBaseUrl;
+        sourceConfig.secrets.localEncrypted.keyFilePath = sourceKeyPath;
+
+        fs.writeFileSync(sourceConfigPath, `${JSON.stringify(sourceConfig, null, 2)}\n`, "utf8");
+        fs.writeFileSync(sourceKeyPath, "source-master-key", "utf8");
+
+        process.chdir(worktreeRoot);
+        await worktreeInitCommand({
+          name: "PAP-17696-local-board-seed",
+          home: worktreeHome,
+          fromConfig: sourceConfigPath,
+          force: true,
+        });
+
+        const targetConfigPath = path.join(worktreeRoot, ".paperclip", "config.json");
+        const targetConfig = JSON.parse(fs.readFileSync(targetConfigPath, "utf8")) as PaperclipConfig;
+        expect(readWorktreeSeedManifest(targetConfigPath)).toMatchObject({
+          state: "verified",
+          phase: "complete",
+        });
+
+        const { default: EmbeddedPostgres } = await import("embedded-postgres");
+        const targetPg = new EmbeddedPostgres({
+          databaseDir: targetConfig.database.embeddedPostgresDataDir,
+          user: "paperclip",
+          password: "paperclip",
+          port: targetConfig.database.embeddedPostgresPort,
+          persistent: true,
+          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+          onLog: () => {},
+          onError: () => {},
+        });
+
+        await targetPg.start();
+        try {
+          const targetDb = createDb(
+            `postgres://paperclip:paperclip@127.0.0.1:${targetConfig.database.embeddedPostgresPort}/paperclip`,
+          );
+          const [seededLocalBoard] = await targetDb
+            .select({ id: authUsers.id })
+            .from(authUsers)
+            .where(eq(authUsers.id, "local-board"));
+          const seededAccounts = await targetDb.select().from(authAccounts);
+          expect(seededLocalBoard?.id).toBe("local-board");
+          expect(seededAccounts).toHaveLength(0);
+          await targetDb.$client.end({ timeout: 5 });
+        } finally {
+          await targetPg.stop();
+        }
+      } finally {
+        process.chdir(originalCwd);
+        await sourceDb.cleanup();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 
   itEmbeddedPostgres(
     "seeds a lagging source whose migration application order differs from filename order",
