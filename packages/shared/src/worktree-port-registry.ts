@@ -19,7 +19,7 @@ const sleepSyncBuffer = new Int32Array(new SharedArrayBuffer(4));
 type RegistryLockOwner = {
   version: 1;
   pid: number;
-  processIdentity: string | null;
+  processIdentity: string;
   token: string;
 };
 
@@ -37,7 +37,8 @@ function readRegistryLockOwner(lockPath: string): RegistryLockOwner | null {
       parsed.version !== 1
       || !Number.isInteger(parsed.pid)
       || (parsed.pid ?? 0) <= 0
-      || (parsed.processIdentity !== null && typeof parsed.processIdentity !== "string")
+      || typeof parsed.processIdentity !== "string"
+      || parsed.processIdentity.length === 0
       || typeof parsed.token !== "string"
       || parsed.token.length === 0
     ) {
@@ -101,7 +102,7 @@ function removeStaleRegistryLock(lockPath: string): boolean {
     const owner = readRegistryLockOwner(lockPath);
     if (owner && isProcessAlive(owner.pid)) {
       const currentIdentity = readProcessIdentity(owner.pid);
-      if (!owner.processIdentity || !currentIdentity || owner.processIdentity === currentIdentity) {
+      if (owner.processIdentity === currentIdentity) {
         return false;
       }
     }
@@ -116,13 +117,17 @@ function acquireRegistryLock(lockPath: string, deadline: number): string | null 
   try {
     fs.mkdirSync(lockPath);
     const token = `${process.pid}-${randomUUID()}`;
-    const owner: RegistryLockOwner = {
-      version: 1,
-      pid: process.pid,
-      processIdentity: readProcessIdentity(process.pid),
-      token,
-    };
     try {
+      const processIdentity = readProcessIdentity(process.pid);
+      if (!processIdentity) {
+        throw new Error("Cannot determine worktree port reservation lock owner identity");
+      }
+      const owner: RegistryLockOwner = {
+        version: 1,
+        pid: process.pid,
+        processIdentity,
+        token,
+      };
       fs.writeFileSync(
         path.join(lockPath, WORKTREE_PORT_REGISTRY_LOCK_OWNER_FILE),
         `${JSON.stringify(owner)}\n`,
