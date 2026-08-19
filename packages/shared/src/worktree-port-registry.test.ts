@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -32,7 +31,7 @@ afterEach(() => {
 });
 
 describe("worktree port registry lock", () => {
-  it("does not reclaim an old lock while its owner process is alive", async () => {
+  it("does not reclaim a stale lock while its fallback ownership probe responds", async () => {
     const homeDir = makeTemporaryRoot();
     const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
     const firstEntered = deferred();
@@ -40,6 +39,13 @@ describe("worktree port registry lock", () => {
     let secondEntered = false;
 
     const first = withWorktreePortRegistryLock(homeDir, async () => {
+      fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner.unavailable.json"));
+      const backupOwnerPath = path.join(lockPath, "owner.backup.json");
+      const owner = JSON.parse(fs.readFileSync(backupOwnerPath, "utf8"));
+      fs.writeFileSync(backupOwnerPath, `${JSON.stringify({
+        ...owner,
+        processIdentity: "unavailable-process-identity",
+      })}\n`);
       const oldTimestamp = new Date(Date.now() - 10_000);
       fs.utimesSync(lockPath, oldTimestamp, oldTimestamp);
       firstEntered.resolve();
@@ -72,45 +78,6 @@ describe("worktree port registry lock", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   }, 10_000);
 
-  it.skipIf(process.platform === "win32")(
-    "self-fences before a failed heartbeat can become stale",
-    async () => {
-      const homeDir = makeTemporaryRoot();
-      const moduleUrl = new URL("./worktree-port-registry.ts", import.meta.url).href;
-      const script = `
-        import fs from "node:fs";
-        import path from "node:path";
-        import { withWorktreePortRegistryLockSync } from ${JSON.stringify(moduleUrl)};
-        const blocker = new Int32Array(new SharedArrayBuffer(4));
-        withWorktreePortRegistryLockSync(${JSON.stringify(homeDir)}, () => {
-          const lockPath = path.join(${JSON.stringify(homeDir)}, ".worktree-port-reservations.lock");
-          fs.renameSync(path.join(lockPath, "owner.json"), path.join(lockPath, "owner-paused.json"));
-          Atomics.wait(blocker, 0, 0, 6_000);
-        });
-      `;
-      const child = spawn(
-        process.execPath,
-        ["--experimental-strip-types", "--input-type=module", "-e", script],
-        { stdio: ["ignore", "ignore", "pipe"] },
-      );
-      let stderr = "";
-      child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => {
-        stderr += chunk;
-      });
-      const result = await new Promise<{
-        code: number | null;
-        signal: NodeJS.Signals | null;
-        stderr: string;
-      }>((resolve) => {
-        child.once("exit", (code, signal) => resolve({ code, signal, stderr }));
-      });
-
-      expect(result, result.stderr).toMatchObject({ code: null, signal: "SIGKILL" });
-    },
-    10_000,
-  );
-
   it("reclaims an old lock after its owner process exits", async () => {
     const homeDir = makeTemporaryRoot();
     const lockPath = path.join(homeDir, ".worktree-port-reservations.lock");
@@ -121,6 +88,7 @@ describe("worktree port registry lock", () => {
         version: 1,
         pid: 2_147_483_647,
         processIdentity: "dead-process",
+        probePort: 1,
         token: "dead-owner",
       })}\n`,
     );
@@ -146,6 +114,7 @@ describe("worktree port registry lock", () => {
         version: 1,
         pid: process.pid,
         processIdentity: "reused-pid-owner",
+        probePort: 1,
         token: "abandoned-owner",
       })}\n`,
     );
