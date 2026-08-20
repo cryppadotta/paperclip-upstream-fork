@@ -2808,7 +2808,6 @@ export function issueRoutes(
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
-  const budgetsSvc = budgetService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
@@ -5302,7 +5301,7 @@ export function issueRoutes(
         issueId: input.issue.id,
       });
     }
-    const budgetBlock = await budgetsSvc.getInvocationBlock(
+    const budgetBlock = await budgetService(db).getInvocationBlock(
       input.issue.companyId,
       returnOwnerAgentId,
       { issueId: input.issue.id, projectId: input.issue.projectId },
