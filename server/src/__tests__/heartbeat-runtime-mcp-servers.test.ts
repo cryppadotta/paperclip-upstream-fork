@@ -23,6 +23,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { buildPaperclipRuntimeMcpServers, createManagedMcpRunConfig } from "../services/heartbeat.js";
+import { createToolGatewayService } from "../services/tool-gateway.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -307,6 +308,18 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         name: "Allow one uninstalled tool",
         defaultAction: "deny" as const,
       },
+      {
+        companyId: company!.id,
+        profileKey: `gateway:mixed-allow:${randomUUID()}`,
+        name: "Allow both connections by default",
+        defaultAction: "allow" as const,
+      },
+      {
+        companyId: company!.id,
+        profileKey: `gateway:mixed-deny:${randomUUID()}`,
+        name: "Explicitly allow both connections",
+        defaultAction: "deny" as const,
+      },
     ]).returning();
     const uninstalledGatewayToolName = [
       `mcp.${application!.applicationKey}`,
@@ -327,10 +340,17 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         effect: "include",
         toolName: uninstalledGatewayToolName,
       },
+      ...connections.map((connection) => ({
+        companyId: company!.id,
+        profileId: profiles[3]!.id,
+        selectorType: "connection" as const,
+        effect: "include" as const,
+        connectionId: connection.id,
+      })),
     ]);
     const gateways = await db.insert(toolMcpGateways).values(profiles.map((profile, index) => ({
       companyId: company!.id,
-      name: `${connections[index]!.name} gateway`,
+      name: `${profile.name} gateway`,
       slug: `gateway-${index}-${randomUUID().slice(0, 8)}`,
       profileId: profile.id,
       status: "active" as const,
@@ -365,8 +385,23 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       issueId: null,
     });
 
-    expect(config?.gateways).toHaveLength(1);
-    expect(config?.gateways[0]).toMatchObject({ id: gateways[0]!.id, name: gateways[0]!.name });
+    expect(config?.gateways).toHaveLength(3);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[0]!.id)).toBe(true);
     expect(config?.gateways.some((gateway) => gateway.id === gateways[1]!.id)).toBe(false);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[2]!.id)).toBe(true);
+    expect(config?.gateways.some((gateway) => gateway.id === gateways[3]!.id)).toBe(true);
+
+    const mixedGateway = config?.gateways.find((gateway) => gateway.id === gateways[2]!.id);
+    const visibleTools = await createToolGatewayService(db).listToolsForNamedGateway({
+      gatewayId: mixedGateway!.id,
+      bearerToken: mixedGateway!.bearerToken,
+    });
+    expect(visibleTools.some((tool) => tool.connectionId === connections[0]!.id)).toBe(true);
+    expect(visibleTools.some((tool) => tool.connectionId === connections[1]!.id)).toBe(false);
+    await expect(createToolGatewayService(db).executeTool({
+      sessionToken: mixedGateway!.bearerToken,
+      gatewayId: mixedGateway!.id,
+      tool: uninstalledGatewayToolName,
+    })).rejects.toMatchObject({ status: 403, reasonCode: "installation_required" });
   });
 });
