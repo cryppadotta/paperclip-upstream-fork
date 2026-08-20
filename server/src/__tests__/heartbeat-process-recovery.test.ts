@@ -4891,6 +4891,51 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("does not consume a disposition-repair attempt when on-demand wakes are disabled", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+    });
+    await db
+      .update(agents)
+      .set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } })
+      .where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.dispositionRepairRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+
+    const [action, repairWakeups] = await Promise.all([
+      db
+        .select()
+        .from(issueRecoveryActions)
+        .where(and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          sql`${agentWakeupRequests.idempotencyKey} LIKE 'issue_disposition_repair:%'`,
+        )),
+    ]);
+    expect(action).toMatchObject({
+      kind: "deliberate_wait_without_target",
+      status: "escalated",
+      ownerType: "board",
+      ownerAgentId: null,
+      attemptCount: 0,
+      resolutionNote: "owner_not_invokable",
+    });
+    expect(repairWakeups).toHaveLength(0);
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,

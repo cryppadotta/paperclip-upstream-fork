@@ -257,6 +257,7 @@ import {
   DIRECT_NON_INVOKABLE_STATUSES,
   type AgentOrgRow,
 } from "./agent-invokability.js";
+import { isHeartbeatWakeOnDemandEnabled } from "./heartbeat-policy.js";
 import {
   redactQuarantinedBodyForHigherTrust,
   sanitizeQuarantinedCommentForHigherTrust,
@@ -10791,6 +10792,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         reason: string;
         errorCode:
           | "agent_not_invokable"
+          | "heartbeat_wake_on_demand_disabled"
           | "budget_blocked"
           | "issue_not_found"
           | "issue_reassigned"
@@ -10848,6 +10850,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...agentInvokability.details,
           invalidOrgChain: agentInvokability.invalidOrgChain,
         },
+      };
+    }
+
+    if (!isHeartbeatWakeOnDemandEnabled(agent)) {
+      return {
+        allowed: false,
+        reason: "Scheduled retry suppressed because on-demand agent wakes are disabled",
+        errorCode: "heartbeat_wake_on_demand_disabled",
+        issueId,
+        details: { agentId: agent.id },
       };
     }
 
@@ -12270,7 +12282,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
-      wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
+      wakeOnDemand: isHeartbeatWakeOnDemandEnabled(agent),
       maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
       skipTimerWhenNoActionableWork: asBoolean(
         heartbeat.skipTimerWhenNoActionableWork ??

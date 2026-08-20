@@ -54,6 +54,7 @@ import {
   findExistingIssueBlockersResolvedWakeForReadyState,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
@@ -1857,7 +1858,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
       });
-      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
+      if (
+        (await isAgentInvokable(candidate)) &&
+        isHeartbeatWakeOnDemandEnabled(candidate) &&
+        !budgetBlock
+      ) {
+        return candidate.id;
+      }
     }
 
     return null;
@@ -2581,7 +2588,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: issue.id,
         projectId: issue.projectId,
       });
-      if ((await isAgentInvokable(candidate)) && !budgetBlock) return candidate.id;
+      if (
+        (await isAgentInvokable(candidate)) &&
+        isHeartbeatWakeOnDemandEnabled(candidate) &&
+        !budgetBlock
+      ) {
+        return candidate.id;
+      }
     }
 
     return null;
@@ -2598,7 +2611,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueId: issue.id,
       projectId: issue.projectId,
     });
-    return (await isAgentInvokable(candidate)) && !budgetBlock ? candidate.id : null;
+    return (await isAgentInvokable(candidate)) &&
+      isHeartbeatWakeOnDemandEnabled(candidate) &&
+      !budgetBlock
+      ? candidate.id
+      : null;
   }
 
   async function resolveStrandedRecoveryRouting(input: {
@@ -3506,90 +3523,96 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .limit(1)
       .then((rows) => rows[0]?.run ?? null);
 
-    const existingRun = await findScheduledRun();
-    if (existingRun) return existingRun;
-
-    let scheduledRun: typeof heartbeatRuns.$inferSelect | null = null;
-    try {
-      if (timing.delayMs === 0) {
-        scheduledRun = await deps.enqueueWakeup(agentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-          idempotencyKey,
-          payload: withRecoveryModelProfileHint({
-            issueId: input.issue.id,
-            retryOfRunId: input.latestRun?.id ?? null,
-            recoveryActionId: input.action.id,
-            dispositionRepairFingerprint: input.fingerprint,
-            dispositionRepairAttempt: input.attempt,
-            bypassContinuationSummaryPark: true,
-          }, "normal_model"),
-          requestedByActorType: "system",
-          requestedByActorId: null,
-          contextSnapshot: context,
-        });
-      } else {
-        scheduledRun = await db.transaction(async (tx) => {
-          const wakeup = await tx
-            .insert(agentWakeupRequests)
-            .values({
-              companyId: input.issue.companyId,
-              agentId,
-              source: "automation",
-              triggerDetail: "system",
-              reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-              payload: withRecoveryModelProfileHint({
-                issueId: input.issue.id,
-                retryOfRunId: input.latestRun?.id ?? null,
-                recoveryActionId: input.action.id,
-                dispositionRepairFingerprint: input.fingerprint,
-                dispositionRepairAttempt: input.attempt,
-                bypassContinuationSummaryPark: true,
-              }, "normal_model"),
-              status: "queued",
-              requestedByActorType: "system",
-              requestedByActorId: null,
-              idempotencyKey,
-              updatedAt: now,
-            })
-            .returning()
-            .then((rows) => rows[0]!);
-          const run = await tx
-            .insert(heartbeatRuns)
-            .values({
-              companyId: input.issue.companyId,
-              agentId,
-              invocationSource: "automation",
-              triggerDetail: "system",
-              status: "scheduled_retry",
-              wakeupRequestId: wakeup.id,
+    let scheduledRun = await findScheduledRun();
+    let created = false;
+    if (!scheduledRun) {
+      try {
+        if (timing.delayMs === 0) {
+          const enqueuedRun = await deps.enqueueWakeup(agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+            idempotencyKey,
+            payload: withRecoveryModelProfileHint({
+              issueId: input.issue.id,
               retryOfRunId: input.latestRun?.id ?? null,
-              scheduledRetryAt: retryAt,
-              scheduledRetryAttempt: input.attempt,
-              scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-              contextSnapshot: context,
-              updatedAt: now,
-            })
-            .returning()
-            .then((rows) => rows[0]!);
-          await tx
-            .update(agentWakeupRequests)
-            .set({ runId: run.id, updatedAt: now })
-            .where(eq(agentWakeupRequests.id, wakeup.id));
-          return run;
-        });
+              recoveryActionId: input.action.id,
+              dispositionRepairFingerprint: input.fingerprint,
+              dispositionRepairAttempt: input.attempt,
+              bypassContinuationSummaryPark: true,
+            }, "normal_model"),
+            requestedByActorType: "system",
+            requestedByActorId: null,
+            contextSnapshot: context,
+          });
+          scheduledRun = enqueuedRun ?? (await findScheduledRun());
+          created = Boolean(enqueuedRun);
+        } else {
+          scheduledRun = await db.transaction(async (tx) => {
+            const wakeup = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: input.issue.companyId,
+                agentId,
+                source: "automation",
+                triggerDetail: "system",
+                reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+                payload: withRecoveryModelProfileHint({
+                  issueId: input.issue.id,
+                  retryOfRunId: input.latestRun?.id ?? null,
+                  recoveryActionId: input.action.id,
+                  dispositionRepairFingerprint: input.fingerprint,
+                  dispositionRepairAttempt: input.attempt,
+                  bypassContinuationSummaryPark: true,
+                }, "normal_model"),
+                status: "queued",
+                requestedByActorType: "system",
+                requestedByActorId: null,
+                idempotencyKey,
+                updatedAt: now,
+              })
+              .returning()
+              .then((rows) => rows[0]!);
+            const run = await tx
+              .insert(heartbeatRuns)
+              .values({
+                companyId: input.issue.companyId,
+                agentId,
+                invocationSource: "automation",
+                triggerDetail: "system",
+                status: "scheduled_retry",
+                wakeupRequestId: wakeup.id,
+                retryOfRunId: input.latestRun?.id ?? null,
+                scheduledRetryAt: retryAt,
+                scheduledRetryAttempt: input.attempt,
+                scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+                contextSnapshot: context,
+                updatedAt: now,
+              })
+              .returning()
+              .then((rows) => rows[0]!);
+            await tx
+              .update(agentWakeupRequests)
+              .set({ runId: run.id, updatedAt: now })
+              .where(eq(agentWakeupRequests.id, wakeup.id));
+            return run;
+          });
+          created = true;
+        }
+      } catch (error) {
+        if (!isUniqueViolation(error, DISPOSITION_REPAIR_IDEMPOTENCY_INDEX)) throw error;
+        const winningRun = await findScheduledRun();
+        if (!winningRun) throw error;
+        scheduledRun = winningRun;
       }
-    } catch (error) {
-      if (!isUniqueViolation(error, DISPOSITION_REPAIR_IDEMPOTENCY_INDEX)) throw error;
-      const winningRun = await findScheduledRun();
-      if (!winningRun) throw error;
-      return winningRun;
     }
+
+    if (!scheduledRun) return null;
 
     await db
       .update(issueRecoveryActions)
       .set({
+        attemptCount: input.attempt,
         wakePolicy: {
           type: "bounded_owner_disposition_repair",
           retryAgentId: agentId,
@@ -3598,7 +3621,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           baseBackoffMs: timing.baseDelayMs,
           jitterMs: timing.jitterMs,
           retryAt: retryAt.toISOString(),
-          scheduledRunId: scheduledRun?.id ?? null,
+          scheduledRunId: scheduledRun.id,
         },
         timeoutAt: retryAt,
         lastAttemptAt: now,
@@ -3609,28 +3632,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         eq(issueRecoveryActions.companyId, input.issue.companyId),
       ));
 
-    await logActivity(db, {
-      companyId: input.issue.companyId,
-      actorType: "system",
-      actorId: "recovery",
-      agentId: null,
-      runId: input.latestRun?.id ?? null,
-      action: "issue.disposition_repair_scheduled",
-      entityType: "issue_recovery_action",
-      entityId: input.action.id,
-      details: {
-        sourceIssueId: input.issue.id,
-        sourceIdentifier: input.issue.identifier,
-        ownerAgentId: agentId,
-        sourceStateFingerprint: input.fingerprint,
-        attempt: input.attempt,
-        maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
-        baseBackoffMs: timing.baseDelayMs,
-        jitterMs: timing.jitterMs,
-        retryAt: retryAt.toISOString(),
-        scheduledRunId: scheduledRun?.id ?? null,
-      },
-    });
+    if (created) {
+      await logActivity(db, {
+        companyId: input.issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        runId: input.latestRun?.id ?? null,
+        action: "issue.disposition_repair_scheduled",
+        entityType: "issue_recovery_action",
+        entityId: input.action.id,
+        details: {
+          sourceIssueId: input.issue.id,
+          sourceIdentifier: input.issue.identifier,
+          ownerAgentId: agentId,
+          sourceStateFingerprint: input.fingerprint,
+          attempt: input.attempt,
+          maxAttempts: DISPOSITION_REPAIR_MAX_ATTEMPTS,
+          baseBackoffMs: timing.baseDelayMs,
+          jitterMs: timing.jitterMs,
+          retryAt: retryAt.toISOString(),
+          scheduledRunId: scheduledRun.id,
+        },
+      });
+    }
 
     return scheduledRun;
   }
@@ -4242,7 +4267,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const ownerAgentId = current.assigneeAgentId;
     const ownerAgent = ownerAgentId ? await getAgent(ownerAgentId) : null;
     const ownerInvokable = ownerAgent && ownerAgent.companyId === current.companyId
-      ? await isAgentInvokable(ownerAgent)
+      ? (await isAgentInvokable(ownerAgent)) && isHeartbeatWakeOnDemandEnabled(ownerAgent)
       : false;
     const budgetBlocked = ownerAgentId ? await isInvocationBudgetBlocked(current, ownerAgentId) : true;
     const previousAttempt = readDispositionRepairAttempt(latestRun);
@@ -4290,16 +4315,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue: current,
       latestRun,
       fingerprint: state.fingerprint,
-      attemptCount: nextAttempt,
+      attemptCount: sameFingerprintAttempt,
     });
-    await scheduleDispositionRepairAttempt({
+    const scheduled = await scheduleDispositionRepairAttempt({
       issue: current,
       latestRun,
       action,
       fingerprint: state.fingerprint,
       attempt: nextAttempt,
     });
-    return "queued";
+    return scheduled ? "queued" : "skipped";
   }
 
   async function escalateStrandedAssignedIssue(input: {

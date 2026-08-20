@@ -385,6 +385,28 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     });
   });
 
+  it("does not promote a scheduled retry after on-demand wakes are disabled", async () => {
+    const { companyId, agentId, issueId, retryRunId } = await seedIssueWithRetry();
+    await db
+      .update(agents)
+      .set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } })
+      .where(eq(agents.id, agentId));
+
+    const res = await request(createApp(boardActor(companyId)))
+      .post(`/api/issues/${issueId}/scheduled-retry/retry-now`)
+      .send({});
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      outcome: "gate_suppressed",
+      scheduledRetry: {
+        runId: retryRunId,
+        status: "cancelled",
+        errorCode: "heartbeat_wake_on_demand_disabled",
+      },
+    });
+  });
+
   it("requires board access for retry-now", async () => {
     const { companyId, agentId, issueId } = await seedIssueWithRetry();
 
