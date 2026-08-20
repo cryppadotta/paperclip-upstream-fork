@@ -4844,6 +4844,41 @@ export function createToolGatewayService(
       return tools;
     },
 
+    async listAccessibleConnectionIdsForGatewayContext(input: {
+      companyId: string;
+      gatewayId: string;
+      agentId: string;
+      runId: string;
+      issueId?: string | null;
+      projectId?: string | null;
+    }): Promise<string[]> {
+      await assertAgentInCompany(input.companyId, input.agentId);
+      const now = new Date();
+      const session: ToolGatewaySession = {
+        id: `gateway:${input.gatewayId}`,
+        token: "",
+        companyId: input.companyId,
+        agentId: input.agentId,
+        runId: input.runId,
+        issueId: input.issueId ?? null,
+        projectId: input.projectId ?? null,
+        gatewayId: input.gatewayId,
+        actorType: "agent",
+        actorId: input.agentId,
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + DEFAULT_SESSION_TTL_MS),
+      };
+      const connectedTools = await connectedMcpToolsForCompany(input.companyId);
+      const decisions = await Promise.all(connectedTools.map(async (tool) => ({
+        tool,
+        decision: await policyService.decide(policyInputForTool({ session, tool })),
+      })));
+      return [...new Set(decisions
+        .filter(({ decision }) => decision.allowed || decision.decision === "require_approval")
+        .map(({ tool }) => tool.connectionId)
+        .filter((connectionId): connectionId is string => Boolean(connectionId)))];
+    },
+
     async createSession(input: {
       companyId: string;
       agentId: string;

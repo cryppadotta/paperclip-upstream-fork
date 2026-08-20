@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   toolAccessAuditEvents,
   toolApplications,
+  toolCatalogEntries,
   toolConnectionInstalls,
   toolConnections,
   toolMcpGateways,
@@ -241,7 +242,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     });
   });
 
-  it("injects only managed gateways whose profile connections are installed for the agent", async () => {
+  it("uses canonical gateway profile semantics before injecting installed gateways", async () => {
     const [company] = await db.insert(companies).values({
       name: `Managed gateway installs ${randomUUID()}`,
       issuePrefix: `MG${randomUUID().slice(0, 5).toUpperCase()}`,
@@ -269,6 +270,8 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         transport: "mcp_remote",
         status: "active",
         enabled: true,
+        healthStatus: "healthy",
+        config: { url: "https://installed-gateway.example.test/mcp" },
       },
       {
         companyId: company!.id,
@@ -278,21 +281,53 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
         transport: "mcp_remote",
         status: "active",
         enabled: true,
+        healthStatus: "healthy",
+        config: { url: "https://uninstalled-gateway.example.test/mcp" },
       },
     ]).returning();
-    const profiles = await db.insert(toolProfiles).values(connections.map((connection) => ({
+    await db.insert(toolCatalogEntries).values(connections.map((connection, index) => ({
       companyId: company!.id,
-      profileKey: `gateway:${connection.id}`,
-      name: connection.name,
-      defaultAction: "deny" as const,
-    }))).returning();
-    await db.insert(toolProfileEntries).values(profiles.map((profile, index) => ({
-      companyId: company!.id,
-      profileId: profile.id,
-      selectorType: "connection" as const,
-      effect: "include" as const,
-      connectionId: connections[index]!.id,
+      applicationId: application!.id,
+      connectionId: connection.id,
+      entryKind: "tool" as const,
+      name: `gateway-tool-${index}`,
+      toolName: index === 0 ? "installed_tool" : "uninstalled_tool",
+      versionHash: randomUUID(),
     })));
+    const profiles = await db.insert(toolProfiles).values([
+      {
+        companyId: company!.id,
+        profileKey: `gateway:allow-excluding-uninstalled:${randomUUID()}`,
+        name: "Allow installed tools",
+        defaultAction: "allow" as const,
+      },
+      {
+        companyId: company!.id,
+        profileKey: `gateway:namespaced-uninstalled:${randomUUID()}`,
+        name: "Allow one uninstalled tool",
+        defaultAction: "deny" as const,
+      },
+    ]).returning();
+    const uninstalledGatewayToolName = [
+      `mcp.${application!.applicationKey}`,
+      `${connections[1]!.id.replaceAll("-", "").slice(0, 8)}:uninstalled-tool`,
+    ].join("-");
+    await db.insert(toolProfileEntries).values([
+      {
+        companyId: company!.id,
+        profileId: profiles[0]!.id,
+        selectorType: "connection",
+        effect: "exclude",
+        connectionId: connections[1]!.id,
+      },
+      {
+        companyId: company!.id,
+        profileId: profiles[1]!.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName: uninstalledGatewayToolName,
+      },
+    ]);
     const gateways = await db.insert(toolMcpGateways).values(profiles.map((profile, index) => ({
       companyId: company!.id,
       name: `${connections[index]!.name} gateway`,
@@ -300,6 +335,12 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       profileId: profile.id,
       status: "active" as const,
     }))).returning();
+    await db.insert(toolProfileBindings).values(gateways.map((gateway, index) => ({
+      companyId: company!.id,
+      profileId: profiles[index]!.id,
+      targetType: "gateway" as const,
+      targetId: gateway.id,
+    })));
     await db.insert(toolConnectionInstalls).values({
       companyId: company!.id,
       connectionId: connections[0]!.id,
@@ -307,10 +348,18 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       targetId: agent!.id,
     });
 
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: company!.id,
+      agentId: agent!.id,
+      status: "running",
+      contextSnapshot: {},
+    });
     const config = await createManagedMcpRunConfig({
       db,
       agent: agent!,
-      runId: randomUUID(),
+      runId,
       config: {},
       projectId: null,
       issueId: null,

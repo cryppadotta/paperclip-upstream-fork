@@ -64,10 +64,8 @@ import {
   routines,
   toolMcpGateways,
   toolMcpGatewayTokens,
-  toolCatalogEntries,
   toolConnectionInstalls,
   toolConnections,
-  toolProfileEntries,
   toolProfiles,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -3465,62 +3463,23 @@ function gatewayAppliesToRun(input: {
 async function gatewayConnectionIds(input: {
   db: Db;
   companyId: string;
+  agentId: string;
+  runId: string;
+  issueId: string | null;
+  projectId: string | null;
   gateway: typeof toolMcpGateways.$inferSelect;
 }): Promise<Set<string>> {
   const managedRuntimeConnectionId = readNonEmptyString(input.gateway.metadata?.managedRuntimeConnectionId);
   if (managedRuntimeConnectionId) return new Set([managedRuntimeConnectionId]);
-
-  const [profile, entries, catalog, connections] = await Promise.all([
-    input.db
-      .select({ defaultAction: toolProfiles.defaultAction })
-      .from(toolProfiles)
-      .where(and(eq(toolProfiles.companyId, input.companyId), eq(toolProfiles.id, input.gateway.profileId)))
-      .then((rows) => rows[0] ?? null),
-    input.db
-      .select()
-      .from(toolProfileEntries)
-      .where(and(
-        eq(toolProfileEntries.companyId, input.companyId),
-        eq(toolProfileEntries.profileId, input.gateway.profileId),
-      )),
-    input.db
-      .select({
-        id: toolCatalogEntries.id,
-        connectionId: toolCatalogEntries.connectionId,
-        applicationId: toolCatalogEntries.applicationId,
-        toolName: toolCatalogEntries.toolName,
-        riskLevel: toolCatalogEntries.riskLevel,
-      })
-      .from(toolCatalogEntries)
-      .where(and(eq(toolCatalogEntries.companyId, input.companyId), eq(toolCatalogEntries.status, "active"))),
-    input.db
-      .select({ id: toolConnections.id, applicationId: toolConnections.applicationId })
-      .from(toolConnections)
-      .where(eq(toolConnections.companyId, input.companyId)),
-  ]);
-  if (!profile) return new Set();
-  if (profile.defaultAction === "allow") return new Set(catalog.map((entry) => entry.connectionId));
-
-  const connectionIds = new Set<string>();
-  for (const entry of entries) {
-    if (entry.effect !== "include") continue;
-    if (entry.connectionId) connectionIds.add(entry.connectionId);
-    if (entry.applicationId) {
-      for (const connection of connections) {
-        if (connection.applicationId === entry.applicationId) connectionIds.add(connection.id);
-      }
-    }
-    for (const catalogEntry of catalog) {
-      if (
-        (entry.catalogEntryId && entry.catalogEntryId === catalogEntry.id)
-        || (entry.toolName && entry.toolName === catalogEntry.toolName)
-        || (entry.riskLevel && entry.riskLevel === catalogEntry.riskLevel)
-      ) {
-        connectionIds.add(catalogEntry.connectionId);
-      }
-    }
-  }
-  return connectionIds;
+  const service = createToolGatewayService(input.db);
+  return new Set(await service.listAccessibleConnectionIdsForGatewayContext({
+    companyId: input.companyId,
+    gatewayId: input.gateway.id,
+    agentId: input.agentId,
+    runId: input.runId,
+    issueId: input.issueId,
+    projectId: input.projectId,
+  }));
 }
 
 export async function createManagedMcpRunConfig(input: {
@@ -3564,6 +3523,10 @@ export async function createManagedMcpRunConfig(input: {
     connectionIds: await gatewayConnectionIds({
       db: input.db,
       companyId: input.agent.companyId,
+      agentId: input.agent.id,
+      runId: input.runId,
+      issueId: input.issueId,
+      projectId: input.projectId,
       gateway,
     }),
   }))))
