@@ -1873,7 +1873,7 @@ async function watchdogMapForIssues(dbOrTx: any, rows: IssueRow[]): Promise<Map<
 }
 
 const ACTIVE_RUN_STATUSES = ["queued", "running"];
-const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
+const BLOCKER_ATTENTION_ACTIVE_RUN_STATUSES = ["queued", "running"];
 const BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"];
 const BLOCKER_ATTENTION_PENDING_INTERACTION_STATUSES = ["pending"];
 const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"];
