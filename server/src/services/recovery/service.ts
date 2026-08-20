@@ -36,6 +36,7 @@ import { logger } from "../../middleware/logger.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
+import { isUniqueViolation } from "../../db-errors.js";
 import { logActivity } from "../activity-log.js";
 import { budgetService } from "../budgets.js";
 import { instanceSettingsService } from "../instance-settings.js";
@@ -104,6 +105,7 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RECOVERY_OWNER_RETRY_REASON = "recovery_owner_retry";
+const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX = "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
@@ -3492,19 +3494,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "Revalidate the issue and replace the invalid parked summary with a durable disposition. Continue productive work when appropriate.",
     }, "normal_model");
 
+    const findScheduledRun = () => db
+      .select({ run: heartbeatRuns })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, agentWakeupRequests.runId))
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.issue.companyId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        sql`${agentWakeupRequests.status} <> 'skipped'`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0]?.run ?? null);
+
+    const existingRun = await findScheduledRun();
+    if (existingRun) return existingRun;
+
     let scheduledRun: typeof heartbeatRuns.$inferSelect | null = null;
-    if (timing.delayMs === 0) {
-      const existing = await db
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(and(
-          eq(agentWakeupRequests.companyId, input.issue.companyId),
-          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-          inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (!existing) {
+    try {
+      if (timing.delayMs === 0) {
         scheduledRun = await deps.enqueueWakeup(agentId, {
           source: "automation",
           triggerDetail: "system",
@@ -3522,70 +3529,62 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           requestedByActorId: null,
           contextSnapshot: context,
         });
-      }
-    } else {
-      scheduledRun = await db.transaction(async (tx) => {
-        const existing = await tx
-          .select({ run: heartbeatRuns })
-          .from(agentWakeupRequests)
-          .innerJoin(heartbeatRuns, eq(heartbeatRuns.wakeupRequestId, agentWakeupRequests.id))
-          .where(and(
-            eq(agentWakeupRequests.companyId, input.issue.companyId),
-            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-            inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
-          ))
-          .limit(1)
-          .then((rows) => rows[0]?.run ?? null);
-        if (existing) return existing;
-
-        const wakeup = await tx
-          .insert(agentWakeupRequests)
-          .values({
-            companyId: input.issue.companyId,
-            agentId,
-            source: "automation",
-            triggerDetail: "system",
-            reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-            payload: withRecoveryModelProfileHint({
-              issueId: input.issue.id,
+      } else {
+        scheduledRun = await db.transaction(async (tx) => {
+          const wakeup = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId: input.issue.companyId,
+              agentId,
+              source: "automation",
+              triggerDetail: "system",
+              reason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+              payload: withRecoveryModelProfileHint({
+                issueId: input.issue.id,
+                retryOfRunId: input.latestRun?.id ?? null,
+                recoveryActionId: input.action.id,
+                dispositionRepairFingerprint: input.fingerprint,
+                dispositionRepairAttempt: input.attempt,
+                bypassContinuationSummaryPark: true,
+              }, "normal_model"),
+              status: "queued",
+              requestedByActorType: "system",
+              requestedByActorId: null,
+              idempotencyKey,
+              updatedAt: now,
+            })
+            .returning()
+            .then((rows) => rows[0]!);
+          const run = await tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId: input.issue.companyId,
+              agentId,
+              invocationSource: "automation",
+              triggerDetail: "system",
+              status: "scheduled_retry",
+              wakeupRequestId: wakeup.id,
               retryOfRunId: input.latestRun?.id ?? null,
-              recoveryActionId: input.action.id,
-              dispositionRepairFingerprint: input.fingerprint,
-              dispositionRepairAttempt: input.attempt,
-              bypassContinuationSummaryPark: true,
-            }, "normal_model"),
-            status: "queued",
-            requestedByActorType: "system",
-            requestedByActorId: null,
-            idempotencyKey,
-            updatedAt: now,
-          })
-          .returning()
-          .then((rows) => rows[0]!);
-        const run = await tx
-          .insert(heartbeatRuns)
-          .values({
-            companyId: input.issue.companyId,
-            agentId,
-            invocationSource: "automation",
-            triggerDetail: "system",
-            status: "scheduled_retry",
-            wakeupRequestId: wakeup.id,
-            retryOfRunId: input.latestRun?.id ?? null,
-            scheduledRetryAt: retryAt,
-            scheduledRetryAttempt: input.attempt,
-            scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
-            contextSnapshot: context,
-            updatedAt: now,
-          })
-          .returning()
-          .then((rows) => rows[0]!);
-        await tx
-          .update(agentWakeupRequests)
-          .set({ runId: run.id, updatedAt: now })
-          .where(eq(agentWakeupRequests.id, wakeup.id));
-        return run;
-      });
+              scheduledRetryAt: retryAt,
+              scheduledRetryAttempt: input.attempt,
+              scheduledRetryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+              contextSnapshot: context,
+              updatedAt: now,
+            })
+            .returning()
+            .then((rows) => rows[0]!);
+          await tx
+            .update(agentWakeupRequests)
+            .set({ runId: run.id, updatedAt: now })
+            .where(eq(agentWakeupRequests.id, wakeup.id));
+          return run;
+        });
+      }
+    } catch (error) {
+      if (!isUniqueViolation(error, DISPOSITION_REPAIR_IDEMPOTENCY_INDEX)) throw error;
+      const winningRun = await findScheduledRun();
+      if (!winningRun) throw error;
+      return winningRun;
     }
 
     await db
