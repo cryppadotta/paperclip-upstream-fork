@@ -71,7 +71,6 @@ import { buildAgentUpdatePatch, omitUndefinedEntries, type AgentConfigOverlay } 
 import { useAdapterCapabilities } from "../adapters/use-adapter-capabilities";
 import { resolveForcedKubernetesEnvironment } from "../lib/forced-kubernetes-environment";
 import { agentConfigValuesEqual, buildAgentConfigChanges, originalValue, revertAgentConfigChange, type AgentConfigChange } from "../lib/agent-config-changeset";
-import { copyTextToClipboard } from "../lib/clipboard";
 
 /* ---- Create mode values ---- */
 
@@ -1839,20 +1838,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onDraftChange={isCreate ? undefined : setEnvironmentDraft}
                 />
               </Field>}
-
-               {!configurationShell && !isCreate && (
-                <Field label="Secret access" hint={help.secretAccess}>
-                  <AgentSecretAccessEditor
-                    config={{ ...config, ...overlay.adapterConfig }}
-                    secrets={availableSecrets}
-                    onChange={applyAccessGrants}
-                    proposals={agentBindingProposals}
-                    onApproveProposal={proposalReview.requestApprove}
-                    onRejectProposal={proposalReview.requestReject}
-                  />
-                  {proposalReview.dialogs}
-                 </Field>
-               )}
 
                {/* Edit-only: timeout + grace period */}
               {!isCreate && (

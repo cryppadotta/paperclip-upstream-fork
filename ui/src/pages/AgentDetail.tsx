@@ -1564,6 +1564,8 @@ export function AgentDetail() {
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
             onDirtyChange={setConfigDirty}
+            onDirtyDetailsChange={setConfigDirtyDetails}
+            onChangesetChange={setConfigChangeset}
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}

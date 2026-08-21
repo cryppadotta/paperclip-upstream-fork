@@ -546,7 +546,9 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
 }
 
 async function selectEnvironment(container: HTMLElement, environmentId: string) {
-  const select = container.querySelector("select");
+  const select = Array.from(container.querySelectorAll("select")).find((candidate) =>
+    Array.from(candidate.options).some((option) => option.value === environmentId),
+  );
   await act(async () => {
     if (select) {
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
