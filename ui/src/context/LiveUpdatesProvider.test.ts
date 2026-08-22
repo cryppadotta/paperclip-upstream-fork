@@ -1398,6 +1398,54 @@ describe("invalidateIssueQueriesForAgentErrorTransition", () => {
     expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
   });
 
+  it("matches issues nested inside paginated InfiniteData pages", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        {
+          data: {
+            pages: [
+              [{ id: "issue-0", assigneeAttention: null }],
+              [{ id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-1" } }],
+            ],
+            pageParams: [0, 50],
+          },
+        },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentErrorTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle" },
+    );
+
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.list("company-1"),
+    });
+    expect(invalidations).toContainEqual({ queryKey: ["issues", "detail"] });
+  });
+
+  it("does not invalidate when InfiniteData pages show no error attention for the agent", () => {
+    const { queryClient, invalidations } = makeQueryClient({
+      cachedIssueQueries: [
+        {
+          data: {
+            pages: [[{ id: "issue-1", assigneeAttention: { state: "agent_error", agentId: "agent-other" } }]],
+            pageParams: [0],
+          },
+        },
+      ],
+    });
+
+    __liveUpdatesTestUtils.invalidateIssueQueriesForAgentErrorTransition(
+      queryClient as never,
+      "company-1",
+      { agentId: "agent-1", status: "idle" },
+    );
+
+    expect(invalidations).toEqual([]);
+  });
+
   it("matches cached issue detail objects, not just list arrays", () => {
     const { queryClient, invalidations } = makeQueryClient({
       cachedIssueQueries: [

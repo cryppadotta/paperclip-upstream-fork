@@ -823,7 +823,11 @@ function cachedIssueDataShowsAssigneeError(data: unknown, agentId: string): bool
       .assigneeAttention;
     return !!attention && typeof attention === "object" && attention.agentId === agentId;
   };
-  if (Array.isArray(data)) return data.some(matches);
+  if (Array.isArray(data)) return data.some((entry) => cachedIssueDataShowsAssigneeError(entry, agentId));
+  if (data && typeof data === "object" && Array.isArray((data as { pages?: unknown }).pages)) {
+    return (data as { pages: unknown[] }).pages
+      .some((page) => cachedIssueDataShowsAssigneeError(page, agentId));
+  }
   return matches(data);
 }
 
