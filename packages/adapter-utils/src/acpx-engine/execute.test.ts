@@ -628,7 +628,7 @@ describe("shared ACPX engine runtime behavior", () => {
     });
   });
 
-  it("pins the existing summary and tool-event behavior when no engine knobs are set", async () => {
+  it("defaults run summaries to the final output segment without thought text", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const logs: Array<{ stream: string; text: string }> = [];
@@ -705,13 +705,9 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
-    // The summary is the full concatenation of every text delta, thought
-    // stream included — the engine's long-standing behavior for claude,
-    // codex, gemini, and custom agents. If this assertion breaks, a change
-    // is altering summaries for existing adapters.
-    expect(result.summary).toBe(
-      "Let me get oriented and inspect the PRs…hidden chain of thought## Update\n\n- Checked PR status\n- Continue burn-in",
-    );
+    expect(result.summary).toBe("## Update\n\n- Checked PR status\n- Continue burn-in");
+    expect(result.summary).not.toContain("Let me get oriented");
+    expect(result.summary).not.toContain("hidden chain of thought");
     const toolCallEvents = logs
       .map((entry) => {
         try {
@@ -732,7 +728,7 @@ describe("shared ACPX engine runtime behavior", () => {
     ]);
   });
 
-  it("summarizes only the final output segment when the adapter sets summaryStrategy", async () => {
+  it("does not allow configuration to include thought text in run summaries", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const execute = createAcpxEngineExecutor({
@@ -803,7 +799,7 @@ describe("shared ACPX engine runtime behavior", () => {
         agent: "custom",
         agentCommand: "node ./fake-acp.js",
         stateDir,
-        summaryStrategy: "lastOutputSegment",
+        summaryStrategy: "full",
       },
       context: {},
       onLog: async () => {},
@@ -811,10 +807,72 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
-    // Must not include intermediate narration or thought stream.
     expect(result.summary).toBe("## Update\n\n- Checked PR status\n- Continue burn-in");
     expect(result.summary).not.toContain("Let me get oriented");
     expect(result.summary).not.toContain("hidden chain of thought");
+  });
+
+  it("treats a statusless initial tool call as an output-segment boundary", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ensureSession: async () => ({
+          backendSessionId: "backend-session",
+          agentSessionId: "agent-session",
+          runtimeSessionName: "runtime-session",
+        }),
+        startTurn: () => ({
+          events: (async function* () {
+            yield {
+              type: "text_delta",
+              text: "Intermediate setup that must not be published",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash",
+              title: "Bash",
+              toolCallId: "tool-without-status",
+              tag: "tool_call",
+            };
+            yield {
+              type: "tool_call",
+              text: "Bash (completed)",
+              title: "Bash",
+              status: "completed",
+              toolCallId: "tool-without-status",
+              tag: "tool_call_update",
+            };
+            yield {
+              type: "text_delta",
+              text: "## Final update\n\n- Remediation verified",
+              stream: "output",
+              tag: "agent_message_chunk",
+            };
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+          cancel: async () => {},
+        }),
+        close: async () => {},
+      }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-summary-statusless-tool-call",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir },
+      context: {},
+      onLog: async () => {},
+      onMeta: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("## Final update\n\n- Remediation verified");
+    expect(result.summary).not.toContain("Intermediate setup");
   });
 
   it("buildAcpxRunSummary prefers the last non-empty segment", () => {

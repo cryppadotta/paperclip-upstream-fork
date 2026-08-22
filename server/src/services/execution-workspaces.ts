@@ -60,6 +60,7 @@ import {
   workspaceGitOperationScheduler,
 } from "./workspace-git-operation-scheduler.js";
 import { closeReadinessDemandLimiter } from "./execution-workspace-close-readiness-demand.js";
+import { isRuntimeOwnedGitBranch } from "./execution-workspace-branch-ownership.js";
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
@@ -845,7 +846,9 @@ async function inspectGitCloseReadiness(
 }> {
   const warnings: string[] = [];
   const workspacePath = readNullableString(workspace.providerRef) ?? readNullableString(workspace.cwd);
-  const createdByRuntime = workspace.metadata?.createdByRuntime === true;
+  const createdByRuntime = workspace.providerType === "git_worktree"
+    ? isRuntimeOwnedGitBranch(workspace.metadata)
+    : workspace.metadata?.createdByRuntime === true;
   // Archiving a shared workspace removes only the execution-session record; it
   // never removes or mutates the underlying project workspace. Git state is
   // therefore intentionally not a close-safety input for this mode.
