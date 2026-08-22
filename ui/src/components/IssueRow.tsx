@@ -208,12 +208,12 @@ export function IssueRow({
       role="status"
       aria-label={`${assigneeAttention.agentName ?? "Assigned agent"} is in error status and cannot work on this issue`}
       className={cn(
-        "[&>svg]:size-2.5 ml-1.5 gap-0.5 border-destructive/60 bg-destructive/10 text-(length:--text-nano) text-destructive",
+        "ml-1.5 gap-0.5 border-destructive/60 bg-destructive/10 text-(length:--text-nano) text-destructive",
         selected ? "!border-muted-foreground !text-muted-foreground" : null,
       )}
       title={`${assigneeAttention.agentName ?? "The assigned agent"} is in error status and will not be woken to work on this issue${assigneeAttention.errorReasonExcerpt ? ` — ${assigneeAttention.errorReasonExcerpt}` : ""}. Use Clear error on the agent, or reassign the issue.`}
     >
-      <AlertTriangle className="h-2.5 w-2.5" aria-hidden />
+      <AlertTriangle aria-hidden />
       Agent error
     </Badge>
   ) : null;
