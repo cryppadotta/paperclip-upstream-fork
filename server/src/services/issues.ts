@@ -338,6 +338,7 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
       type: settings.workspaceStrategy.type,
       ...(settings.workspaceStrategy.baseRef ? { baseRef: settings.workspaceStrategy.baseRef } : {}),
       ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
+      ...(settings.workspaceStrategy.existingBranch ? { existingBranch: settings.workspaceStrategy.existingBranch } : {}),
       ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
       ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
       ...(settings.workspaceStrategy.runtimeProvisionCommand

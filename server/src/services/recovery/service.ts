@@ -300,6 +300,11 @@ function readWorkspaceValidationFingerprint(latestRun: LatestIssueRun): string |
   return readNonEmptyString(payload?.fingerprint);
 }
 
+function readConfigurationIncompleteFingerprint(latestRun: LatestIssueRun): string | null {
+  const payload = parseObject(parseObject(latestRun?.resultJson).configurationIncomplete);
+  return readNonEmptyString(payload?.fingerprint);
+}
+
 type WatchdogDecisionActor =
   | { type: "board"; userId?: string | null; runId?: string | null }
   | { type: "agent"; agentId?: string | null; runId?: string | null }
@@ -2867,6 +2872,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ].join(":");
       }
     }
+    // A configuration-incomplete failure that carries a stable identity (for
+    // example an unresolved workspace base ref) dedupes per that identity, so a
+    // different requested ref makes a new recovery action while the same ref
+    // reuses one. Configuration gaps with no fingerprint fall back to the
+    // issue-and-cause scope below.
+    if (input.recoveryCause === "configuration_incomplete") {
+      const configurationFingerprint = readConfigurationIncompleteFingerprint(input.latestRun);
+      if (configurationFingerprint) {
+        return [
+          "source_scoped_recovery",
+          input.issue.companyId,
+          input.issue.id,
+          input.recoveryCause,
+          configurationFingerprint,
+        ].join(":");
+      }
+    }
     return [
       "source_scoped_recovery",
       input.issue.companyId,
@@ -2925,6 +2947,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const action = await recoveryActionsSvc.upsertSourceScoped({
       companyId: input.issue.companyId,
       sourceIssueId: input.issue.id,
+      // A configuration-incomplete failure carries a per-identity fingerprint
+      // (for example the unresolved workspace base ref). A different ref is a
+      // distinct blocker, so it must get a new recovery action and notify the
+      // operator, not overwrite the active action of the prior ref.
+      supersedeOnIdentityChange: recoveryCause === "configuration_incomplete",
       kind: strandedRecoveryActionKind(recoveryCause),
       ownerType: recoveryCause === "provider_quota" && !ownerAgentId ? "system" : ownerAgentId ? "agent" : "board",
       ownerAgentId,

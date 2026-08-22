@@ -112,17 +112,50 @@ export const ISSUE_EXECUTION_WORKSPACE_PREFERENCES = [
   "agent_default",
 ] as const;
 
+// Mirrors git check-ref-format for a single branch name. The runtime verifies
+// the branch actually exists before attaching, so this only rejects values
+// that could never be a branch (path escapes, option injection, ref syntax).
+export function isValidExistingBranchName(value: string): boolean {
+  if (value.length === 0 || value.length > 255) return false;
+  if (value.startsWith("-") || value.startsWith("/") || value.startsWith(".")) return false;
+  if (value.endsWith("/") || value.endsWith(".") || value.endsWith(".lock")) return false;
+  if (value.includes("..") || value.includes("//") || value.includes("@{") || value.includes("/.")) return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x20\x7f~^:?*[\\]/.test(value)) return false;
+  return true;
+}
+
 const executionWorkspaceStrategySchema = z
   .object({
     type: z.enum(["project_primary", "git_worktree", "adapter_managed", "cloud_sandbox"]).optional(),
     baseRef: z.string().optional().nullable(),
     branchTemplate: z.string().optional().nullable(),
+    existingBranch: z.string().trim().refine(isValidExistingBranchName, {
+      message: "existingBranch must be a valid git branch name",
+    }).optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
     runtimeProvisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((strategy, ctx) => {
+    if (!strategy.existingBranch) return;
+    if (strategy.type !== "git_worktree") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["existingBranch"],
+        message: "existingBranch requires workspaceStrategy.type \"git_worktree\"",
+      });
+    }
+    if (strategy.branchTemplate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["existingBranch"],
+        message: "existingBranch and branchTemplate are mutually exclusive",
+      });
+    }
+  });
 
 const ipv4CidrPattern = /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\/(?:3[0-2]|[12]?\d)$/;
 const protectedTaskEgressCidrs = [
@@ -176,7 +209,16 @@ export const issueExecutionWorkspaceSettingsSchema = z
       )).max(100).optional(),
     }).strict().optional().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((settings, ctx) => {
+    if (settings.workspaceStrategy?.existingBranch && settings.mode !== "isolated_workspace") {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workspaceStrategy", "existingBranch"],
+        message: "existingBranch requires mode \"isolated_workspace\"",
+      });
+    }
+  });
 
 export const issueAssigneeAdapterOverridesSchema = z
   .object({

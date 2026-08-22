@@ -109,7 +109,7 @@ import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { isUniqueViolation } from "../db-errors.js";
 import type { StorageService } from "../storage/types.js";
-import { validate } from "../middleware/validate.js";
+import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
@@ -8469,7 +8469,7 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
+  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validateIssueMutationBody(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (isSkillTestScopedActor(req)) {
@@ -8806,7 +8806,7 @@ export function issueRoutes(
     });
   });
 
-  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validate(createChildIssueSchema), async (req, res) => {
+  router.post("/issues/:id/children", applyCreateIssueStatusDefault, validateIssueMutationBody(createChildIssueSchema), async (req, res) => {
     const parentId = req.params.id as string;
     const parent = await getAccessibleResource(req, res, svc.getById(parentId), "Parent issue not found");
     if (!parent) return;
@@ -8988,7 +8988,7 @@ export function issueRoutes(
     res.json(decompositions);
   });
 
-  router.post("/issues/:id/accepted-plan-decompositions", validate(createAcceptedPlanDecompositionSchema), async (req, res) => {
+  router.post("/issues/:id/accepted-plan-decompositions", validateIssueMutationBody(createAcceptedPlanDecompositionSchema), async (req, res) => {
     const sourceIssueId = req.params.id as string;
     const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
@@ -9357,7 +9357,7 @@ export function issueRoutes(
     },
   );
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  router.patch("/issues/:id", validateIssueMutationBody(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
