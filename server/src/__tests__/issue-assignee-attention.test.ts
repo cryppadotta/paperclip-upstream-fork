@@ -59,6 +59,7 @@ describeEmbeddedPostgres("issue assignee attention", () => {
     name: string;
     status: string;
     errorReason?: string | null;
+    pauseReason?: string | null;
   }) {
     const agentId = randomUUID();
     await db.insert(agents).values({
@@ -68,6 +69,7 @@ describeEmbeddedPostgres("issue assignee attention", () => {
       role: "engineer",
       status: input.status,
       errorReason: input.errorReason ?? null,
+      pauseReason: input.pauseReason ?? null,
     });
     return agentId;
   }
@@ -114,7 +116,8 @@ describeEmbeddedPostgres("issue assignee attention", () => {
       agentId: errorAgentId,
       agentName: "Errored Agent",
     });
-    const excerpt = row?.assigneeAttention?.errorReasonExcerpt ?? "";
+    const attention = row?.assigneeAttention;
+    const excerpt = attention?.state === "agent_error" ? attention.errorReasonExcerpt ?? "" : "";
     expect(excerpt).toContain("Run failed");
     expect(excerpt).toContain("adapter crashed");
     // Markdown syntax, links, and fenced blocks are stripped from the excerpt.
@@ -139,7 +142,8 @@ describeEmbeddedPostgres("issue assignee attention", () => {
     });
 
     const row = (await svc.list(companyId, { status: "todo" })).find((issue) => issue.id === issueId);
-    const excerpt = row?.assigneeAttention?.errorReasonExcerpt ?? "";
+    const attention = row?.assigneeAttention;
+    const excerpt = attention?.state === "agent_error" ? attention.errorReasonExcerpt ?? "" : "";
     expect(excerpt.length).toBeLessThanOrEqual(163);
     expect(excerpt.endsWith("...")).toBe(true);
   });
@@ -218,6 +222,94 @@ describeEmbeddedPostgres("issue assignee attention", () => {
     expect(rows.find((issue) => issue.id === backlogIssueId)?.assigneeAttention).toBeUndefined();
   });
 
+  it("surfaces a paused assignee on active issues as agent_paused with a sanitized reason", async () => {
+    const companyId = await createCompany("IAH");
+    const pausedAgentId = await createAgent({
+      companyId,
+      name: "Paused Agent",
+      status: "paused",
+      pauseReason: "Paused by operator: `budget` review — see [thread](https://internal/thread)",
+    });
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "IAH-1",
+      status: "in_progress",
+      assigneeAgentId: pausedAgentId,
+    });
+
+    const row = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === issueId);
+    expect(row?.assigneeAttention).toMatchObject({
+      state: "agent_paused",
+      agentId: pausedAgentId,
+      agentName: "Paused Agent",
+    });
+    const attention = row?.assigneeAttention;
+    const excerpt = attention?.state === "agent_paused" ? attention.pauseReasonExcerpt ?? "" : "";
+    expect(excerpt).toContain("Paused by operator");
+    expect(excerpt).toContain("budget review");
+    expect(excerpt).not.toContain("`");
+    expect(excerpt).not.toContain("https://internal/thread");
+  });
+
+  it("skips terminal and parked issues even when the assignee is paused", async () => {
+    const companyId = await createCompany("IAI");
+    const pausedAgentId = await createAgent({
+      companyId,
+      name: "Paused Agent",
+      status: "paused",
+      pauseReason: "manual",
+    });
+    const doneIssueId = await insertIssue({
+      companyId,
+      identifier: "IAI-1",
+      status: "done",
+      assigneeAgentId: pausedAgentId,
+    });
+    const backlogIssueId = await insertIssue({
+      companyId,
+      identifier: "IAI-2",
+      status: "backlog",
+      assigneeAgentId: pausedAgentId,
+    });
+    const cancelledIssueId = await insertIssue({
+      companyId,
+      identifier: "IAI-3",
+      status: "cancelled",
+      assigneeAgentId: pausedAgentId,
+    });
+
+    const rows = await svc.list(companyId, { status: "done,backlog,cancelled" });
+    expect(rows.find((issue) => issue.id === doneIssueId)?.assigneeAttention).toBeUndefined();
+    expect(rows.find((issue) => issue.id === backlogIssueId)?.assigneeAttention).toBeUndefined();
+    expect(rows.find((issue) => issue.id === cancelledIssueId)?.assigneeAttention).toBeUndefined();
+  });
+
+  it("never reads a paused agent's reason across company boundaries", async () => {
+    const companyId = await createCompany("IAJ");
+    const otherCompanyId = await createCompany("IAK");
+    const foreignPausedAgentId = await createAgent({
+      companyId: otherCompanyId,
+      name: "Foreign Paused Agent",
+      status: "paused",
+      pauseReason: "foreign company pause reason",
+    });
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "IAJ-1",
+      status: "in_progress",
+      assigneeAgentId: foreignPausedAgentId,
+    });
+
+    const row = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === issueId);
+    expect(row).toBeDefined();
+    expect(row?.assigneeAttention).toBeUndefined();
+
+    const detailMap = await svc.listAssigneeAttention(companyId, [
+      { id: issueId, companyId, status: "in_progress", assigneeAgentId: foreignPausedAgentId },
+    ]);
+    expect(detailMap.size).toBe(0);
+  });
+
   it("appears and disappears as the agent's status changes", async () => {
     const companyId = await createCompany("IAG");
     const agentId = await createAgent({ companyId, name: "Flappy Agent", status: "error", errorReason: "boom" });
@@ -235,6 +327,38 @@ describeEmbeddedPostgres("issue assignee attention", () => {
     await db
       .update(agents)
       .set({ status: "idle", errorReason: null })
+      .where(eq(agents.id, agentId));
+
+    row = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === issueId);
+    expect(row?.assigneeAttention).toBeUndefined();
+  });
+
+  it("tracks pause and resume transitions in both directions", async () => {
+    const companyId = await createCompany("IAL");
+    const agentId = await createAgent({ companyId, name: "Cycling Agent", status: "idle" });
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "IAL-1",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+
+    let row = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === issueId);
+    expect(row?.assigneeAttention).toBeUndefined();
+
+    // Same transition the pause action performs on the agent row.
+    await db
+      .update(agents)
+      .set({ status: "paused", pauseReason: "manual" })
+      .where(eq(agents.id, agentId));
+
+    row = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === issueId);
+    expect(row?.assigneeAttention).toMatchObject({ state: "agent_paused", agentId });
+
+    // Same transition resume performs.
+    await db
+      .update(agents)
+      .set({ status: "idle", pauseReason: null })
       .where(eq(agents.id, agentId));
 
     row = (await svc.list(companyId, { status: "in_progress" })).find((issue) => issue.id === issueId);

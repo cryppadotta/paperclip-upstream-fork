@@ -623,6 +623,8 @@ export type {
   IssueSubtreeDiagnosticEdge,
   IssueSubtreeDiagnosticsResponse,
   IssueAssigneeAttention,
+  IssueAssigneeErrorAttention,
+  IssueAssigneePausedAttention,
   IssueBlockerAttention,
   IssueBlockerAttentionIssueSummary,
   IssueBlockerAttentionReason,

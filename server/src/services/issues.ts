@@ -2333,10 +2333,11 @@ async function listIssueProductivityReviewMap(
   return map;
 }
 
-// Issue statuses on which an error-status assignee is an execution blocker worth
-// surfacing. Terminal and parked issues are excluded on purpose: nothing is
-// waiting on the agent there.
+// Issue statuses on which a dormant assignee (agent in `error` or `paused`
+// status) is execution attention worth surfacing. Terminal and parked issues
+// are excluded on purpose: nothing is waiting on the agent there.
 const ASSIGNEE_ATTENTION_ISSUE_STATUSES = new Set(["todo", "in_progress", "in_review", "blocked"]);
+const ASSIGNEE_ATTENTION_AGENT_STATUSES = ["error", "paused"] as const;
 const ASSIGNEE_ATTENTION_REASON_MAX_LENGTH = 160;
 
 type IssueAssigneeAttentionInputRow = {
@@ -2378,7 +2379,14 @@ async function listIssueAssigneeAttentionMap(
   if (candidates.length === 0) return attentionMap;
 
   const agentIds = [...new Set(candidates.map((row) => row.assigneeAgentId as string))];
-  const agentRows: Array<{ id: string; companyId: string; name: string | null; status: string; errorReason: string | null }> =
+  const agentRows: Array<{
+    id: string;
+    companyId: string;
+    name: string | null;
+    status: string;
+    errorReason: string | null;
+    pauseReason: string | null;
+  }> =
     await dbOrTx
       .select({
         id: agents.id,
@@ -2386,11 +2394,12 @@ async function listIssueAssigneeAttentionMap(
         name: agents.name,
         status: agents.status,
         errorReason: agents.errorReason,
+        pauseReason: agents.pauseReason,
       })
       .from(agents)
       .where(and(
         eq(agents.companyId, companyId),
-        eq(agents.status, "error"),
+        inArray(agents.status, [...ASSIGNEE_ATTENTION_AGENT_STATUSES]),
         inArray(agents.id, agentIds),
       ));
   if (agentRows.length === 0) return attentionMap;
@@ -2398,13 +2407,22 @@ async function listIssueAssigneeAttentionMap(
 
   for (const row of candidates) {
     const agent = agentsById.get(row.assigneeAgentId as string);
-    if (!agent || agent.companyId !== companyId || agent.status !== "error") continue;
-    attentionMap.set(row.id, {
-      state: "agent_error",
-      agentId: agent.id,
-      agentName: agent.name ?? null,
-      errorReasonExcerpt: assigneeAttentionReasonExcerpt(agent.errorReason),
-    });
+    if (!agent || agent.companyId !== companyId) continue;
+    if (agent.status === "error") {
+      attentionMap.set(row.id, {
+        state: "agent_error",
+        agentId: agent.id,
+        agentName: agent.name ?? null,
+        errorReasonExcerpt: assigneeAttentionReasonExcerpt(agent.errorReason),
+      });
+    } else if (agent.status === "paused") {
+      attentionMap.set(row.id, {
+        state: "agent_paused",
+        agentId: agent.id,
+        agentName: agent.name ?? null,
+        pauseReasonExcerpt: assigneeAttentionReasonExcerpt(agent.pauseReason),
+      });
+    }
   }
   return attentionMap;
 }

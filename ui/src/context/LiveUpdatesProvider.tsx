@@ -816,25 +816,28 @@ function buildAgentStatusToast(
   };
 }
 
-function cachedIssueDataShowsAssigneeError(data: unknown, agentId: string): boolean {
+function cachedIssueDataShowsAssigneeAttention(data: unknown, agentId: string): boolean {
   const matches = (candidate: unknown): boolean => {
     if (!candidate || typeof candidate !== "object") return false;
     const attention = (candidate as { assigneeAttention?: { agentId?: unknown } | null })
       .assigneeAttention;
     return !!attention && typeof attention === "object" && attention.agentId === agentId;
   };
-  if (Array.isArray(data)) return data.some((entry) => cachedIssueDataShowsAssigneeError(entry, agentId));
+  if (Array.isArray(data)) return data.some((entry) => cachedIssueDataShowsAssigneeAttention(entry, agentId));
   if (data && typeof data === "object" && Array.isArray((data as { pages?: unknown }).pages)) {
     return (data as { pages: unknown[] }).pages
-      .some((page) => cachedIssueDataShowsAssigneeError(page, agentId));
+      .some((page) => cachedIssueDataShowsAssigneeAttention(page, agentId));
   }
   return matches(data);
 }
 
-// assigneeAttention on issue reads is derived from the assigned agent's error status,
-// so issue caches must refetch when an agent enters error and when it leaves error
-// (e.g. Clear error), or rows keep showing a stale execution-blocker signal.
-function invalidateIssueQueriesForAgentErrorTransition(
+const ASSIGNEE_ATTENTION_AGENT_STATUSES = new Set(["error", "paused"]);
+
+// assigneeAttention on issue reads is derived from the assigned agent's dormant
+// status (error or paused), so issue caches must refetch when an agent enters
+// either state and when it leaves it (e.g. Clear error, Resume), or rows keep
+// showing a stale execution-attention signal.
+function invalidateIssueQueriesForAgentAvailabilityTransition(
   queryClient: QueryClient,
   companyId: string,
   payload: Record<string, unknown>,
@@ -842,14 +845,14 @@ function invalidateIssueQueriesForAgentErrorTransition(
   const agentId = readString(payload.agentId);
   const status = readString(payload.status);
   if (!agentId || !status) return;
-  const enteredError = status === "error";
-  const cacheShowsErrorForAgent =
-    !enteredError &&
+  const enteredAttention = ASSIGNEE_ATTENTION_AGENT_STATUSES.has(status);
+  const cacheShowsAttentionForAgent =
+    !enteredAttention &&
     queryClient
       .getQueryCache()
       .findAll({ queryKey: ["issues"] })
-      .some((query) => cachedIssueDataShowsAssigneeError(query.state.data, agentId));
-  if (!enteredError && !cacheShowsErrorForAgent) return;
+      .some((query) => cachedIssueDataShowsAssigneeAttention(query.state.data, agentId));
+  if (!enteredAttention && !cacheShowsAttentionForAgent) return;
   queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
   queryClient.invalidateQueries({ queryKey: ["issues", "detail"] });
 }
@@ -1272,7 +1275,7 @@ function handleLiveEvent(
     queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    invalidateIssueQueriesForAgentErrorTransition(queryClient, expectedCompanyId, payload);
+    invalidateIssueQueriesForAgentAvailabilityTransition(queryClient, expectedCompanyId, payload);
     const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
     if (
       toast &&
@@ -1352,7 +1355,7 @@ export const __liveUpdatesTestUtils = {
   invalidateActivityQueries,
   invalidateHeartbeatQueries,
   invalidateHeartbeatProgressQueries,
-  invalidateIssueQueriesForAgentErrorTransition,
+  invalidateIssueQueriesForAgentAvailabilityTransition,
   invalidateVisibleIssueRunQueries,
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,

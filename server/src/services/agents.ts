@@ -852,6 +852,19 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (updated) {
+        // Issue reads derive assigneeAttention from the assigned agent's
+        // dormant status, so clients need a live signal to refresh caches.
+        publishLiveEvent({
+          companyId: updated.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: updated.id,
+            status: updated.status,
+            outcome: "paused",
+          },
+        });
+      }
       return updated ? getById(updated.id) : null;
     },
 
@@ -875,6 +888,17 @@ export function agentService(db: Db) {
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      if (updated) {
+        publishLiveEvent({
+          companyId: updated.companyId,
+          type: "agent.status",
+          payload: {
+            agentId: updated.id,
+            status: updated.status,
+            outcome: "resumed",
+          },
+        });
+      }
       return updated ? getById(updated.id) : null;
     },
 

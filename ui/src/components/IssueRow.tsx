@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { ExternalObjectSummary, Issue, IssueRecoveryAction } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
-import { AlertTriangle, Archive, Eye, Flag } from "lucide-react";
+import { AlertTriangle, Archive, Eye, Flag, PauseCircle } from "lucide-react";
 import {
   createIssueDetailPath,
   rememberIssueDetailLocationState,
@@ -217,6 +217,21 @@ export function IssueRow({
       Agent error
     </Badge>
   ) : null;
+  const assigneePausedIndicator = assigneeAttention?.state === "agent_paused" ? (
+    <Badge variant="outline"
+      data-testid="issue-row-assignee-paused"
+      role="status"
+      aria-label={`${assigneeAttention.agentName ?? "Assigned agent"} is paused and cannot work on this issue`}
+      className={cn(
+        "ml-1.5 gap-0.5 border-amber-500/60 bg-amber-500/15 text-(length:--text-nano) text-amber-700 dark:text-amber-300",
+        selected ? "!border-muted-foreground !text-muted-foreground" : null,
+      )}
+      title={`${assigneeAttention.agentName ?? "The assigned agent"} is paused and will not be woken to work on this issue${assigneeAttention.pauseReasonExcerpt ? ` — pause reason: ${assigneeAttention.pauseReasonExcerpt}` : ""}. Resume the agent, or reassign the issue.`}
+    >
+      <PauseCircle aria-hidden />
+      Agent paused
+    </Badge>
+  ) : null;
 
   return (
     <div
@@ -260,6 +275,7 @@ export function IssueRow({
         {productivityReviewIndicator}
         {parkedBlockerIndicator}
         {assigneeErrorIndicator}
+        {assigneePausedIndicator}
         {recoveryIndicator}
       </span>
       <span className="flex min-w-0 flex-1 flex-col gap-1 sm:contents">
@@ -335,6 +351,7 @@ export function IssueRow({
               </span>
               {parkedBlockerIndicator}
               {assigneeErrorIndicator}
+              {assigneePausedIndicator}
               {recoveryIndicator}
             </>
           )}

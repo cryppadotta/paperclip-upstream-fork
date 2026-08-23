@@ -429,16 +429,27 @@ export interface IssueBlockerAttention {
 
 /**
  * Present on active issues whose assigned agent cannot make progress until an
- * operator acts (currently only agent `error` status). Additive signal only:
- * it never changes issue workflow state.
+ * operator acts: the agent is in `error` status (a fault to clear) or `paused`
+ * status (a deliberate stop; the issue still cannot execute). Additive signal
+ * only: it never changes issue workflow state.
  */
-export interface IssueAssigneeAttention {
+export interface IssueAssigneeErrorAttention {
   state: "agent_error";
   agentId: string;
   agentName: string | null;
   /** Sanitized, length-capped excerpt of the agent's error reason. Never raw run logs. */
   errorReasonExcerpt: string | null;
 }
+
+export interface IssueAssigneePausedAttention {
+  state: "agent_paused";
+  agentId: string;
+  agentName: string | null;
+  /** Sanitized, length-capped excerpt of the agent's pause reason (e.g. manual, budget). */
+  pauseReasonExcerpt: string | null;
+}
+
+export type IssueAssigneeAttention = IssueAssigneeErrorAttention | IssueAssigneePausedAttention;
 
 export type IssueReviewAttentionState = "none" | "covered" | "stalled";
 
