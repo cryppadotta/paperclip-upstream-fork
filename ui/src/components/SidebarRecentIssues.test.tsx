@@ -146,7 +146,7 @@ describe("SidebarRecentIssues", () => {
     flushSync(() => showMore?.click());
     expect(container.querySelectorAll('a[href^="/issues/PAP-"]')).toHaveLength(25);
     expect(container.textContent).toContain("Show fewer");
-    expect(container.querySelector('a[href="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"]')?.textContent)
+    expect(container.querySelector('a[href="/issues?touchedByUserId=me&sortField=last_interaction&sortDir=desc"]')?.textContent)
       .toContain("All my activity");
 
     flushSync(() => root.unmount());
@@ -164,7 +164,7 @@ describe("SidebarRecentIssues", () => {
     renderRecent({ issues });
 
     expect(container.querySelectorAll("a")).toHaveLength(1);
-    expect(container.querySelector('a[href="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/issues?touchedByUserId=me&sortField=last_interaction&sortDir=desc"]')).not.toBeNull();
     expect(container.querySelector(".bg-amber-500")).not.toBeNull();
     expect(container.textContent).not.toContain("Newest");
 

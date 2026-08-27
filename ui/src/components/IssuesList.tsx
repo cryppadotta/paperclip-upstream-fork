@@ -143,7 +143,7 @@ const progressSegmentClasses: Record<IssueStatus, string> = {
 
 /* ── View state ── */
 
-export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "interaction" | "workflow";
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 export type BoardColumnPageSize = KanbanColumnPageSize;
@@ -300,6 +300,11 @@ function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
         return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
       case "updated":
         return dir * (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+      case "interaction":
+        return dir * (
+          new Date(a.myLastInteractionAt ?? a.updatedAt).getTime()
+          - new Date(b.myLastInteractionAt ?? b.updatedAt).getTime()
+        );
       default:
         return 0;
     }
@@ -484,6 +489,7 @@ interface IssuesListProps {
   createIssueLabel?: string;
   defaultSortField?: IssueSortField;
   defaultSortDir?: "asc" | "desc";
+  showInteractionSort?: boolean;
   showProgressSummary?: boolean;
   /**
    * When set together with `showProgressSummary`, the progress strip fetches
@@ -701,6 +707,7 @@ export function IssuesList({
   createIssueLabel,
   defaultSortField,
   defaultSortDir = "asc",
+  showInteractionSort = false,
   showProgressSummary = false,
   parentIssueIdForCostSummary,
   enableRoutineVisibilityFilter = false,
@@ -1854,8 +1861,10 @@ export function IssuesList({
                     ["title", "Title"],
                     ["created", "Created"],
                     ["updated", "Updated"],
+                    ["interaction", "Last interaction"],
                   ] as const)
-                    .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
+                    .filter(([field]) => (SHOW_TASK_PRIORITY_UI || field !== "priority")
+                      && (showInteractionSort || field !== "interaction"))
                     .map(([field, label]) => (
                     <button
                       key={field}

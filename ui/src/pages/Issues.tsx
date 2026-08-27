@@ -79,6 +79,7 @@ export function Issues() {
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
   const touchedByUserId = getTouchedByUserRouteFilter(searchParams);
   const myActivityView = touchedByUserId === "me";
+  const sortByLastInteraction = myActivityView && searchParams.get("sortField") === "last_interaction";
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
@@ -151,6 +152,8 @@ export function Issues() {
       participantAgentId ?? "__all__",
       "touched-by-user",
       touchedByUserId ?? "__all__",
+      "sort",
+      sortByLastInteraction ? "last-interaction" : "updated",
       "workspace",
       workspaceIdFilter ?? "__all__",
       "compact",
@@ -165,7 +168,7 @@ export function Issues() {
       includeRoutineExecutions: true,
       limit: issuePageSize,
       offset: pageParam,
-      sortField: "updated",
+      sortField: sortByLastInteraction ? "last_interaction" : "updated",
       sortDir: "desc",
     }, { signal }),
     initialPageParam: 0,
@@ -214,8 +217,9 @@ export function Issues() {
       initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
-      defaultSortField={myActivityView ? "updated" : undefined}
+      defaultSortField={sortByLastInteraction ? "interaction" : myActivityView ? "updated" : undefined}
       defaultSortDir={myActivityView ? "desc" : undefined}
+      showInteractionSort={myActivityView}
       enableRoutineVisibilityFilter
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}

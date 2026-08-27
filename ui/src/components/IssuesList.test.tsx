@@ -813,6 +813,47 @@ describe("IssuesList", () => {
     });
   });
 
+  it("sorts an activity view by the current user's last interaction", async () => {
+    const olderInteraction = createIssue({
+      id: "issue-newer-update",
+      identifier: "PAP-1",
+      title: "Newer task update",
+      updatedAt: new Date("2026-04-03T00:00:00.000Z"),
+      myLastInteractionAt: new Date("2026-04-01T00:00:00.000Z"),
+    });
+    const newerInteraction = createIssue({
+      id: "issue-newer-interaction",
+      identifier: "PAP-2",
+      title: "Newer user interaction",
+      updatedAt: new Date("2026-04-02T00:00:00.000Z"),
+      myLastInteractionAt: new Date("2026-04-02T00:00:00.000Z"),
+    });
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[olderInteraction, newerInteraction]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-my-activity"
+        defaultSortField="interaction"
+        defaultSortDir="desc"
+        showInteractionSort
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const rows = Array.from(container.querySelectorAll('[data-testid="issue-row"]'));
+      expect(rows.map((row) => row.textContent)).toEqual([
+        expect.stringContaining("Newer user interaction"),
+        expect.stringContaining("Newer task update"),
+      ]);
+    });
+
+    act(() => root.unmount());
+  });
+
   it("hides the Priority option from the Sort and Group menus while priority UI is off (PAP-411)", async () => {
     const { root } = renderWithQueryClient(
       <IssuesList

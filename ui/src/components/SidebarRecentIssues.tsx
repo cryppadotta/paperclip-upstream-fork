@@ -69,7 +69,7 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
     return (
       <SidebarSection label="Recent">
         <SidebarNavItem
-          to="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"
+          to="/issues?touchedByUserId=me&sortField=last_interaction&sortDir=desc"
           label="Recent"
           icon={Clock3}
           badge={hasAttention ? 1 : undefined}
@@ -140,7 +140,7 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
       ) : null}
       {expanded ? (
         <Link
-          to="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"
+          to="/issues?touchedByUserId=me&sortField=last_interaction&sortDir=desc"
           className="mx-2 rounded-md px-2 py-1 text-(length:--text-nano) font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
         >
           All my activity →

@@ -878,6 +878,7 @@ export interface Issue {
   workProducts?: IssueWorkProduct[];
   mentionedProjects?: Project[];
   myLastTouchAt?: Date | null;
+  myLastInteractionAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
@@ -935,6 +936,7 @@ export type CompactIssue = Pick<
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
   myLastTouchAt?: Date | null;
+  myLastInteractionAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
