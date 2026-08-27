@@ -784,6 +784,25 @@ export interface IssueChangeReceiptEntry {
 
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
+export type IssueUserRecencyKind =
+  | "created"
+  | "commented"
+  | "interaction"
+  | "approval"
+  | "edited"
+  | "document";
+
+export interface RecentIssue {
+  id: string;
+  identifier: string | null;
+  title: string;
+  status: IssueStatus;
+  lastInteractedAt: Date | string;
+  kind: IssueUserRecencyKind;
+  hasActiveRun: boolean;
+  needsAttention: boolean;
+}
+
 export interface Issue {
   id: string;
   companyId: string;
