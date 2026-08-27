@@ -1,9 +1,12 @@
 import type { AttentionFeed, AttentionItem, RecentIssue } from "@paperclipai/shared";
+import { Clock3 } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
+import { Link } from "@/lib/router";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection } from "./SidebarSection";
 import { sourceMeta, attentionTaskRef } from "../lib/attention";
 import { timeAgo } from "../lib/timeAgo";
+import { useSidebar } from "../context/SidebarContext";
 
 const VISIBLE_RECENT_ISSUES = 10;
 const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
@@ -46,11 +49,36 @@ export interface SidebarRecentIssuesProps {
 
 export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: SidebarRecentIssuesProps) {
   const [open, setOpen] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const { collapsed, peeking } = useSidebar();
+  const rail = collapsed && !peeking;
   // Keep server order as the sole row-order source. Decorations are derived
   // separately so a live or attention transition cannot move a row.
-  const visibleIssues = useMemo(() => issues.slice(0, VISIBLE_RECENT_ISSUES), [issues]);
+  const visibleIssues = useMemo(
+    () => issues.slice(0, expanded ? 25 : VISIBLE_RECENT_ISSUES),
+    [expanded, issues],
+  );
+  const hasAttention = useMemo(
+    () => issues.some((issue) => issue.needsAttention || attentionForIssue(attentionFeed, issue) !== null),
+    [attentionFeed, issues],
+  );
 
   if (visibleIssues.length === 0) return null;
+
+  if (rail) {
+    return (
+      <SidebarSection label="Recent">
+        <SidebarNavItem
+          to="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"
+          label="Recent"
+          icon={Clock3}
+          badge={hasAttention ? 1 : undefined}
+          badgeLabel="task needs you"
+          badgeTone="warning"
+        />
+      </SidebarSection>
+    );
+  }
 
   return (
     <SidebarSection label="Recent" collapsible={{ open, onOpenChange: setOpen }}>
@@ -61,7 +89,7 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
         const attentionReason = attention ? sourceMeta(attention.sourceKind).label : needsAttention ? "Decision requested" : null;
         const interaction = `${INTERACTION_LABELS[issue.kind]} · ${timeAgo(issue.lastInteractedAt)}`;
         const status = statusLabel(issue.status);
-        const tooltip = [issue.identifier, issue.title, `Status: ${status}`, attentionReason, interaction]
+        const tooltip = [issue.identifier, issue.title, `Status: ${status}`, attentionReason, isLive ? "Live run" : null, interaction]
           .filter(Boolean)
           .join("\n");
 
@@ -79,7 +107,7 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
             )}
             className="min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             labelClassName={TERMINAL_STATUSES.has(issue.status) ? "text-muted-foreground" : undefined}
-            trailingLabel={[needsAttention ? "Needs you" : null, isLive ? "live" : null].filter(Boolean).join(", ")}
+            trailingLabel={[needsAttention ? "Needs you" : null, isLive ? "Live run" : null].filter(Boolean).join(", ")}
             tooltip={tooltip}
             trailing={(
               <span className="flex shrink-0 items-center gap-1" aria-label={[needsAttention ? "Needs you" : null, isLive ? "Live run" : null].filter(Boolean).join(", ") || undefined}>
@@ -89,12 +117,11 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
                   </span>
                 ) : null}
                 {isLive ? (
-                  <span className="flex items-center gap-1 text-(length:--text-micro) font-medium text-(--status-task-icon-done)" aria-label="Live run">
+                  <span className="flex items-center text-(--status-task-icon-done)" aria-label="Live run" title="Live run">
                     <span className="relative flex size-2" aria-hidden="true">
                       <span className="absolute inline-flex size-full animate-ping rounded-full bg-(--status-task-done) opacity-75 motion-reduce:animate-none" />
                       <span className="relative inline-flex size-2 rounded-full bg-(--status-task-icon-done)" />
                     </span>
-                    live
                   </span>
                 ) : null}
               </span>
@@ -102,6 +129,23 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
           />
         );
       })}
+      {issues.length > VISIBLE_RECENT_ISSUES ? (
+        <button
+          type="button"
+          className="mx-2 rounded-md px-2 py-1 text-left text-(length:--text-nano) font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "Show fewer" : "Show more…"}
+        </button>
+      ) : null}
+      {expanded ? (
+        <Link
+          to="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"
+          className="mx-2 rounded-md px-2 py-1 text-(length:--text-nano) font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+        >
+          All my activity →
+        </Link>
+      ) : null}
     </SidebarSection>
   );
 }

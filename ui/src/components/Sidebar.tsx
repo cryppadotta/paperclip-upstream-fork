@@ -238,6 +238,7 @@ export function Sidebar() {
 
         {showRecentIssues && recentIssues.length > 0 ? (
           <SidebarRecentIssues
+            key={selectedCompanyId}
             issues={recentIssues}
             liveIssueIds={liveIssueIds}
             attentionFeed={attentionFeed}

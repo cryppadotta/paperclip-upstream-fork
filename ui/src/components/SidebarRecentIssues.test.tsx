@@ -9,6 +9,10 @@ import { TooltipProvider } from "./ui/tooltip";
 import { SidebarRecentIssues } from "./SidebarRecentIssues";
 
 vi.mock("@/lib/router", () => ({
+  Link: ({ to, children, ...props }: {
+    to: string;
+    children: ReactNode;
+  }) => <a href={to} {...props}>{children}</a>,
   NavLink: ({ to, children, className, ...props }: {
     to: string;
     children: ReactNode;
@@ -28,10 +32,12 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     isMobile: false,
     setSidebarOpen: vi.fn(),
-    collapsed: false,
-    peeking: false,
+    collapsed: sidebarState.collapsed,
+    peeking: sidebarState.peeking,
   }),
 }));
+
+const sidebarState = vi.hoisted(() => ({ collapsed: false, peeking: false }));
 
 const recentIssue = (overrides: Partial<RecentIssue> = {}): RecentIssue => ({
   id: "issue-1",
@@ -70,6 +76,8 @@ describe("SidebarRecentIssues", () => {
   }
 
   beforeEach(() => {
+    sidebarState.collapsed = false;
+    sidebarState.peeking = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -93,6 +101,7 @@ describe("SidebarRecentIssues", () => {
     });
 
     expect(container.textContent).toContain("Needs you");
+    expect(container.textContent).not.toContain("live");
     expect(container.querySelector('[aria-label="Live run"]')).not.toBeNull();
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/PAP-1");
   });
@@ -103,10 +112,10 @@ describe("SidebarRecentIssues", () => {
       recentIssue({ id: "issue-2", identifier: "PAP-2", title: "Older" }),
     ];
     renderRecent({ issues, liveIssueIds: new Set(["issue-2"]), attentionFeed: emptyAttentionFeed });
-    expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newest", "Olderlive"]);
+    expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newest", "Older"]);
 
     renderRecent({ issues, liveIssueIds: new Set(["issue-1"]), attentionFeed: emptyAttentionFeed });
-    expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newestlive", "Older"]);
+    expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newest", "Older"]);
   });
 
   it("dims terminal rows and safely truncates hostile titles", () => {
@@ -122,5 +131,45 @@ describe("SidebarRecentIssues", () => {
     expect(title?.className).toContain("text-muted-foreground");
     expect(title?.closest("a")?.className).toContain("min-w-0");
     expect(document.querySelector("script")).toBeNull();
+  });
+
+  it("expands from 10 to 25 in memory and resets after remount", () => {
+    const issues = Array.from({ length: 25 }, (_, index) => recentIssue({
+      id: `issue-${index + 1}`,
+      identifier: `PAP-${index + 1}`,
+      title: `Task ${index + 1}`,
+    }));
+    renderRecent({ issues });
+
+    expect(container.querySelectorAll('a[href^="/issues/PAP-"]')).toHaveLength(10);
+    const showMore = [...container.querySelectorAll("button")].find((button) => button.textContent === "Show more…");
+    flushSync(() => showMore?.click());
+    expect(container.querySelectorAll('a[href^="/issues/PAP-"]')).toHaveLength(25);
+    expect(container.textContent).toContain("Show fewer");
+    expect(container.querySelector('a[href="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"]')?.textContent)
+      .toContain("All my activity");
+
+    flushSync(() => root.unmount());
+    root = createRoot(container);
+    renderRecent({ issues });
+    expect(container.querySelectorAll('a[href^="/issues/PAP-"]')).toHaveLength(10);
+  });
+
+  it("uses one rail clock with an aggregate amber dot and restores the same rows in the peek", () => {
+    const issues = [
+      recentIssue({ id: "issue-1", title: "Newest" }),
+      recentIssue({ id: "issue-2", title: "Needs review", needsAttention: true }),
+    ];
+    sidebarState.collapsed = true;
+    renderRecent({ issues });
+
+    expect(container.querySelectorAll("a")).toHaveLength(1);
+    expect(container.querySelector('a[href="/issues?touchedByUserId=me&sortField=updated&sortDir=desc"]')).not.toBeNull();
+    expect(container.querySelector(".bg-amber-500")).not.toBeNull();
+    expect(container.textContent).not.toContain("Newest");
+
+    sidebarState.peeking = true;
+    renderRecent({ issues });
+    expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newest", "Needs reviewNeeds you"]);
   });
 });

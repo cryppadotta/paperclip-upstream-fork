@@ -42,6 +42,10 @@ export function mergeIssuePagesStable<T extends { id: string }>(pages: T[][]): T
   return merged;
 }
 
+export function getTouchedByUserRouteFilter(searchParams: URLSearchParams): "me" | undefined {
+  return searchParams.get("touchedByUserId") === "me" ? "me" : undefined;
+}
+
 export function buildIssuesSearchUrl(currentHref: string, search: string): string | null {
   const url = new URL(currentHref);
   const currentSearch = url.searchParams.get("q") ?? "";
@@ -73,6 +77,8 @@ export function Issues() {
     return urlSearch;
   }, [searchOverride, urlSearch, location.search]);
   const participantAgentId = searchParams.get("participantAgentId") ?? undefined;
+  const touchedByUserId = getTouchedByUserRouteFilter(searchParams);
+  const myActivityView = touchedByUserId === "me";
   const initialWorkspaces = searchParams.getAll("workspace").filter((workspaceId) => workspaceId.length > 0);
   const workspaceIdFilter = initialWorkspaces.length === 1 ? initialWorkspaces[0] : undefined;
   const handleSearchChange = useCallback((search: string) => {
@@ -143,6 +149,8 @@ export function Issues() {
       ...queryKeys.issues.list(selectedCompanyId!),
       "participant-agent",
       participantAgentId ?? "__all__",
+      "touched-by-user",
+      touchedByUserId ?? "__all__",
       "workspace",
       workspaceIdFilter ?? "__all__",
       "compact",
@@ -152,6 +160,7 @@ export function Issues() {
     ],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(selectedCompanyId!, {
       participantAgentId,
+      touchedByUserId,
       workspaceId: workspaceIdFilter,
       includeRoutineExecutions: true,
       limit: issuePageSize,
@@ -199,17 +208,21 @@ export function Issues() {
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
-      viewStateKey="paperclip:issues-view"
+      viewStateKey={myActivityView ? "paperclip:issues-my-activity-view" : "paperclip:issues-view"}
       issueLinkState={issueLinkState}
       initialAssignees={searchParams.get("assignee") ? [searchParams.get("assignee")!] : undefined}
       initialWorkspaces={initialWorkspaces.length > 0 ? initialWorkspaces : undefined}
       initialSearch={syncedSearch}
       onSearchChange={handleSearchChange}
+      defaultSortField={myActivityView ? "updated" : undefined}
+      defaultSortDir={myActivityView ? "desc" : undefined}
       enableRoutineVisibilityFilter
       hasMoreIssues={hasMoreServerIssues}
       onLoadMoreIssues={loadMoreServerIssues}
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
-      searchFilters={participantAgentId || workspaceIdFilter ? { participantAgentId, workspaceId: workspaceIdFilter } : undefined}
+      searchFilters={participantAgentId || workspaceIdFilter || touchedByUserId
+        ? { participantAgentId, workspaceId: workspaceIdFilter, touchedByUserId }
+        : undefined}
     />
   );
 }
