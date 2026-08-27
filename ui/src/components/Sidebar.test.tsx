@@ -337,6 +337,7 @@ describe("Sidebar", () => {
     const root = await renderSidebar();
 
     expect(mockRecentIssuesApi.list).toHaveBeenCalledWith("company-1", 25);
+    expect(mockAttentionApi.list).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Recent");
 
     flushSync(() => root.unmount());

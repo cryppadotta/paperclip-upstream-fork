@@ -12,6 +12,7 @@ const baseIssues: RecentIssue[] = [
     kind: "commented",
     hasActiveRun: false,
     needsAttention: false,
+    attentionHref: null,
   },
   {
     id: "recent-2",
@@ -22,6 +23,7 @@ const baseIssues: RecentIssue[] = [
     kind: "edited",
     hasActiveRun: false,
     needsAttention: false,
+    attentionHref: null,
   },
   {
     id: "recent-3",
@@ -32,6 +34,7 @@ const baseIssues: RecentIssue[] = [
     kind: "document",
     hasActiveRun: false,
     needsAttention: false,
+    attentionHref: null,
   },
 ];
 
@@ -60,7 +63,9 @@ export const LiveRow: Story = {
 
 export const NeedsAttentionRow: Story = {
   args: {
-    issues: baseIssues.map((issue, index) => index === 0 ? { ...issue, needsAttention: true } : issue),
+    issues: baseIssues.map((issue, index) => index === 0
+      ? { ...issue, needsAttention: true, attentionHref: `/issues/${issue.identifier}#interaction-demo` }
+      : issue),
   },
 };
 

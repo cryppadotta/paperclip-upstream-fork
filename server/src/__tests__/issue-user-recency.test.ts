@@ -254,8 +254,64 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     expect(rows).toHaveLength(25);
     expect(rows.map((row) => row.id)).toEqual(issueIds.slice(0, 25));
     expect(rows.some((row) => [oldIssueId, harnessIssueId, hiddenIssueId, otherIssueId].includes(row.id))).toBe(false);
-    expect(rows[0]).toMatchObject({ hasActiveRun: true, needsAttention: true });
+    expect(rows[0]).toMatchObject({
+      hasActiveRun: true,
+      needsAttention: true,
+      attentionHref: expect.stringMatching(/^\/issues\/RQB-1#interaction-/),
+    });
     expect(rows[1]).toMatchObject({ hasActiveRun: false });
+  });
+
+  it("derives the attention flag and deep-link from the same eligible target", async () => {
+    const companyId = await seedCompany("RQF");
+    const userId = "user-a";
+    const eligibleIssueId = await seedIssue(companyId, "Eligible interaction", "RQF-1");
+    const excludedIssueId = await seedIssue(companyId, "Excluded interaction", "RQF-2");
+    const approvalIssueId = await seedIssue(companyId, "Pending approval", "RQF-3");
+    for (const issueId of [eligibleIssueId, excludedIssueId, approvalIssueId]) {
+      await recordIssueUserRecency(db, { companyId, userId, issueIds: [issueId], kind: "edited" });
+    }
+
+    const [eligibleInteraction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: eligibleIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      effectiveResolverPolicy: "anyone",
+      payload: { version: 1, prompt: "Confirm" },
+      createdByUserId: userId,
+    }).returning();
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: excludedIssueId,
+      kind: "request_confirmation",
+      status: "pending",
+      effectiveResolverPolicy: "not_creator",
+      payload: { version: 1, prompt: "Confirm" },
+      createdByUserId: userId,
+    });
+    const [approval] = await db.insert(approvals).values({
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+    }).returning();
+    await db.insert(issueApprovals).values({ companyId, issueId: approvalIssueId, approvalId: approval!.id });
+
+    const rows = await issueUserRecencyService(db).listRecentIssues(companyId, userId);
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get(eligibleIssueId)).toMatchObject({
+      needsAttention: true,
+      attentionHref: `/issues/RQF-1#interaction-${eligibleInteraction!.id}`,
+    });
+    expect(byId.get(excludedIssueId)).toMatchObject({
+      needsAttention: false,
+      attentionHref: null,
+    });
+    expect(byId.get(approvalIssueId)).toMatchObject({
+      needsAttention: true,
+      attentionHref: `/approvals/${approval!.id}`,
+    });
   });
 
   it("serves the current board user's company-scoped list and validates limit", async () => {

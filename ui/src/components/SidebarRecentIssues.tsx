@@ -1,16 +1,14 @@
-import type { AttentionFeed, AttentionItem, RecentIssue } from "@paperclipai/shared";
+import type { RecentIssue } from "@paperclipai/shared";
 import { Clock3 } from "lucide-react";
 import { useMemo, useState, type CSSProperties } from "react";
 import { Link } from "@/lib/router";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarSection } from "./SidebarSection";
-import { sourceMeta, attentionTaskRef } from "../lib/attention";
 import { timeAgo } from "../lib/timeAgo";
 import { useSidebar } from "../context/SidebarContext";
 
 const VISIBLE_RECENT_ISSUES = 10;
 const TERMINAL_STATUSES = new Set(["done", "cancelled"]);
-const ATTENTION_SOURCE_KINDS = new Set(["approval", "issue_thread_interaction"]);
 
 const INTERACTION_LABELS: Record<RecentIssue["kind"], string> = {
   created: "You created",
@@ -21,19 +19,8 @@ const INTERACTION_LABELS: Record<RecentIssue["kind"], string> = {
   document: "You edited a document",
 };
 
-function attentionForIssue(feed: AttentionFeed | undefined, issue: RecentIssue): AttentionItem | null {
-  if (!feed) return null;
-  return feed.items.find((item) => {
-    if (!ATTENTION_SOURCE_KINDS.has(item.sourceKind)) return false;
-    const task = attentionTaskRef(item);
-    return item.relatedIssue?.id === issue.id
-      || (item.subject.kind === "issue" && item.subject.id === issue.id)
-      || (!!issue.identifier && task?.identifier === issue.identifier);
-  }) ?? null;
-}
-
-function issueHref(issue: RecentIssue, attention: AttentionItem | null): string {
-  if (attention?.subject.href) return attention.subject.href;
+function issueHref(issue: RecentIssue): string {
+  if (issue.needsAttention && issue.attentionHref) return issue.attentionHref;
   return `/issues/${issue.identifier ?? issue.id}`;
 }
 
@@ -44,10 +31,9 @@ function statusLabel(status: string): string {
 export interface SidebarRecentIssuesProps {
   issues: RecentIssue[];
   liveIssueIds?: ReadonlySet<string>;
-  attentionFeed?: AttentionFeed;
 }
 
-export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: SidebarRecentIssuesProps) {
+export function SidebarRecentIssues({ issues, liveIssueIds }: SidebarRecentIssuesProps) {
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const { collapsed, peeking } = useSidebar();
@@ -59,8 +45,8 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
     [expanded, issues],
   );
   const hasAttention = useMemo(
-    () => issues.some((issue) => issue.needsAttention || attentionForIssue(attentionFeed, issue) !== null),
-    [attentionFeed, issues],
+    () => issues.some((issue) => issue.needsAttention),
+    [issues],
   );
 
   if (visibleIssues.length === 0) return null;
@@ -83,10 +69,9 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
   return (
     <SidebarSection label="Recent" collapsible={{ open, onOpenChange: setOpen }}>
       {visibleIssues.map((issue) => {
-        const attention = attentionForIssue(attentionFeed, issue);
-        const needsAttention = issue.needsAttention || attention !== null;
+        const needsAttention = issue.needsAttention;
         const isLive = liveIssueIds ? liveIssueIds.has(issue.id) : issue.hasActiveRun;
-        const attentionReason = attention ? sourceMeta(attention.sourceKind).label : needsAttention ? "Decision requested" : null;
+        const attentionReason = needsAttention ? "Decision requested" : null;
         const interaction = `${INTERACTION_LABELS[issue.kind]} · ${timeAgo(issue.lastInteractedAt)}`;
         const status = statusLabel(issue.status);
         const tooltip = [issue.identifier, issue.title, `Status: ${status}`, attentionReason, isLive ? "Live run" : null, interaction]
@@ -96,7 +81,7 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
         return (
           <SidebarNavItem
             key={issue.id}
-            to={issueHref(issue, attention)}
+            to={issueHref(issue)}
             label={issue.title}
             iconNode={(
               <span

@@ -103,7 +103,7 @@ export function issueUserRecencyService(db: Db) {
       requestedLimit = RECENT_ISSUES_MAX_LIMIT,
     ): Promise<RecentIssue[]> => {
       const limit = Math.min(RECENT_ISSUES_MAX_LIMIT, Math.max(1, Math.floor(requestedLimit)));
-      return db
+      const rows = await db
         .select({
           id: issues.id,
           identifier: issues.identifier,
@@ -117,9 +117,11 @@ export function issueUserRecencyService(db: Db) {
               and live_run.status in ('queued', 'running')
               and live_run.context_snapshot ->> 'issueId' = ${issues.id}::text
           )`,
-          needsAttention: sql<boolean>`(
-            exists (
-              select 1 from ${issueThreadInteractions} pending_interaction
+          attentionHref: sql<string | null>`coalesce(
+            (
+              select '/issues/' || coalesce(${issues.identifier}, ${issues.id}::text)
+                || '#interaction-' || pending_interaction.id::text
+              from ${issueThreadInteractions} pending_interaction
               where pending_interaction.company_id = ${companyId}
                 and pending_interaction.issue_id = ${issues.id}
                 and pending_interaction.status = 'pending'
@@ -127,14 +129,19 @@ export function issueUserRecencyService(db: Db) {
                   pending_interaction.effective_resolver_policy = 'not_creator'
                   and pending_interaction.created_by_user_id = ${userId}
                 )
-            )
-            or exists (
-              select 1 from ${issueApprovals} pending_issue_approval
+              order by pending_interaction.updated_at desc, pending_interaction.id desc
+              limit 1
+            ),
+            (
+              select '/approvals/' || pending_approval.id::text
+              from ${issueApprovals} pending_issue_approval
               inner join ${approvals} pending_approval on pending_approval.id = pending_issue_approval.approval_id
               where pending_issue_approval.company_id = ${companyId}
                 and pending_issue_approval.issue_id = ${issues.id}
                 and pending_approval.company_id = ${companyId}
                 and pending_approval.status in ('pending', 'revision_requested')
+              order by pending_approval.updated_at desc, pending_approval.id desc
+              limit 1
             )
           )`,
         })
@@ -151,6 +158,10 @@ export function issueUserRecencyService(db: Db) {
         ))
         .orderBy(desc(issueUserRecency.lastInteractedAt), desc(issueUserRecency.issueId))
         .limit(limit);
+      return rows.map((row) => ({
+        ...row,
+        needsAttention: row.attentionHref !== null,
+      }));
     },
   };
 }

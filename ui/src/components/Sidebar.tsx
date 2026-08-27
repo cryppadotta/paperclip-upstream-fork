@@ -98,7 +98,7 @@ export function Sidebar() {
   const { data: attentionFeed } = useQuery({
     queryKey: queryKeys.attention(selectedCompanyId!),
     queryFn: () => attentionApi.list(selectedCompanyId!),
-    enabled: !!selectedCompanyId && (showDecisions || showRecentIssues),
+    enabled: !!selectedCompanyId && showDecisions,
     refetchInterval: showDecisions ? 60_000 : false,
   });
   const attentionCount = attentionBadgeCount(attentionFeed);
@@ -241,7 +241,6 @@ export function Sidebar() {
             key={selectedCompanyId}
             issues={recentIssues}
             liveIssueIds={liveIssueIds}
-            attentionFeed={attentionFeed}
           />
         ) : null}
 

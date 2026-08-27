@@ -801,6 +801,7 @@ export interface RecentIssue {
   kind: IssueUserRecencyKind;
   hasActiveRun: boolean;
   needsAttention: boolean;
+  attentionHref: string | null;
 }
 
 export interface Issue {

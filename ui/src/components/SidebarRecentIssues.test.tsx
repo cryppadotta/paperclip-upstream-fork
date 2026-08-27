@@ -3,7 +3,7 @@
 import { type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { AttentionFeed, RecentIssue } from "@paperclipai/shared";
+import type { RecentIssue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "./ui/tooltip";
 import { SidebarRecentIssues } from "./SidebarRecentIssues";
@@ -48,18 +48,9 @@ const recentIssue = (overrides: Partial<RecentIssue> = {}): RecentIssue => ({
   lastInteractedAt: "2026-08-27T13:00:00.000Z",
   hasActiveRun: false,
   needsAttention: false,
+  attentionHref: null,
   ...overrides,
 });
-
-const emptyAttentionFeed: AttentionFeed = {
-  companyId: "company-1",
-  generatedAt: "2026-08-27T15:00:00.000Z",
-  totalCount: 0,
-  deskBadgeCount: 0,
-  nextCursor: null,
-  countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
-  items: [],
-};
 
 describe("SidebarRecentIssues", () => {
   let container: HTMLDivElement;
@@ -96,13 +87,24 @@ describe("SidebarRecentIssues", () => {
 
   it("uses endpoint decorations initially and exposes text equivalents", () => {
     renderRecent({
-      issues: [recentIssue({ hasActiveRun: true, needsAttention: true })],
+      issues: [recentIssue({
+        hasActiveRun: true,
+        needsAttention: true,
+        attentionHref: "/issues/PAP-1#interaction-request-1",
+      })],
       liveIssueIds: undefined,
     });
 
     expect(container.textContent).toContain("Needs you");
     expect(container.textContent).not.toContain("live");
     expect(container.querySelector('[aria-label="Live run"]')).not.toBeNull();
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/PAP-1#interaction-request-1");
+  });
+
+  it("does not restore attention that the recent-issues endpoint excluded", () => {
+    renderRecent({ issues: [recentIssue({ needsAttention: false, attentionHref: null })] });
+
+    expect(container.textContent).not.toContain("Needs you");
     expect(container.querySelector("a")?.getAttribute("href")).toBe("/issues/PAP-1");
   });
 
@@ -111,10 +113,10 @@ describe("SidebarRecentIssues", () => {
       recentIssue({ id: "issue-1", identifier: "PAP-1", title: "Newest" }),
       recentIssue({ id: "issue-2", identifier: "PAP-2", title: "Older" }),
     ];
-    renderRecent({ issues, liveIssueIds: new Set(["issue-2"]), attentionFeed: emptyAttentionFeed });
+    renderRecent({ issues, liveIssueIds: new Set(["issue-2"]) });
     expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newest", "Older"]);
 
-    renderRecent({ issues, liveIssueIds: new Set(["issue-1"]), attentionFeed: emptyAttentionFeed });
+    renderRecent({ issues, liveIssueIds: new Set(["issue-1"]) });
     expect([...container.querySelectorAll("a")].map((link) => link.textContent)).toEqual(["Newest", "Older"]);
   });
 
@@ -123,7 +125,6 @@ describe("SidebarRecentIssues", () => {
     renderRecent({
       issues: [recentIssue({ title: hostileTitle, status: "done" })],
       liveIssueIds: new Set(),
-      attentionFeed: emptyAttentionFeed,
     });
 
     const title = [...container.querySelectorAll("span")].find((node) => node.textContent === hostileTitle);
@@ -166,7 +167,12 @@ describe("SidebarRecentIssues", () => {
   it("uses one rail clock with an aggregate amber dot and restores the same rows in the peek", () => {
     const issues = [
       recentIssue({ id: "issue-1", title: "Newest" }),
-      recentIssue({ id: "issue-2", title: "Needs review", needsAttention: true }),
+      recentIssue({
+        id: "issue-2",
+        title: "Needs review",
+        needsAttention: true,
+        attentionHref: "/issues/PAP-1#interaction-request-2",
+      }),
     ];
     sidebarState.collapsed = true;
     renderRecent({ issues });
