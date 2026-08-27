@@ -160,6 +160,9 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     }
     const oldIssueId = await seedIssue(companyId, "Old", "RQB-28");
     await recordIssueUserRecency(db, { companyId, userId, issueIds: [oldIssueId], kind: "commented", interactedAt: new Date("2026-07-01T00:00:00.000Z") });
+    const harnessIssueId = await seedIssue(companyId, "Internal harness", "RQB-29");
+    await db.update(issues).set({ harnessKind: "skill_test" }).where(eq(issues.id, harnessIssueId));
+    await recordIssueUserRecency(db, { companyId, userId, issueIds: [harnessIssueId], kind: "edited", interactedAt: now });
     const otherIssueId = await seedIssue(otherCompanyId, "Other company", "RQC-1");
     await recordIssueUserRecency(db, { companyId: otherCompanyId, userId, issueIds: [otherIssueId], kind: "edited", interactedAt: now });
 
@@ -179,7 +182,7 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     const rows = await issueUserRecencyService(db).listRecentIssues(companyId, userId, 100, now);
     expect(rows).toHaveLength(25);
     expect(rows.map((row) => row.id)).toEqual(issueIds.slice(0, 25));
-    expect(rows.some((row) => row.id === oldIssueId || row.id === otherIssueId)).toBe(false);
+    expect(rows.some((row) => [oldIssueId, harnessIssueId, otherIssueId].includes(row.id))).toBe(false);
     expect(rows[0]).toMatchObject({ hasActiveRun: true, needsAttention: true });
   });
 

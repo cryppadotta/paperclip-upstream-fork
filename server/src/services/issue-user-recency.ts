@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import {
   approvals,
   heartbeatRuns,
@@ -10,6 +10,7 @@ import {
 } from "@paperclipai/db";
 import type { IssueStatus, IssueUserRecencyKind, RecentIssue } from "@paperclipai/shared";
 import type { LogActivityInput } from "./activity-log.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 export const RECENT_ISSUES_MAX_LIMIT = 25;
 export const RECENT_ISSUES_WINDOW_DAYS = 30;
@@ -151,7 +152,7 @@ export function issueUserRecencyService(db: Db) {
           eq(issueUserRecency.companyId, companyId),
           eq(issueUserRecency.userId, userId),
           gte(issueUserRecency.lastInteractedAt, cutoff),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
         ))
         .orderBy(desc(issueUserRecency.lastInteractedAt), desc(issueUserRecency.issueId))
         .limit(limit);
