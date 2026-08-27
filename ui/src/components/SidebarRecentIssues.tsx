@@ -105,7 +105,7 @@ export function SidebarRecentIssues({ issues, liveIssueIds, attentionFeed }: Sid
                 aria-hidden="true"
               />
             )}
-            className="min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="min-w-0"
             labelClassName={TERMINAL_STATUSES.has(issue.status) ? "text-muted-foreground" : undefined}
             trailingLabel={[needsAttention ? "Needs you" : null, isLive ? "Live run" : null].filter(Boolean).join(", ")}
             tooltip={tooltip}

@@ -133,6 +133,14 @@ describe("SidebarRecentIssues", () => {
     expect(document.querySelector("script")).toBeNull();
   });
 
+  it("preserves the browser focus outline on recent task links", () => {
+    renderRecent({ issues: [recentIssue()] });
+
+    const link = container.querySelector('a[href="/issues/PAP-1"]');
+    expect(link?.className).not.toContain("focus-visible:outline-none");
+    expect(link?.className).not.toContain("focus-visible:ring");
+  });
+
   it("expands from 10 to 25 in memory and resets after remount", () => {
     const issues = Array.from({ length: 25 }, (_, index) => recentIssue({
       id: `issue-${index + 1}`,
