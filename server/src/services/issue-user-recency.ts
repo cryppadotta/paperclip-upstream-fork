@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   approvals,
   heartbeatRuns,
@@ -101,10 +101,8 @@ export function issueUserRecencyService(db: Db) {
       companyId: string,
       userId: string,
       requestedLimit = RECENT_ISSUES_MAX_LIMIT,
-      now = new Date(),
     ): Promise<RecentIssue[]> => {
       const limit = Math.min(RECENT_ISSUES_MAX_LIMIT, Math.max(1, Math.floor(requestedLimit)));
-      const cutoff = new Date(now.getTime() - RECENT_ISSUES_WINDOW_DAYS * 24 * 60 * 60 * 1000);
       return db
         .select({
           id: issues.id,
@@ -117,10 +115,7 @@ export function issueUserRecencyService(db: Db) {
             select 1 from ${heartbeatRuns} live_run
             where live_run.company_id = ${companyId}
               and live_run.status in ('queued', 'running')
-              and (
-                live_run.id = ${issues.executionRunId}
-                or coalesce(live_run.context_snapshot ->> 'issueId', live_run.context_snapshot ->> 'taskId') = ${issues.id}::text
-              )
+              and live_run.context_snapshot ->> 'issueId' = ${issues.id}::text
           )`,
           needsAttention: sql<boolean>`(
             exists (
@@ -151,7 +146,7 @@ export function issueUserRecencyService(db: Db) {
         .where(and(
           eq(issueUserRecency.companyId, companyId),
           eq(issueUserRecency.userId, userId),
-          gte(issueUserRecency.lastInteractedAt, cutoff),
+          sql`${issueUserRecency.lastInteractedAt} > now() - interval '30 days'`,
           visibleIssueCondition(),
         ))
         .orderBy(desc(issueUserRecency.lastInteractedAt), desc(issueUserRecency.issueId))

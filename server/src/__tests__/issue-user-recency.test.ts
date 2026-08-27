@@ -11,6 +11,7 @@ import {
   createDb,
   heartbeatRuns,
   issueApprovals,
+  issueComments,
   issueThreadInteractions,
   issueUserRecency,
   issues,
@@ -75,6 +76,7 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     await db.delete(issueThreadInteractions);
     await db.delete(approvals);
     await db.delete(activityLog);
+    await db.delete(issueComments);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -93,6 +95,19 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     const id = randomUUID();
     await db.insert(issues).values({ id, companyId, title, identifier, status: "todo", priority: "medium" });
     return id;
+  }
+
+  async function createIssueApp(actor: Express.Request["actor"]) {
+    const { issueRoutes } = await import("../routes/issues.js");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = actor;
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as never));
+    app.use(errorHandler);
+    return app;
   }
 
   it("upserts every qualifying user write while excluding agent and inbound activity", async () => {
@@ -141,11 +156,55 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     expect(new Map(rows.map((row) => [row.issueId, row.kind]))).toEqual(expected);
   });
 
+  it("records user comments but not agent comments through the real comment route", async () => {
+    const companyId = await seedCompany("RQE");
+    const userIssueId = await seedIssue(companyId, "User comment", "RQE-1");
+    const agentIssueId = await seedIssue(companyId, "Agent comment", "RQE-2");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Commenter",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+    });
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: agentIssueId },
+    }).returning();
+
+    const userResponse = await request(await createIssueApp({
+      type: "board",
+      userId: "user-a",
+      source: "local_implicit",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    })).post(`/api/issues/${userIssueId}/comments`).send({ body: "User-authored comment" });
+    expect(userResponse.status, JSON.stringify(userResponse.body)).toBe(201);
+
+    const agentResponse = await request(await createIssueApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: run!.id,
+      source: "agent_jwt",
+    })).post(`/api/issues/${agentIssueId}/comments`).send({ body: "Agent-authored comment" });
+    expect(agentResponse.status, JSON.stringify(agentResponse.body)).toBe(201);
+
+    const rows = await db.select().from(issueUserRecency);
+    expect(rows).toEqual([
+      expect.objectContaining({ companyId, userId: "user-a", issueId: userIssueId, kind: "commented" }),
+    ]);
+  }, 30_000);
+
   it("enforces company scope, the 30-day window, hard cap, ordering, and decorations", async () => {
     const companyId = await seedCompany("RQB");
     const otherCompanyId = await seedCompany("RQC");
     const userId = "user-a";
-    const now = new Date("2026-08-27T12:00:00.000Z");
+    const now = new Date();
     const issueIds: string[] = [];
     for (let index = 0; index < 27; index += 1) {
       const issueId = await seedIssue(companyId, `Recent ${index}`, `RQB-${index + 1}`);
@@ -163,13 +222,25 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
     const harnessIssueId = await seedIssue(companyId, "Internal harness", "RQB-29");
     await db.update(issues).set({ harnessKind: "skill_test" }).where(eq(issues.id, harnessIssueId));
     await recordIssueUserRecency(db, { companyId, userId, issueIds: [harnessIssueId], kind: "edited", interactedAt: now });
+    const hiddenIssueId = await seedIssue(companyId, "Deleted", "RQB-30");
+    await db.update(issues).set({ hiddenAt: now }).where(eq(issues.id, hiddenIssueId));
+    await recordIssueUserRecency(db, { companyId, userId, issueIds: [hiddenIssueId], kind: "edited", interactedAt: now });
     const otherIssueId = await seedIssue(otherCompanyId, "Other company", "RQC-1");
     await recordIssueUserRecency(db, { companyId: otherCompanyId, userId, issueIds: [otherIssueId], kind: "edited", interactedAt: now });
 
     const agentId = randomUUID();
     await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", adapterType: "process", adapterConfig: {} });
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", contextSnapshot: { issueId: issueIds[0] } }).returning();
-    await db.update(issues).set({ executionRunId: run!.id }).where(eq(issues.id, issueIds[0]!));
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId, status: "running", contextSnapshot: { issueId: issueIds[0] } },
+      { companyId, agentId, status: "running", contextSnapshot: { taskId: issueIds[1] } },
+    ]);
+    const [fallbackRun] = await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      contextSnapshot: { issueId: randomUUID() },
+    }).returning();
+    await db.update(issues).set({ executionRunId: fallbackRun!.id }).where(eq(issues.id, issueIds[1]!));
     await db.insert(issueThreadInteractions).values({
       companyId,
       issueId: issueIds[0]!,
@@ -179,11 +250,12 @@ describeEmbeddedPostgres("issue user recency persistence", () => {
       createdByAgentId: agentId,
     });
 
-    const rows = await issueUserRecencyService(db).listRecentIssues(companyId, userId, 100, now);
+    const rows = await issueUserRecencyService(db).listRecentIssues(companyId, userId, 100);
     expect(rows).toHaveLength(25);
     expect(rows.map((row) => row.id)).toEqual(issueIds.slice(0, 25));
-    expect(rows.some((row) => [oldIssueId, harnessIssueId, otherIssueId].includes(row.id))).toBe(false);
+    expect(rows.some((row) => [oldIssueId, harnessIssueId, hiddenIssueId, otherIssueId].includes(row.id))).toBe(false);
     expect(rows[0]).toMatchObject({ hasActiveRun: true, needsAttention: true });
+    expect(rows[1]).toMatchObject({ hasActiveRun: false });
   });
 
   it("serves the current board user's company-scoped list and validates limit", async () => {
