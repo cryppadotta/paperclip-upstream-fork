@@ -140,6 +140,7 @@ import {
   routineService,
   workProductService,
 } from "../services/index.js";
+import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 import { buildDocumentReviewContext, buildPlanReviewContext } from "../services/plan-review-context.js";
@@ -167,9 +168,10 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  formatAttachmentSize,
   GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
-  normalizeIssueAttachmentMaxBytes,
+  MAX_ATTACHMENT_BYTES,
   normalizeContentType,
   normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
@@ -1994,6 +1996,18 @@ function readToolActionContinuationContext(interaction: {
     };
   }
 
+  if (executionStatus === "expired") {
+    const expirationMessage = error ? `: ${error}` : "";
+    return {
+      toolName,
+      actionRequestId,
+      decision: "accepted",
+      executionStatus,
+      ...(error ? { error } : {}),
+      instructions: `the approved ${toolName} action expired before execution${expirationMessage}; if the task still requires it, call the tool again to request a fresh approval.`,
+    };
+  }
+
   return {
     toolName,
     actionRequestId,
@@ -2839,6 +2853,9 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const questionResponseDeliveries = questionResponseDeliveryService(db, {
+    heartbeat,
+  });
   const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
     shouldCache: (issue) => issue !== null,
   });
@@ -4328,6 +4345,7 @@ export function issueRoutes(
       effectiveResolverPolicy: string;
       resolverPolicyProvenance?: string | null;
       addresseeAgentId?: string | null;
+      addresseeUserId?: string | null;
       kind: string;
       status: string;
       payload?: unknown;
@@ -11269,6 +11287,7 @@ export function issueRoutes(
         interactionStatus: interaction.status,
         continuationPolicy: interaction.continuationPolicy,
         addresseeAgentId: interaction.addresseeAgentId ?? null,
+        addresseeUserId: interaction.addresseeUserId ?? null,
         requestedResolverPolicy: interaction.requestedResolverPolicy,
         effectiveResolverPolicy: interaction.effectiveResolverPolicy,
         resolverPolicyProvenance: interaction.resolverPolicyProvenance,
@@ -11340,6 +11359,9 @@ export function issueRoutes(
       );
       if (!authorizedResolution) return;
       const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
+      if (current.kind === "connection_intent") {
+        throw unprocessable("Connection intents must be resolved through the connection intent endpoints");
+      }
       const suggestedTaskEffectsAuthorized = current.kind === "suggest_tasks"
         ? await assertSuggestedTaskEffectsAllowed(
             req,
@@ -11588,7 +11610,10 @@ export function issueRoutes(
         interactionId,
       );
       if (!authorizedResolution) return;
-      const { interactionSvc, resolutionAuthorization } = authorizedResolution;
+      const { interactionSvc, current, resolutionAuthorization } = authorizedResolution;
+      if (current.kind === "connection_intent") {
+        throw unprocessable("Connection intents must be resolved through the connection intent endpoints");
+      }
 
       const actor = getActorInfo(req);
       const interaction = await interactionSvc.rejectInteraction(issue, interactionId, req.body, {
@@ -11694,13 +11719,13 @@ export function issueRoutes(
         },
       });
 
-      await queueResolvedInteractionContinuationWakeup({
-        db,
-        heartbeat,
-        issue,
-        interaction,
-        actor,
-        source: "issue.interaction.respond",
+      await questionResponseDeliveries.deliver(interaction.id).catch((err) => {
+        logger.warn({
+          err,
+          companyId: issue.companyId,
+          issueId: issue.id,
+          interactionId: interaction.id,
+        }, "synchronous question response delivery failed; durable outbox will retry");
       });
 
       res.json(interaction);
@@ -13003,15 +13028,14 @@ export function issueRoutes(
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;
 
-    const company = await companiesSvc.getById(companyId);
-    const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
-
     try {
-      await runSingleFileUpload(req, res, attachmentMaxBytes);
+      await runSingleFileUpload(req, res, MAX_ATTACHMENT_BYTES);
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
+          res.status(422).json({
+            error: `Attachment is larger than the ${formatAttachmentSize(MAX_ATTACHMENT_BYTES)} limit`,
+          });
           return;
         }
         res.status(400).json({ error: err.message });

@@ -756,6 +756,50 @@ export const issueThreadInteractionContinuationPolicySchema = z.enum(
   ISSUE_THREAD_INTERACTION_CONTINUATION_POLICIES,
 );
 
+export const connectionIntentPhaseSchema = z.enum(["requested", "authorizing", "needs_retry"]);
+const connectionIntentBrandAssetSchema = z.string().max(2048).refine((value) => {
+  if (/^\/brands\/apps\/[a-z0-9][a-z0-9._-]*\.(?:svg|png)$/i.test(value)) return true;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}, "Connection intent brand assets must be HTTPS URLs or local app brand paths");
+
+export const connectionIntentPayloadSchema = z.object({
+  version: z.literal(1),
+  serviceSlug: z.string().trim().min(1).max(120),
+  serviceName: z.string().trim().min(1).max(160),
+  serviceLogoUrl: connectionIntentBrandAssetSchema.nullable().optional(),
+  serviceDarkLogoUrl: connectionIntentBrandAssetSchema.nullable().optional(),
+  requestingAgentId: z.string().guid(),
+  requestingAgentName: z.string().trim().min(1).max(160),
+  phase: connectionIntentPhaseSchema,
+}).strict();
+
+export const connectionIntentResultSchema = z.object({
+  version: z.literal(1),
+  outcome: z.enum(["connected", "declined", "superseded", "expired"]),
+  connectionId: z.string().guid().nullable().optional(),
+  reason: z.string().trim().max(4000).nullable().optional(),
+  supersededByInteractionId: z.string().guid().nullable().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.outcome === "connected" && !value.connectionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["connectionId"],
+      message: "Connected intents require a connection id",
+    });
+  }
+  if (value.outcome === "superseded" && !value.supersededByInteractionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["supersededByInteractionId"],
+      message: "Superseded intents require the replacement interaction id",
+    });
+  }
+});
+
 export const issueDocumentKeySchema = z
   .string()
   .trim()
@@ -846,12 +890,54 @@ export const askUserQuestionsQuestionSchema = z.object({
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(10),
 });
 
+const paperclipQuestionOptionSchema = z.object({
+  id: z.string().min(1).max(160),
+  label: z.string().min(1).max(1000),
+  description: z.string().max(4000).optional(),
+  recommended: z.boolean().optional(),
+});
+
+const paperclipQuestionSchema = z.object({
+  id: z.string().min(1).max(160),
+  header: z.string().max(1000).optional(),
+  prompt: z.string().min(1).max(4000),
+  helpText: z.string().max(4000).optional(),
+  required: z.boolean(),
+  answerMode: z.enum(["single_select", "multi_select", "text"]),
+  options: z.array(paperclipQuestionOptionSchema).max(128).optional(),
+  customAnswer: z.object({
+    enabled: z.literal(true),
+    label: z.string().max(1000).optional(),
+    placeholder: z.string().max(1000).optional(),
+  }).optional(),
+  textValidation: z.object({
+    minLength: z.number().int().min(0).max(100000).optional(),
+    maxLength: z.number().int().min(0).max(100000).optional(),
+    pattern: z.string().max(1000).optional(),
+    inputType: z.enum(["text", "number", "integer"]).optional(),
+    minimum: z.number().finite().optional(),
+    maximum: z.number().finite().optional(),
+  }).optional(),
+});
+
+const paperclipQuestionSetSchema = z.object({
+  schema: z.literal("paperclip.question_set.v1"),
+  title: z.string().max(1000).optional(),
+  description: z.string().max(4000).optional(),
+  submitLabel: z.string().max(200).optional(),
+  questions: z.array(paperclipQuestionSchema).min(1).max(64),
+});
+
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
   submitLabel: z.string().trim().max(120).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   questions: z.array(askUserQuestionsQuestionSchema).min(1).max(10),
+  /** Exact canonical presentation retained for a recovered harness request. */
+  questionSet: paperclipQuestionSetSchema.optional(),
+  /** Stable correlation for draft handoff from a live runtime request. */
+  runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
 }).superRefine((value, ctx) => {
   const seenQuestionIds = new Set<string>();
   for (const [questionIndex, question] of value.questions.entries()) {
@@ -1292,6 +1378,7 @@ export const requestItemVerdictsResultSchema = z.object({
 const createIssueThreadInteractionCommon = {
   resolverPolicy: issueThreadInteractionResolverPolicySchema.optional(),
   addresseeAgentId: z.string().guid().nullable().optional(),
+  addresseeUserId: z.string().trim().min(1).nullable().optional(),
 };
 
 export const createIssueThreadInteractionSchema = z.discriminatedUnion("kind", [

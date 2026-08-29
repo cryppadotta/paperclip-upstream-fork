@@ -5,12 +5,20 @@ import {
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
+  startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import { validate } from "../middleware/validate.js";
-import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
+import { logger } from "../middleware/logger.js";
+import {
+  heartbeatService,
+  instanceSettingsService,
+  logActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
@@ -51,6 +59,22 @@ async function assertNoHiddenSettingChanges(
     throw forbidden(`${key} is managed by the hosting operator on this instance`, {
       code: "settings_operator_managed",
     });
+  }
+}
+
+/**
+ * Publish activity events for an already-committed mutation. The audit row
+ * exists in the database no matter what happens here, so a publish failure
+ * must not turn into a route error: that would report the mutation as
+ * failed to the caller when it in fact succeeded. Log and swallow instead.
+ */
+function publishActivitiesBestEffort(publications: ActivityPublication[], action: string) {
+  for (const publication of publications) {
+    try {
+      publishActivity(publication);
+    } catch (err) {
+      logger.error({ err, action, companyId: publication.companyId }, "failed to publish activity event");
+    }
   }
 }
 
@@ -290,6 +314,141 @@ export function instanceSettingsRoutes(db: Db) {
       res.json(result);
     },
   );
+
+  router.get("/instance/task-drain", async (req, res) => {
+    assertBoardOrgAccess(req);
+    res.json(heartbeat.getTaskDrainStatus());
+  });
+
+  router.post(
+    "/instance/task-drain",
+    validate(startTaskDrainRequestSchema),
+    async (req, res) => {
+      assertCanManageInstanceSettings(req);
+      const actor = getActorInfo(req);
+      // Read the company list, an operation that can fail, before the
+      // process-local drain mutation below, so a failed read never leaves
+      // that mutation in place with no audit record of it.
+      const companyIds = await svc.listCompanyIds();
+      // A POST over an already-active drain replaces it. Capture that prior
+      // state before the mutation, so a failed audit write below can restore
+      // it instead of clearing task-drain state the operator still relies on.
+      const priorStatus = heartbeat.getTaskDrainStatus();
+      const drain = heartbeat.startTaskDrain({ ttlMs: req.body.ttlMs ?? null });
+      // Stamp the generation right after this call's own mutation (no
+      // await runs between the two, so nothing else can mutate the drain
+      // in between), so a later restore can tell whether a concurrent
+      // request has already superseded it.
+      const generation = heartbeat.getTaskDrainGeneration();
+      // One transaction for every company's audit row, so a write that
+      // succeeds for one company and fails for another never leaves a
+      // partial activity history behind — either every company gets the
+      // record, or none does.
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      try {
+        await db.transaction((tx) =>
+          Promise.all(
+            companyIds.map((companyId) =>
+              logActivity(tx as unknown as Db, {
+                companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                agentApiKeyId: actor.agentApiKeyId,
+                action: "instance.task_drain.started",
+                entityType: "instance_settings",
+                entityId: "default",
+                details: {
+                  startedAt: drain.startedAt,
+                  expiresAt: drain.expiresAt,
+                },
+              }, postCommitActivityPublications),
+            ),
+          ),
+        );
+      } catch (err) {
+        // The audit record did not commit, so undo the in-memory drain this
+        // call started. If a drain was already active, this call replaced
+        // it — restore that prior drain (best-effort: the remaining TTL
+        // carries over, but the original start time does not) instead of
+        // clearing task-drain state the operator still relies on. Guard the
+        // restore with the generation stamped above: if a concurrent
+        // request has already mutated the drain again, this restore must
+        // not overwrite that newer state with the state captured here.
+        const remainingTtlMs = priorStatus.expiresAt
+          ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
+          : null;
+        heartbeat.restoreTaskDrainIfCurrent(generation, {
+          draining: priorStatus.draining,
+          ttlMs: remainingTtlMs,
+        });
+        throw err;
+      }
+      // The audit record already committed, so a failure to publish it here
+      // is not a reason to undo the drain: reverting the in-memory state at
+      // this point would desync it from the committed row. Publish outside
+      // the try above so this failure cannot reach the restore path, and
+      // swallow a publish failure so it cannot turn a committed mutation
+      // into a false 500 either.
+      publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.started");
+      res.json(drain);
+    },
+  );
+
+  router.delete("/instance/task-drain", async (req, res) => {
+    assertCanManageInstanceSettings(req);
+    const actor = getActorInfo(req);
+    const companyIds = await svc.listCompanyIds();
+    const priorStatus = heartbeat.getTaskDrainStatus();
+    const result = heartbeat.stopTaskDrain();
+    // See the POST handler above for why the generation is stamped here.
+    const generation = heartbeat.getTaskDrainGeneration();
+    // See the POST handler above for why this is one transaction.
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    try {
+      await db.transaction((tx) =>
+        Promise.all(
+          companyIds.map((companyId) =>
+            logActivity(tx as unknown as Db, {
+              companyId,
+              actorType: actor.actorType,
+              actorId: actor.actorId,
+              agentId: actor.agentId,
+              runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
+              action: "instance.task_drain.stopped",
+              entityType: "instance_settings",
+              entityId: "default",
+              details: {
+                wasActive: result.wasActive,
+              },
+            }, postCommitActivityPublications),
+          ),
+        ),
+      );
+    } catch (err) {
+      // Restore the drain this call ended (best-effort: the remaining TTL
+      // carries over, but the original start time does not) so a failed
+      // audit write does not silently end a drain the operator still relies
+      // on to hold new run admission. See the POST handler above for why
+      // the restore is guarded by the generation stamped above.
+      if (priorStatus.draining) {
+        const remainingTtlMs = priorStatus.expiresAt
+          ? Math.max(0, priorStatus.expiresAt.getTime() - Date.now())
+          : null;
+        heartbeat.restoreTaskDrainIfCurrent(generation, { draining: true, ttlMs: remainingTtlMs });
+      }
+      throw err;
+    }
+    // See the POST handler above for why publish runs outside the try, and
+    // why a publish failure here is swallowed instead of failing the route:
+    // the audit record already committed, so a publish failure here must
+    // not undo a drain-stop that is already correct in the database, and
+    // must not report the stop as failed when it succeeded.
+    publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
+    res.json(result);
+  });
 
   return router;
 }
