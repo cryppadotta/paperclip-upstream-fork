@@ -6116,6 +6116,13 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     ...sanitizeRuntimeServiceBaseEnv(process.env),
     ...runtimeEnvOverrides,
   } as Record<string, string>;
+  // Managed Paperclip worktrees are development environments, so their UI
+  // should track source edits without each project repeating this setting.
+  // Keep an explicit service/adapter opt-out for profiles that intentionally
+  // exercise the built bundle.
+  if (isPaperclipDevRuntimeService({ serviceName, command })) {
+    env.PAPERCLIP_UI_DEV_MIDDLEWARE ??= "true";
+  }
   if (port) {
     const portEnvKey = asString(portConfig.envKey, "PORT");
     env[portEnvKey] = String(port);
