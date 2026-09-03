@@ -656,7 +656,13 @@ async function runAbortableAdmissionStage<T>(
       // still owns asynchronous work. Keep that exact operation observed and
       // expose it to the embedding lifecycle so filesystem teardown cannot
       // remove its session root while it is still making durable writes.
-      const cleanup = pending.then(() => undefined);
+      // The aborted opening is already authoritative, and this stage owns no
+      // provider resource. Its retained promise represents settlement only;
+      // a late stage rejection must not masquerade as failed resource cleanup.
+      const cleanup = pending.then(
+        () => undefined,
+        () => undefined,
+      );
       retainRuntimeHostCleanup(cleanup);
       retainCleanup?.(cleanup);
     }

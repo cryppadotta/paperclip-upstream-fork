@@ -131,6 +131,53 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).not.toHaveBeenCalled();
   });
 
+  it("settles retained admission work when aborted sandbox preparation rejects", async () => {
+    const fixture = await hostFixture();
+    const controller = trackedAdmissionController();
+    const cancellation = new Error("sandbox admission cancelled");
+    const sandboxStarted = deferred<void>();
+    const finishSandbox = deferred<void>();
+    const retainedCleanups: Promise<void>[] = [];
+    const stageCredential = vi.fn(async () => {
+      throw new Error("credential staging must not start");
+    });
+    const openRuntime = vi.fn(async () => runtimePort());
+    const dependencies = fixture.dependencies({ openRuntime });
+    dependencies.stageCredential = stageCredential;
+    dependencies.prepareSandbox = async (input) => {
+      sandboxStarted.resolve(undefined);
+      await finishSandbox.promise;
+      return await prepareAcpxRuntimeSandbox(input);
+    };
+    dependencies.retainAdmissionCleanup = (cleanup) => {
+      retainedCleanups.push(cleanup);
+      trackAdmissionCleanup(cleanup);
+    };
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        dependencies,
+      ),
+    );
+    await sandboxStarted.promise;
+
+    controller.abort(cancellation);
+    await expect(opening).rejects.toBe(cancellation);
+    expect(retainedCleanups).toHaveLength(2);
+
+    finishSandbox.reject(new Error("sandbox preparation failed after abort"));
+    await expect(retainedCleanups[0]).resolves.toBeUndefined();
+    expect(stageCredential).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+
   it("scrubs credentials when abort wins before the adapter body starts", async () => {
     const fixture = await hostFixture();
     const controller = trackedAdmissionController();
