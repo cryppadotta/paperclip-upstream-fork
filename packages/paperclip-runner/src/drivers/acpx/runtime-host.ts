@@ -142,6 +142,8 @@ export interface AcpxRuntimeHostDependencies {
   /** Internal test seam for aborting credential acquisition. */
   stageCredential?: typeof stageManagedCodexCredential;
   openRuntime(options: AcpxRuntimePortOpenOptions): Promise<AcpxRuntimePort>;
+  /** Internal test seam for deterministic sandbox-admission scheduling. */
+  prepareSandbox?: typeof prepareAcpxRuntimeSandbox;
   /** Internal test seam for the post-handshake admission deadline. */
   admissionVerificationTimeoutMs?: number;
   /** Internal test seam for failed-admission cleanup. */
@@ -251,15 +253,18 @@ export class AcpxRuntimeHost {
       );
     }
     const profile = resolveQualifiedAcpxProfile(options.agent, options.model);
-    const binding = await runAbortableAdmissionStage(options.signal, () =>
-      createAcpxRecoveryBinding({
-        runtimeDirectory: options.runtimeDirectory,
-        normalizedSessionId: options.normalizedSessionId,
-        workingDirectory: options.workingDirectory,
-        profile,
-        requestedModel: options.model,
-        permissionMode: options.permissionMode,
-      }),
+    const binding = await runAbortableAdmissionStage(
+      options.signal,
+      () =>
+        createAcpxRecoveryBinding({
+          runtimeDirectory: options.runtimeDirectory,
+          normalizedSessionId: options.normalizedSessionId,
+          workingDirectory: options.workingDirectory,
+          profile,
+          requestedModel: options.model,
+          permissionMode: options.permissionMode,
+        }),
+      dependencies.retainAdmissionCleanup,
     );
     if (options.expectedIdentity) {
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
@@ -274,10 +279,13 @@ export class AcpxRuntimeHost {
       );
     }
 
-    const installation = await runAbortableAdmissionStage(options.signal, () =>
-      (dependencies.verifyInstallation ?? verifyQualifiedAcpxInstallation)(
-        profile,
-      ),
+    const installation = await runAbortableAdmissionStage(
+      options.signal,
+      () =>
+        (dependencies.verifyInstallation ?? verifyQualifiedAcpxInstallation)(
+          profile,
+        ),
+      dependencies.retainAdmissionCleanup,
     );
     if (installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
@@ -324,12 +332,15 @@ export class AcpxRuntimeHost {
       retainRuntimeHostCleanup(ownedCleanup);
     };
     try {
-      const sandbox = await runAbortableAdmissionStage(options.signal, () =>
-        prepareAcpxRuntimeSandbox({
-          binding,
-          agent: options.agent,
-          environment: options.environment,
-        }),
+      const sandbox = await runAbortableAdmissionStage(
+        options.signal,
+        () =>
+          (dependencies.prepareSandbox ?? prepareAcpxRuntimeSandbox)({
+            binding,
+            agent: options.agent,
+            environment: options.environment,
+          }),
+        dependencies.retainAdmissionCleanup,
       );
       if (options.agent === "codex") {
         credential = await acquireAbortableAdmissionResource({
@@ -445,6 +456,7 @@ export class AcpxRuntimeHost {
             profile,
             admissionVerificationTimeoutMs,
           ),
+        dependencies.retainAdmissionCleanup,
       );
       const observedIdentity: AcpxExpectedSessionIdentity = {
         kind: "acpx",
@@ -631,11 +643,25 @@ export class AcpxRuntimeHost {
 async function runAbortableAdmissionStage<T>(
   signal: AbortSignal | undefined,
   operation: () => Promise<T>,
+  retainCleanup: ((cleanup: Promise<void>) => void) | undefined,
 ): Promise<T> {
   if (signal === undefined) return await operation();
   signal.throwIfAborted();
   const pending = Promise.resolve().then(operation);
-  return await raceAdmissionWithAbort(pending, signal);
+  try {
+    return await raceAdmissionWithAbort(pending, signal);
+  } catch (error) {
+    if (signal.aborted) {
+      // Abort may win while sandbox preparation or another non-resource stage
+      // still owns asynchronous work. Keep that exact operation observed and
+      // expose it to the embedding lifecycle so filesystem teardown cannot
+      // remove its session root while it is still making durable writes.
+      const cleanup = pending.then(() => undefined);
+      retainRuntimeHostCleanup(cleanup);
+      retainCleanup?.(cleanup);
+    }
+    throw error;
+  }
 }
 
 async function acquireAbortableAdmissionResource<T>(input: {

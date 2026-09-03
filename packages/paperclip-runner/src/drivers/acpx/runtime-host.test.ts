@@ -11,6 +11,7 @@ import type {
   VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
+import { prepareAcpxRuntimeSandbox } from "./runtime-sandbox.js";
 import {
   AcpxRuntimeHost,
   type AcpxRuntimeHostDependencies,
@@ -20,8 +21,18 @@ import {
 } from "./runtime-host.js";
 
 const temporaryDirectories: string[] = [];
+const admissionControllers: AbortController[] = [];
+const pendingAdmissionOpenings = new Set<Promise<void>>();
+const pendingAdmissionCleanups = new Set<Promise<void>>();
 
 afterEach(async () => {
+  for (const controller of admissionControllers.splice(0)) {
+    if (!controller.signal.aborted) {
+      controller.abort(new Error("ACPX runtime host test cleanup"));
+    }
+  }
+  await Promise.all([...pendingAdmissionOpenings]);
+  await Promise.all([...pendingAdmissionCleanups]);
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -32,7 +43,7 @@ afterEach(async () => {
 describe("ACPX runtime host", () => {
   it("rejects a pre-aborted admission before acquiring provider resources", async () => {
     const fixture = await hostFixture();
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("admission cancelled before start");
     controller.abort(cancellation);
     const openRuntime = vi.fn(async () => runtimePort());
@@ -61,9 +72,68 @@ describe("ACPX runtime host", () => {
     expect(fixture.commandClose).not.toHaveBeenCalled();
   });
 
+  it("retains aborted sandbox preparation until its filesystem work settles", async () => {
+    const fixture = await hostFixture();
+    const controller = trackedAdmissionController();
+    const cancellation = new Error("sandbox admission cancelled");
+    const sandboxStarted = deferred<void>();
+    const finishSandbox = deferred<void>();
+    const retainedCleanups: Promise<void>[] = [];
+    const stageCredential = vi.fn(async () => {
+      throw new Error("credential staging must not start");
+    });
+    const openRuntime = vi.fn(async () => runtimePort());
+    const dependencies = fixture.dependencies({ openRuntime });
+    dependencies.stageCredential = stageCredential;
+    dependencies.prepareSandbox = async (input) => {
+      sandboxStarted.resolve(undefined);
+      await finishSandbox.promise;
+      return await prepareAcpxRuntimeSandbox(input);
+    };
+    dependencies.retainAdmissionCleanup = (cleanup) => {
+      retainedCleanups.push(cleanup);
+      trackAdmissionCleanup(cleanup);
+    };
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        dependencies,
+      ),
+    );
+    await sandboxStarted.promise;
+
+    controller.abort(cancellation);
+    await expect(opening).rejects.toBe(cancellation);
+    expect(retainedCleanups).toHaveLength(2);
+    let sandboxCleanupSettled = false;
+    void retainedCleanups[0]!.then(
+      () => {
+        sandboxCleanupSettled = true;
+      },
+      () => {
+        sandboxCleanupSettled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(sandboxCleanupSettled).toBe(false);
+
+    finishSandbox.resolve(undefined);
+    await expect(retainedCleanups[0]).resolves.toBeUndefined();
+    expect(sandboxCleanupSettled).toBe(true);
+    expect(stageCredential).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+
   it("scrubs credentials when abort wins before the adapter body starts", async () => {
     const fixture = await hostFixture();
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("runtime admission cancelled before entry");
     const createRuntime = vi.fn();
     let credentialHome = "";
@@ -919,32 +989,39 @@ describe("ACPX runtime host", () => {
   it("closes a command lease that resolves after admission is aborted", async () => {
     const fixture = await hostFixture();
     const commandAdmission = deferred<VerifiedAcpxCommandLease>();
+    const commandAdmissionStarted = deferred<void>();
     const lateCommandClose = vi.fn(async () => undefined);
-    const openCommand = vi.fn(() => commandAdmission.promise);
+    const openCommand = vi.fn(() => {
+      commandAdmissionStarted.resolve(undefined);
+      return commandAdmission.promise;
+    });
     const openRuntime = vi.fn(async () => runtimePort());
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("command admission cancelled");
     const profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "claude",
-        model: "claude-sonnet-5",
-        permissionMode: "deny-all",
-        signal: controller.signal,
-      },
-      {
-        verifyInstallation: async () => ({
-          commandDigest: profile.commandDigest,
-          agentServerPackageJsonPath: join(fixture.root, "package.json"),
-          agentRuntimePackageJsonPath: null,
-          openCommand,
-        }),
-        openRuntime,
-        reportRetainedCleanupFailure: vi.fn(),
-      },
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "claude",
+          model: "claude-sonnet-5",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        {
+          verifyInstallation: async () => ({
+            commandDigest: profile.commandDigest,
+            agentServerPackageJsonPath: join(fixture.root, "package.json"),
+            agentRuntimePackageJsonPath: null,
+            openCommand,
+          }),
+          openRuntime,
+          retainAdmissionCleanup: trackAdmissionCleanup,
+          reportRetainedCleanupFailure: vi.fn(),
+        },
+      ),
     );
-    await vi.waitFor(() => expect(openCommand).toHaveBeenCalledOnce());
+    await commandAdmissionStarted.promise;
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);
@@ -978,27 +1055,33 @@ describe("ACPX runtime host", () => {
       await rm(lateCredentialPath);
     });
     const reportRetainedCleanupFailure = vi.fn();
-    const stageCredential = vi.fn(() => credentialAdmission.promise);
+    const credentialAdmissionStarted = deferred<void>();
+    const stageCredential = vi.fn(() => {
+      credentialAdmissionStarted.resolve(undefined);
+      return credentialAdmission.promise;
+    });
     const openRuntime = vi.fn(async () => runtimePort());
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("credential admission cancelled");
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
-        permissionMode: "deny-all",
-        signal: controller.signal,
-      },
-      {
-        ...fixture.dependencies({
-          openRuntime,
-          reportRetainedCleanupFailure,
-        }),
-        stageCredential,
-      },
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        {
+          ...fixture.dependencies({
+            openRuntime,
+            reportRetainedCleanupFailure,
+          }),
+          stageCredential,
+        },
+      ),
     );
-    await vi.waitFor(() => expect(stageCredential).toHaveBeenCalledOnce());
+    await credentialAdmissionStarted.promise;
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);
@@ -1031,6 +1114,7 @@ describe("ACPX runtime host", () => {
   it("retains managed credentials until an aborted late runtime is closed", async () => {
     const fixture = await hostFixture();
     const runtimeAdmission = deferred<AcpxRuntimePort>();
+    const runtimeAdmissionStarted = deferred<void>();
     const retryClose = deferred<void>();
     const lateRuntime = runtimePort({
       onClose: vi
@@ -1045,28 +1129,31 @@ describe("ACPX runtime host", () => {
       receivedSignal = options.signal;
       credentialHome = options.launchEnvironment.CODEX_HOME!;
       bridgeUrl = options.mcpServers[0]!.url;
+      runtimeAdmissionStarted.resolve(undefined);
       return runtimeAdmission.promise;
     });
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("runtime admission cancelled");
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
-        permissionMode: "deny-all",
-        environment: {
-          PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}",
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          environment: {
+            PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}",
+          },
+          signal: controller.signal,
+          semanticTools: {
+            tools: [],
+            handler: async () => ({ ok: true }),
+          },
         },
-        signal: controller.signal,
-        semanticTools: {
-          tools: [],
-          handler: async () => ({ ok: true }),
-        },
-      },
-      fixture.dependencies({ openRuntime }),
+        fixture.dependencies({ openRuntime }),
+      ),
     );
-    await vi.waitFor(() => expect(openRuntime).toHaveBeenCalledOnce());
+    await runtimeAdmissionStarted.promise;
     expect(receivedSignal).toBe(controller.signal);
 
     controller.abort(cancellation);
@@ -1121,34 +1208,38 @@ describe("ACPX runtime host", () => {
   it("scrubs credentials after rejected runtime cleanup is proven", async () => {
     const fixture = await hostFixture();
     const runtimeAdmission = deferred<AcpxRuntimePort>();
+    const runtimeAdmissionStarted = deferred<void>();
     const providerCleanup = deferred<void>();
     const credentialClose = vi.fn(async () => undefined);
-    const controller = new AbortController();
+    const controller = trackedAdmissionController();
     const cancellation = new Error("runtime admission cancelled");
     const openRuntime = vi.fn((options: AcpxRuntimePortOpenOptions) => {
       options.retainFailedAdmissionCleanup(providerCleanup.promise);
+      runtimeAdmissionStarted.resolve(undefined);
       return runtimeAdmission.promise;
     });
-    const opening = AcpxRuntimeHost.open(
-      {
-        ...fixture.options,
-        agent: "codex",
-        model: "gpt-5.6-sol",
-        permissionMode: "deny-all",
-        signal: controller.signal,
-      },
-      {
-        ...fixture.dependencies({ openRuntime }),
-        stageCredential: async () => ({
-          path: join(fixture.root, "auth.json"),
-          mode: "inline_json",
-          lifetimeFenceFds: [42, 43],
-          activateLifetimeOwner: async () => undefined,
-          close: credentialClose,
-        }),
-      },
+    const opening = trackAdmissionOpening(
+      AcpxRuntimeHost.open(
+        {
+          ...fixture.options,
+          agent: "codex",
+          model: "gpt-5.6-sol",
+          permissionMode: "deny-all",
+          signal: controller.signal,
+        },
+        {
+          ...fixture.dependencies({ openRuntime }),
+          stageCredential: async () => ({
+            path: join(fixture.root, "auth.json"),
+            mode: "inline_json",
+            lifetimeFenceFds: [42, 43],
+            activateLifetimeOwner: async () => undefined,
+            close: credentialClose,
+          }),
+        },
+      ),
     );
-    await vi.waitFor(() => expect(openRuntime).toHaveBeenCalledOnce());
+    await runtimeAdmissionStarted.promise;
 
     controller.abort(cancellation);
     await expect(opening).rejects.toBe(cancellation);
@@ -1245,11 +1336,39 @@ async function hostFixture() {
             openCommand: async () => command,
           }) satisfies VerifiedAcpxInstallation,
         openRuntime: input.openRuntime,
+        retainAdmissionCleanup: trackAdmissionCleanup,
         reportRetainedCleanupFailure:
           input.reportRetainedCleanupFailure ?? vi.fn(),
       };
     },
   };
+}
+
+function trackedAdmissionController(): AbortController {
+  const controller = new AbortController();
+  admissionControllers.push(controller);
+  return controller;
+}
+
+function trackAdmissionOpening<T>(opening: Promise<T>): Promise<T> {
+  trackSettledPromise(pendingAdmissionOpenings, opening);
+  return opening;
+}
+
+function trackAdmissionCleanup(cleanup: Promise<void>): void {
+  trackSettledPromise(pendingAdmissionCleanups, cleanup);
+}
+
+function trackSettledPromise<T>(
+  pending: Set<Promise<void>>,
+  promise: Promise<T>,
+): void {
+  const observed = promise.then(
+    () => undefined,
+    () => undefined,
+  );
+  pending.add(observed);
+  void observed.finally(() => pending.delete(observed));
 }
 
 function deferred<T>(): {
