@@ -131,7 +131,7 @@ vi.mock("../lib/assignees", () => ({
 
 vi.mock("./StatusIcon", () => ({
   StatusIcon: ({ status, blockerAttention, className, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; size?: string }) => (
-    <span className={className} data-testid="status-icon" data-size={size ?? "md"} data-status-icon-state={blockerAttention?.state}>{status}</span>
+    <span className={className} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
 }));
 
@@ -530,7 +530,9 @@ describe("IssueProperties", () => {
       '[data-property-label="Status"] + [data-property-value="true"] [data-testid="status-icon"]',
     );
     expect(statusVisual).not.toBeNull();
-    expect(statusVisual?.getAttribute("data-size")).toBe("md");
+    // Keep the call site on StatusIcon's tested 16px default instead of
+    // overriding it with a larger property-row-specific glyph size.
+    expect(statusVisual?.getAttribute("data-size")).toBeNull();
     expect(statusVisual?.classList).toContain("mx-1");
     expect(statusVisual?.classList).not.toContain("size-6");
     expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
