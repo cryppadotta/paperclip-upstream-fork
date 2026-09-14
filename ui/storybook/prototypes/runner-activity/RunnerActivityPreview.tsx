@@ -268,7 +268,7 @@ export function RunnerActivityPreview({
                 {
                   id: "preview-saved-turn",
                   kind: "turn",
-                  settled: !legacy,
+                  settled: true,
                   standaloneHeader: !legacy,
                   agentName: "Engineer",
                   agentIcon: "code",
