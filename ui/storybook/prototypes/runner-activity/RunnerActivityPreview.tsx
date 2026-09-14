@@ -123,6 +123,7 @@ export interface RunnerActivityPreviewProps {
   narrow?: boolean;
   longLabels?: boolean;
   failed?: boolean;
+  legacy?: boolean;
 }
 
 export function RunnerActivityPreview({
@@ -132,6 +133,7 @@ export function RunnerActivityPreview({
   narrow = false,
   longLabels = false,
   failed = false,
+  legacy = false,
 }: RunnerActivityPreviewProps) {
   const [step, setStep] = useState(initialStep);
   const [playing, setPlaying] = useState(autoPlay);
@@ -259,15 +261,15 @@ export function RunnerActivityPreview({
           Can you clean up the runner’s activity feed?
         </div>
         <TaskChatExpansionState.Provider key={replay} value={memory}>
-          {finished ? (
+          {finished || legacy ? (
             <TaskChatThreadView
               scroll={false}
               items={[
                 {
                   id: "preview-saved-turn",
                   kind: "turn",
-                  settled: true,
-                  standaloneHeader: true,
+                  settled: !legacy,
+                  standaloneHeader: !legacy,
                   agentName: "Engineer",
                   agentIcon: "code",
                   items: buildTurnTimelineRows(items, false),
@@ -277,7 +279,7 @@ export function RunnerActivityPreview({
                     added: 0,
                     removed: 0,
                   },
-                  finalResponse: items.find(
+                  finalResponse: legacy ? undefined : items.find(
                     (item): item is TaskChatMessageItem =>
                       item.kind === "message" && item.channel === "final",
                   ),

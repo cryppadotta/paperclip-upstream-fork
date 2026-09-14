@@ -49,8 +49,20 @@ export const IconAlignment: Story = {
   name: "04 · Icon alignment",
   args: { initialStep: 12, autoPlay: false, expanded: true },
 };
+export const LegacyRunnerParity: Story = {
+  name: "05 · Legacy runner parity",
+  args: { initialStep: 8, autoPlay: false, expanded: false, legacy: true },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "A persisted legacy-runner turn rendered through the same compact activity group, aligned icon gutter, one-line target, and friendly tool taxonomy as the new runner.",
+      },
+    },
+  },
+};
 export const LongLabels: Story = {
-  name: "05 · Long labels & narrow layout",
+  name: "06 · Long labels & narrow layout",
   args: { initialStep: 8, autoPlay: false, narrow: true, longLabels: true },
 };
 export const Failure: Story = {
