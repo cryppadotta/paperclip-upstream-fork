@@ -130,8 +130,8 @@ vi.mock("../lib/assignees", () => ({
 }));
 
 vi.mock("./StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention, className, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; size?: string }) => (
-    <span className={className} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
+  StatusIcon: ({ status, blockerAttention, className, glyphContainerClassName, size }: { status: string; blockerAttention?: Issue["blockerAttention"]; className?: string; glyphContainerClassName?: string; size?: string }) => (
+    <span className={className} data-glyph-container-class={glyphContainerClassName} data-testid="status-icon" data-size={size} data-status-icon-state={blockerAttention?.state}>{status}</span>
   ),
 }));
 
@@ -531,7 +531,7 @@ describe("IssueProperties", () => {
     );
     expect(statusVisual).not.toBeNull();
     expect(statusVisual?.getAttribute("data-size")).toBeNull();
-    expect(statusVisual?.classList).toContain("size-6");
+    expect(statusVisual?.getAttribute("data-glyph-container-class")).toContain("size-6");
     expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
       .toContain("text-muted-foreground/70");
     const projectLabel = surface?.querySelector('[data-property-label="Project"]');
