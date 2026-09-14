@@ -530,11 +530,8 @@ describe("IssueProperties", () => {
       '[data-property-label="Status"] + [data-property-value="true"] [data-testid="status-icon"]',
     );
     expect(statusVisual).not.toBeNull();
-    // Keep the call site on StatusIcon's tested 16px default instead of
-    // overriding it with a larger property-row-specific glyph size.
     expect(statusVisual?.getAttribute("data-size")).toBeNull();
-    expect(statusVisual?.classList).toContain("mx-1");
-    expect(statusVisual?.classList).not.toContain("size-6");
+    expect(statusVisual?.classList).toContain("size-6");
     expect(surface?.querySelector('[data-property-section="true"] > div')?.classList)
       .toContain("text-muted-foreground/70");
     const projectLabel = surface?.querySelector('[data-property-label="Project"]');
