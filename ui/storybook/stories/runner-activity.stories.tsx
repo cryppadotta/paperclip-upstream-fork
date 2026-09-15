@@ -50,16 +50,33 @@ export const IconAlignment: Story = {
   args: { initialStep: 12, autoPlay: false, expanded: true },
 };
 export const LegacyRunnerParity: Story = {
-  name: "05 · Legacy runner parity",
-  args: { initialStep: 8, autoPlay: false, expanded: false, legacy: true },
+  name: "05 · Legacy live · animated",
+  args: { initialStep: 1, autoPlay: true, expanded: false, legacy: true },
   parameters: {
     docs: {
       description: {
         story:
-          "A persisted legacy-runner turn rendered through the same compact activity group, aligned icon gutter, one-line target, and friendly tool taxonomy as the new runner.",
+          "Raw CLI transcript events pass through transcriptToTaskChatItems and TaskChatLiveTail, the actual live legacy path. Thinking and tools roll through the same single-line activity group as the native runner. Use Next to inspect each transition or expand a group to retain its history.",
       },
     },
   },
+};
+export const LegacyLiveExpanded: Story = {
+  name: "Legacy · expanded history · animated",
+  args: { initialStep: 3, autoPlay: true, expanded: true, legacy: true },
+};
+export const LegacyLongLabels: Story = {
+  name: "Legacy · narrow · long labels",
+  args: { initialStep: 8, autoPlay: false, narrow: true, longLabels: true, legacy: true },
+};
+export const LegacyLight: Story = {
+  name: "Legacy · light · animated",
+  args: { initialStep: 1, autoPlay: true, legacy: true },
+  globals: { theme: "light" },
+};
+export const LegacyCompleted: Story = {
+  name: "Legacy · completed",
+  args: { initialStep: 12, autoPlay: false, legacy: true },
 };
 export const LongLabels: Story = {
   name: "06 · Long labels & narrow layout",
