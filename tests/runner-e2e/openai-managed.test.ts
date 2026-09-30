@@ -1,9 +1,9 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { prepareOpenAiHostedFixture } from "./openai-managed-fixture.js";
+import { prepareOpenAiHostedFixture, readOpenAiHostedArtifact } from "./openai-managed-fixture.js";
 import { runnerSuites } from "./catalog.js";
 import { evaluateMatcher } from "./matchers.js";
 it("checks binary contents rather than only their existence", async () => {
@@ -25,4 +25,20 @@ it("creates an isolated Git worktree with a committed input fixture", async () =
     expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("OpenAI hosted fixture baseline\n");
     await expect(prepareOpenAiHostedFixture(workspace)).rejects.toThrow("empty disposable workspace");
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("requires a matching run-bound downloadable hosted artifact, not just a claimed filename", async () => {
+  const bytes = Buffer.from(JSON.stringify({ schema: "paperclip.openai-workspace-export.v1", entries: [] }));
+  const attachment = { id: "attachment", issueId: "issue", originatingRunId: "run", originalFilename: "paperclip-workspace.json", contentType: "application/json", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  const download = vi.fn().mockResolvedValue({ ok: () => true, body: async () => bytes });
+  const list = vi.fn().mockResolvedValue([attachment]);
+  const api = { get: list, request: { get: download } } as never;
+  expect(await readOpenAiHostedArtifact(api, "issue", "run")).toMatchObject({ name: attachment.originalFilename, mimeType: "application/json", sha256: attachment.sha256 });
+  expect(download).toHaveBeenCalledWith("/api/attachments/attachment/content?download=1");
+  list.mockResolvedValue([{ ...attachment, originatingRunId: "other-run" }]);
+  await expect(readOpenAiHostedArtifact(api, "issue", "run")).rejects.toThrow("observed 0");
+  expect(download).toHaveBeenCalledTimes(1);
+  list.mockResolvedValue([attachment]);
+  download.mockResolvedValue({ ok: () => true, body: async () => Buffer.from("tampered") });
+  await expect(readOpenAiHostedArtifact(api, "issue", "run")).rejects.toThrow("disagrees");
 });

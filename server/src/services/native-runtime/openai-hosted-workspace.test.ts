@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, serializeDirectorySnapshot, type LegacySerializedDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { finalizeOpenAiHostedWorkspace, materializeOpenAiWorkspace, openAiWorkspaceRelativePath, prepareOpenAiHostedWorkspace } from "./openai-hosted-workspace.js";
-import * as fileHandoff from "./native-runner-file-handoff.js";
+import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllGlobals(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 const payload = (entries: unknown[]) => Buffer.from(JSON.stringify({ schema: "paperclip.openai-workspace-export.v1", entries }));
@@ -93,12 +93,12 @@ it("hands off relative output paths before merging and deleting the hosted sessi
   await writeFile(path.join(hosted, "state.json"), JSON.stringify({ binding, cwd: await realpath(workspace), baseline, ignoredPaths: [], uploadedFileIds: [] }), { mode: 0o600 });
   await writeFile(path.join(stateRoot, "runner", "managed-provider-state.json"), JSON.stringify({ runId: "run", descriptor: { kind: "openai_managed" }, providerSessionId: "sess_owned", durableEventCursor: JSON.stringify({ lastTurnId: "turn_owned" }) }), { mode: 0o600 });
   const bytes = payload([{ path: "seed.txt", kind: "file", mode: 420, data: Buffer.from("after").toString("base64") }]);
-  const handoff = vi.spyOn(fileHandoff, "prepareNativeRunnerFileHandoff").mockImplementation(async (input) => {
-    expect(input.deliverable.contentRef).toBe("paperclip-workspace.json");
-    expect(input.binding.workspaceRoot).toBe("/workspace/outputs");
-    expect(await input.binding.readRemoteWorkspaceFile!(input.deliverable)).toEqual(bytes);
+  const handoff = vi.spyOn(PaperclipRunnerToolAuthority.prototype, "execute").mockImplementation(async function (this: PaperclipRunnerToolAuthority, call) {
+    expect(call).toMatchObject({ tool: "register_deliverable", arguments: { idempotencyKey: "openai-output:sess_owned:artifact_owned", contentRef: "paperclip-workspace.json" } });
+    expect(this.binding.workspaceRoot).toBe("/workspace/outputs");
+    expect(await this.binding.readRemoteWorkspaceFile!(call.arguments as never)).toEqual(bytes);
     expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("before");
-    return { result: {} as never, rollbackDefinitePreCommitFailure: null };
+    return { disposition: "applied" };
   });
   const request = vi.fn(async (url: string, init: RequestInit) => {
     if (url.endsWith("/artifacts?order=asc&limit=100")) return Response.json({ data: [{ id: "artifact_owned", turn_id: "turn_owned", path: "/workspace/outputs/paperclip-workspace.json" }], has_more: false });

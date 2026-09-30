@@ -7,7 +7,7 @@ import { workspacePaths } from "@paperclipai/adapter-utils/workspace-manifest";
 import { shouldExcludePath } from "@paperclipai/adapter-utils/exclude-patterns";
 import type { Db } from "@paperclipai/db";
 import { parseOpenAiManagedProfile, type NativeExecutionInput, type OpenAiManagedProfile } from "../../vendor/paperclip-runner/index.js";
-import { prepareNativeRunnerFileHandoff } from "./native-runner-file-handoff.js";
+import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 
 const ROOT = "/workspace/project";
 const EXPORT = "/workspace/paperclip-export.py";
@@ -261,9 +261,14 @@ export async function finalizeOpenAiHostedWorkspace(input: { db: Db; execution: 
     // Persist inspectable files before touching the task worktree.
     for (const { artifact, bytes } of downloaded) {
       const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
-      await prepareNativeRunnerFileHandoff({ db: input.db,
-        binding: { ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes },
-        deliverable: { filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
+      // Use the existing transactional registration path so attachments retain
+      // their audit/idempotency receipt and their generated preparation comment
+      // cannot displace the provider's final answer during presentation.
+      const authority = new PaperclipRunnerToolAuthority(input.db, {
+        ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes,
+      });
+      await authority.execute({ tool: "register_deliverable", callId: `openai-output:${artifact.id}`,
+        arguments: { idempotencyKey: `openai-output:${sessionId}:${artifact.id}`, filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
       });
     }
     await mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject" });
