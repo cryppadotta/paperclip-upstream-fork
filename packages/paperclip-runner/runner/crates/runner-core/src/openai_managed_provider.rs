@@ -171,6 +171,8 @@ struct Checkpoint {
     cancel_requested: bool,
     #[serde(default)]
     cancel_deadline_ms: Option<u64>,
+    #[serde(default)]
+    terminal_observed_at_ms: Option<u64>,
     seen_items: BTreeSet<String>,
     delivered_calls: BTreeSet<String>,
     #[serde(default)]
@@ -743,6 +745,17 @@ impl OpenAiManagedProvider {
                     "OpenAI turn ended with unsettled Paperclip function calls",
                 ));
             }
+            // The API can publish the terminal outcome before token accounting.
+            // Keep polling that same completed turn (never rerun it) for a bounded
+            // grace period. Unknown accounting remains unknown when it expires.
+            let observed = *self
+                .checkpoint
+                .terminal_observed_at_ms
+                .get_or_insert(now_ms());
+            self.checkpoint.deadline_ms = None;
+            if self.usage.is_none() && now_ms().saturating_sub(observed) < 30_000 {
+                return self.save_checkpoint();
+            }
             if let Some(usage) = self.usage.as_ref() {
                 self.checkpoint
                     .events
@@ -902,6 +915,7 @@ impl Provider for OpenAiManagedProvider {
             Some(now_ms() + u64::from(self.config.timeout_seconds) * 1000);
         self.checkpoint.cancel_requested = false;
         self.checkpoint.cancel_deadline_ms = None;
+        self.checkpoint.terminal_observed_at_ms = None;
         self.checkpoint.seen_items.clear();
         self.checkpoint.delivered_calls.clear();
         self.save_checkpoint()?;
@@ -956,6 +970,7 @@ impl Provider for OpenAiManagedProvider {
             ));
         }
         if !self.checkpoint.cancel_requested
+            && self.checkpoint.terminal_observed_at_ms.is_none()
             && (self.checkpoint.deadline_ms.is_some_and(|d| now_ms() >= d)
                 || self.preflight_turn().is_err())
         {
@@ -1235,6 +1250,7 @@ mod tests {
     fn checkpoint_preserves_output_backlog_and_turn_binding() {
         let mut p = provider();
         active(&mut p);
+        p.checkpoint.terminal_observed_at_ms = Some(now_ms() - 30_001);
         let message = json!({"id":"item_message","type":"message","role":"assistant","status":"completed","turn_id":"turn_remote","content":[{"type":"output_text","text":"Done"}]});
         p.apply_snapshot(snapshot(&p, "completed", json!([]), vec![message]))
             .unwrap();
@@ -1276,6 +1292,7 @@ mod tests {
     fn unknown_usage_stays_unknown() {
         let mut p = provider();
         active(&mut p);
+        p.checkpoint.terminal_observed_at_ms = Some(now_ms() - 30_001);
         p.apply_snapshot(snapshot(&p, "completed", json!([]), vec![]))
             .unwrap();
         assert!(p.usage_snapshot().is_none());
@@ -1389,9 +1406,33 @@ mod tests {
         );
     }
     #[test]
+    fn terminal_waits_for_delayed_usage_without_repeating_messages_or_start() {
+        let mut p = provider();
+        active(&mut p);
+        p.checkpoint.terminal_observed_at_ms = None;
+        p.apply_snapshot(snapshot(&p, "completed", json!([]), vec![]))
+            .unwrap();
+        assert!(p.checkpoint.local_turn_id.is_some());
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "turn/started")
+        );
+        assert!(p.checkpoint.events.is_empty());
+        let mut settled = snapshot(&p, "completed", json!([]), vec![]);
+        settled.session["usage"] = json!({"input_tokens":12,"output_tokens":3});
+        p.apply_snapshot(settled).unwrap();
+        assert!(p.checkpoint.local_turn_id.is_none());
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "thread/tokenUsage/updated")
+        );
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "turn/completed")
+        );
+    }
+    #[test]
     fn completed_backlog_recovery_does_not_restart_polling_a_finished_turn() {
         let mut p = provider();
         active(&mut p);
+        p.checkpoint.terminal_observed_at_ms = Some(now_ms() - 30_001);
         p.apply_snapshot(snapshot(&p, "completed", json!([]), vec![]))
             .unwrap();
         p.restore_active_turn("local_turn").unwrap();
