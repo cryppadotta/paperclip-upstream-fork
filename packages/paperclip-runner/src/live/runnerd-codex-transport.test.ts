@@ -1909,6 +1909,18 @@ it("allows trusted package-manager runtime roots without exposing HOME paths", (
   ).toEqual(["/opt/homebrew", "/usr/local"]);
 });
 
+it.each(["none", "openai_hosted"] as const)("only advertises OpenAI planning with a tools-only environment (%s)", async (type) => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-openai-plan-mode-"));
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "openai_managed", stateDirectory: root,
+    openaiProfile: { profileId: "profile", model: "gpt-6-astra", apiRevision: "agents=v1", reasoningEffort: "medium", maxEstimatedSessionCostUsd: 2, timeoutSeconds: 180,
+      environment: type === "none" ? { type } : { type, container_size: "medium", network: { access: "disabled" } } },
+  });
+  try {
+    const result = await transport.request("collaborationMode/list", {});
+    expect(result).toMatchObject({ data: type === "none" ? [{ mode: "plan", model: "runner-managed" }] : [] });
+  } finally { await transport.close(); await rm(root, { recursive: true, force: true }); }
+});
+
 it("denies the isolated Codex home without denying a remote execution workspace", () => {
   const args = createRunnerdCodexAppServerArgs({
     environment: {

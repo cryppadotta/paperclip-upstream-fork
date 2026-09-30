@@ -3539,7 +3539,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       return this.options.provider === undefined ||
         this.options.provider === "codex" ||
         this.options.provider === "opencode" ||
-        this.options.provider === "acpx"
+        this.options.provider === "acpx" ||
+        (this.options.provider === "openai_managed" && this.options.openaiProfile?.environment.type === "none")
         ? {
             data: [
               {
@@ -4574,6 +4575,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const openaiProfile = this.options.openaiProfile;
     if (provider === "openai_managed" && (!openaiProfile || openaiProfile.model !== requestedModel)) {
       throw new Error("OpenAI managed requested model must match its configured profile");
+    }
+    if (provider === "openai_managed" && params.permissions === "paperclip-runner-workspace-read-only" && openaiProfile?.environment.type !== "none") {
+      throw new Error("OpenAI managed planning requires a tools-only profile");
     }
     const managedProfile = this.options.managedProfile;
     const agentCoreProfile = this.options.agentCoreProfile;
