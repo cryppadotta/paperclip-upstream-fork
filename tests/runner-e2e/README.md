@@ -1490,7 +1490,7 @@ workspace so a user's installed skill cannot shadow the managed skill under test
 ### OpenAI managed candidates
 
 The manual-only `openai-managed-tools` suite exercises response, plan revision
-and acceptance, and human questions. `openai-managed-hosted` runs code in an
+and acceptance, and Ask-mode answers. `openai-managed-hosted` runs code in an
 OpenAI sandbox and verifies exact text, binary SHA-256, task completion, and a
 persisted output attachment after importing edits into an isolated Git worktree.
 Both need `OPENAI_API_KEY`; neither runs in the default matrix. The harness sets

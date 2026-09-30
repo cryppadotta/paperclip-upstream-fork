@@ -1,8 +1,8 @@
 # OpenAI managed agents
 
-Status: experimental; live qualification pending. Implemented against the public
-Agents API documentation reviewed on 2026-09-30. Local tests and roster validation
-are not evidence that a provider passed the live evals.
+Status: experimental; live qualification attempted on 2026-09-30, not yet passed.
+Implemented against the public Agents API documentation reviewed that day.
+Neither profile has a production qualification attestation.
 
 ## Which OpenAI product?
 
@@ -169,7 +169,7 @@ pnpm test:e2e:runner -- --list --suite openai-managed-hosted
 
 After configuring `OPENAI_API_KEY` in the ignored `.env.runner-e2e.local`, the same
 commands without `--list` exercise real paid work. Tools-only covers response,
-plan revision/acceptance and human questions. Hosted covers a seeded isolated Git
+plan revision/acceptance and Ask-mode answers. Hosted covers a seeded isolated Git
 worktree, exact text and binary return, and a persisted output attachment.
 
 A production qualification object contains `suite`
@@ -178,6 +178,79 @@ A production qualification object contains `suite`
 and `totalCases: 35`. Hashes bind the integration build and configuration; they do
 not claim to identify OpenAI's private runtime build. Preserve immutable attempt
 artifacts and reports before recording the attestation.
+
+## Live qualification evidence (2026-09-30)
+
+The first complete measurements used Paperclip
+`e2d8e05eb6b400011d47cf7649d25bb50c990b92`, private eval revision
+`8ee4c283`, `gpt-6-astra`, medium reasoning, `agents=v1`, and the unchanged
+35-case Claude managed roster. Each case had one attempt and zero automatic
+retries. The hosted environment was medium with networking disabled. Provider
+and eval timeouts were 180 and 240 seconds, with a $2 estimated session ceiling.
+
+| Profile | Qualified cases | Preserved run ID |
+| --- | --- | --- |
+| Tools-only | 30 / 35 | `openai-tools-qualification-20260930t185459z` |
+| Hosted | 25 / 35 | `openai-hosted-qualification-20260930t185500z` |
+
+The 15 non-passing attempts comprise:
+
+- Ten estimate-limit failures (three tools-only, seven hosted). Each completed
+  its provider turn and passed every behavior check, but the original estimator
+  charged cached input at the uncached reservation rate. The subsequent fix
+  accounts for known cache hits. These original grades remain failures.
+- Three tool-schema failures: `get-task-context` and `avoid-generic-api-request`
+  in tools-only, and `avoid-generic-api-request` hosted. The unchanged fixtures
+  expose synthetic agent IDs, while `read_agent_instructions.targetAgentId`
+  requires a UUID. The integration rejects those calls. Schemas and fixtures have
+  not been weakened to turn these attempts green.
+- Hosted `get-company-agent` lacked usable token accounting after the bounded
+  terminal accounting grace period.
+- Hosted `schedule-task-wake` failed provider shutdown with unsettled function
+  calls; successful tool receipts alone did not prove safe shutdown.
+
+The live Product E2E work also exposed and fixed duplicate semantic completion,
+absolute-path artifact handoff, missing durable artifact receipts, tools-only
+planning admission, and insufficient shutdown/accounting grace. Repeated drain
+probes now back off to avoid exhausting the durable command journal while waiting
+for the provider. Hosted outputs are registered through the existing tool authority
+before merge, with stable idempotency keys and durable presentation receipts.
+
+Subsequent regression probes on Paperclip `8d00db6a2` and the same private eval
+revision passed all four selected cases: tools-only `search-company-tasks` and
+hosted `set-task-dependencies`, `schedule-task-wake`, and `get-company-agent`.
+Run IDs are `openai-tools-regression-20260930t193124z` and
+`openai-hosted-regression-20260930t193125z`. These used the same case definitions,
+model, environment policies and ceilings, and zero automatic retries. A passing
+repeat of the accounting case does not establish that delayed usage is reliable.
+
+All four live Product E2E cells have passing retained attempts, each with six
+passing matchers. These are separate measurements across integration revisions:
+
+| Cell | Paperclip revision | Product campaign |
+| --- | --- | --- |
+| Message response | `5fc478024` | `local-2026-09-30T19-01-52-414Z` |
+| Hosted workspace return | `e35e73f51` | `local-2026-09-30T19-15-01-461Z` |
+| Plan, revise, accept (three runs) | `8d00db6a2` | `local-2026-09-30T19-29-56-784Z` |
+| Ask-mode answer | `8d00db6a2` | `local-2026-09-30T19-30-54-574Z` |
+
+The hosted check verifies exact imported text, binary SHA-256, and a persisted
+artifact downloaded again through the authenticated public API. The first two
+campaigns lack embedded source SHA fields; their source and runner hashes were
+captured in pre-launch provenance. Later campaigns also embed the source SHA.
+Each campaign retains its normal dashboard, browser evidence and API snapshots.
+
+The live work reserved $206 in total across all recorded launches, then released
+$14 for three verified pre-inference failures, leaving $192 in conservative
+reservations against the authorized $200 budget. These are reservations, not
+measured or invoiced spend. Original attempt provenance is unchanged; releases
+are recorded separately. Provider billed cost and incomplete accounting totals
+remain unknown.
+
+Retained attempts, including startup failures and probes on later revisions, are
+independent measurements. Narrow regression passes do not replace either complete
+roster or qualify a changed build. A new complete 35/35 measurement for each exact
+configuration remains necessary before production enablement.
 
 ## Primary references
 
