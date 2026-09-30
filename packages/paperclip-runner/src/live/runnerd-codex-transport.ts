@@ -6004,6 +6004,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#turnControls = parseAcpxTurnControlCapabilities(capabilities.turnControls, this.#evidence.acpxAgent);
         }
       }
+      if (event.eventType === "session.failed" && this.options.provider === "openai_managed") {
+        const failure = record(eventPayload);
+        if (typeof failure.message === "string") this.#diagnostic(failure.message.slice(0, 4_096));
+      }
       if (event.eventType === "harness.diagnostic") {
         const diagnostic = record(record(event.envelope.payload).payload);
         if (
