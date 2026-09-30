@@ -54,6 +54,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
   kind:
     | "codex_app_server"
     | "opencode_server"
+    | "openai_agents_api"
     | "claude_managed_agents_api"
     | "aws_agentcore_harness_api"
     | "acpx_runtime";
@@ -73,6 +74,8 @@ function transportDriverIdentity(input: NativeExecutionInput): {
         displayName: "OpenCode server",
         version: "1.18.32",
       };
+    case "openai_managed":
+      return { kind: "openai_agents_api", displayName: "OpenAI Managed Agent", version: input.provider.openaiProfile.apiRevision };
     case "claude_managed":
       return {
         kind: "claude_managed_agents_api",

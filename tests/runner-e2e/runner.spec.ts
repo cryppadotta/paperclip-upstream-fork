@@ -2098,6 +2098,10 @@ for (const execution of executions) {
             ]),
         ),
       );
+      const fileHashes = Object.fromEntries(await Promise.all(taskMatchers
+        .filter((matcher) => matcher.kind === "file_sha256")
+        .map(async (matcher) => [matcher.path, await readFile(path.isAbsolute(matcher.path) ? matcher.path : path.join(workspacePath, matcher.path))
+          .then((bytes) => createHash("sha256").update(bytes).digest("hex")).catch(() => undefined)])));
       if (execution.suite.id === "api-response-reading") {
         downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
@@ -2108,6 +2112,7 @@ for (const execution of executions) {
           evaluateMatcher(matcher, {
             ...matcherObservation,
             files: fileObservations,
+            fileHashes,
             // Multi-run tasks intentionally retain earlier waiting/revision
             // replies. Exact completion text belongs to the chronological
             // final run, while occurrence checks still span every agent

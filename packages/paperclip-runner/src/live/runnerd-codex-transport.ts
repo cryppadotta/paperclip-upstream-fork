@@ -1,3 +1,6 @@
+import { isOpenAiSessionCreation } from "../drivers/openai-managed/identity.js";
+import type { OpenAiManagedProfile } from "../drivers/openai-managed/config.js";
+import { createSanitizedOpenAiManagedEnvironment } from "../drivers/openai-managed/environment.js";
 import { isAcpxCanonicalInputMethod } from "../drivers/acpx/profile-extensions.js";
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
@@ -1069,8 +1072,10 @@ export interface CapabilityRunnerdProcessEvidence {
   agentRuntimeVersion: string | null;
   acpProtocolVersion: number | null;
   providerExecutionKind: "local_process" | "remote_service" | null;
+  providerSessionId?: string;
+  driverSessionId?: string;
   providerService:
-    "anthropic_managed_agents" | "aws_bedrock_agentcore_harness" | null;
+    "openai_agents_api" | "anthropic_managed_agents" | "aws_bedrock_agentcore_harness" | null;
   runnerExited: boolean;
   runnerExitCode: number | null;
   runnerSignal: NodeJS.Signals | null;
@@ -1079,7 +1084,7 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions {
-  provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  provider?: "codex" | "opencode" | "openai_managed" | "claude_managed" | "aws_agentcore" | "acpx";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
@@ -1105,6 +1110,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
     maxSessionListCostUsd: number;
     model: string;
   };
+  openaiProfile?: OpenAiManagedProfile & { model: string };
   agentCoreProfile?: {
     profileId: string;
     region: string;
@@ -3177,6 +3183,7 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
         : {}),
     };
   }
+  if (input.provider === "openai_managed") return { ...createSanitizedOpenAiManagedEnvironment(input.options.environment), ...commonIdentity };
   if (input.provider === "claude_managed") {
     return {
       ...createSanitizedClaudeManagedEnvironment(input.options.environment),
@@ -3382,6 +3389,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #providerIdentity: Record<string, unknown> | null = null;
   #turnControls: NativeTurnControlCapabilities = { steering: false, queuedFollowUp: false };
 
+  providerSessionIdentity() {
+    return this.options.provider === "openai_managed" && this.#threadId
+      ? { driverSessionId: this.#threadId, providerSessionId: this.#sessionId } : null;
+  }
+
   turnControlCapabilities(): NativeTurnControlCapabilities | null {
     if (this.options.provider !== "acpx") return null;
     if (this.#closed || this.#failure) return { steering: false, queuedFollowUp: false };
@@ -3488,6 +3500,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             ? createSanitizedOpenCodeRunnerEnvironment(options.environment)
             : options.provider === "claude_managed"
               ? createSanitizedClaudeManagedEnvironment(options.environment)
+              : options.provider === "openai_managed"
+                ? createSanitizedOpenAiManagedEnvironment(options.environment)
               : options.provider === "aws_agentcore"
                 ? createSanitizedAwsAgentCoreEnvironment(
                     options.environment,
@@ -4032,7 +4046,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const filename =
       provider === "acpx"
         ? "acpx-provider-state.json"
-        : provider === "claude_managed" || provider === "aws_agentcore"
+        : provider === "openai_managed" || provider === "claude_managed" || provider === "aws_agentcore"
           ? "managed-provider-state.json"
           : "codex-provider-state.json";
     const stateDirectory =
@@ -4557,6 +4571,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       provider === "acpx"
         ? resolveQualifiedAcpxProfile(acpxAgent!, requestedModel)
         : null;
+    const openaiProfile = this.options.openaiProfile;
+    if (provider === "openai_managed" && (!openaiProfile || openaiProfile.model !== requestedModel)) {
+      throw new Error("OpenAI managed requested model must match its configured profile");
+    }
     const managedProfile = this.options.managedProfile;
     const agentCoreProfile = this.options.agentCoreProfile;
     if (provider === "claude_managed") {
@@ -4622,6 +4640,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                 this.options.acpxPermissionModePinned ?? true,
               runtimeContext,
             }
+          : provider === "openai_managed"
+            ? { kind: "openai_managed", ...openaiProfile!, instructions: baseInstructions, runtimeContext }
           : provider === "claude_managed"
             ? {
                 kind: "claude_managed",
@@ -6313,7 +6333,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ) {
       this.#evidence.providerExecutionKind = runtimeIdentity.executionKind;
     }
-    if (runtimeIdentity.service === "anthropic_managed_agents") {
+    if (runtimeIdentity.service === "openai_agents_api") {
+      this.#evidence.providerService = "openai_agents_api";
+      if (sessionId !== null) this.#evidence.providerSessionId = sessionId;
+      if (threadId !== null) this.#evidence.driverSessionId = threadId;
+    } else if (runtimeIdentity.service === "anthropic_managed_agents") {
       this.#evidence.providerService = "anthropic_managed_agents";
     } else if (runtimeIdentity.service === "aws_bedrock_agentcore_harness") {
       this.#evidence.providerService = "aws_bedrock_agentcore_harness";
@@ -6345,6 +6369,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           durableRecoveryInternals.canonicalJson(
             checkpointExpectation.providerIdentity,
           ));
+    // Only a creation alias can advance, and only on the authenticated PRP
+    // authority with its unchanged logical thread. A real session never changes.
+    if (this.options.provider === "openai_managed" && threadId === checkpointExpectation.driverSessionId
+      && providerIdentityMatches && isOpenAiSessionCreation(threadId, checkpointExpectation.providerSessionId, sessionId)) {
+      checkpointExpectation.providerSessionId = sessionId!;
+      this.#sessionId = sessionId;
+      this.#evidence.providerSessionId = sessionId!;
+      this.#publish();
+    }
     const mismatchFields = [
       ...(threadId === checkpointExpectation.driverSessionId
         ? []
@@ -6740,6 +6773,7 @@ function openedThreadModelProvider(
 ): string {
   if (provider === "opencode" && typeof model === "string") return model.split("/", 1)[0]!;
   if (provider === "claude_managed") return "anthropic";
+  if (provider === "openai_managed") return "openai";
   if (provider === "aws_agentcore") return "aws";
   if (provider === "acpx") {
     if (acpxAgent === "pi") return "openrouter";
