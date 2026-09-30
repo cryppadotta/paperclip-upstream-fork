@@ -143,10 +143,15 @@ impl Api {
         Err(invalid("OpenAI history exceeds the page limit"))
     }
     fn snapshot(&self, session: &str) -> Result<Snapshot> {
+        // Read accounting and authoritative required actions after turn/history
+        // reads. A turn can complete between requests; reading its session first
+        // would pair that terminal with stale (often null) usage.
+        let turns = self.list(&format!("/sessions/{session}/turns"))?;
+        let items = self.list(&format!("/sessions/{session}/items"))?;
         Ok(Snapshot {
             session: self.get(&format!("/sessions/{session}"))?,
-            turns: self.list(&format!("/sessions/{session}/turns"))?,
-            items: self.list(&format!("/sessions/{session}/items"))?,
+            turns,
+            items,
         })
     }
 }
@@ -677,7 +682,7 @@ impl OpenAiManagedProvider {
                     return Err(invalid("OpenAI assistant message exceeds the output limit"));
                 }
                 self.checkpoint.events.push_back(ProviderEvent::Notification {method:"item/completed".into(),params:json!({
-                    "turnId":self.checkpoint.local_turn_id, "item":{"id":item_id,"type":"agentMessage","text":text,"authoritative":true}
+                    "turnId":self.checkpoint.local_turn_id, "item":{"id":item_id,"type":"agentMessage","text":text,"phase":item.get("phase"),"authoritative":true}
                 })});
             }
         }
@@ -1349,6 +1354,39 @@ mod tests {
         assert_eq!(requests[2]["events"][0]["turn_id"], "turn_remote");
         assert_eq!(requests[2]["events"][0]["call_id"], "call_http");
         assert!(p.checkpoint.delivered_calls.contains("call_http"));
+    }
+    #[test]
+    fn terminal_snapshot_reads_accounting_after_turn_completion() {
+        let mut p = provider();
+        active(&mut p);
+        let usage = json!({"input_tokens":120,"output_tokens":15,"input_tokens_details":{"cached_tokens":40}});
+        let (api, handle) = http_fixture(vec![
+            (
+                "GET /sessions/sess_test/turns?",
+                json!({"data":[{"id":"turn_remote","session_id":"sess_test","status":"completed"}],"has_more":false}),
+            ),
+            (
+                "GET /sessions/sess_test/items?",
+                json!({"data":[{"id":"message_final","turn_id":"turn_remote","type":"message","role":"assistant","status":"completed","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]}],"has_more":false}),
+            ),
+            (
+                "GET /sessions/sess_test ",
+                json!({"id":"sess_test","metadata":{"paperclip_owner":p.owner},"status":"idle","required_actions":[],"usage":usage}),
+            ),
+        ]);
+        p.apply_snapshot(api.snapshot("sess_test").unwrap())
+            .unwrap();
+        handle.join().unwrap();
+        let events: Vec<_> = p.checkpoint.events.iter().collect();
+        assert!(
+            matches!(events[1], ProviderEvent::Notification { method, params } if method == "item/completed" && params["item"]["phase"] == "final_answer")
+        );
+        assert!(
+            matches!(events[2], ProviderEvent::Notification { method, params } if method == "thread/tokenUsage/updated" && params["usage"]["inputTokens"] == 120)
+        );
+        assert!(
+            matches!(events[3], ProviderEvent::Notification { method, .. } if method == "turn/completed")
+        );
     }
     #[test]
     fn completed_backlog_recovery_does_not_restart_polling_a_finished_turn() {
