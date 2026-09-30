@@ -1258,10 +1258,18 @@ it("reserves a bounded suspension window after close preparation", () => {
   expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 10_000)).toEqual({
     preparationDeadline: 8_500,
     closeDeadline: 11_000,
+    providerDrainLimitMs: 5_000,
   });
   expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 400)).toEqual({
     preparationDeadline: 1_200,
     closeDeadline: 1_400,
+    providerDrainLimitMs: 5_000,
+  });
+  expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, undefined, "openai_managed")).toEqual({
+    preparationDeadline: 98_500, closeDeadline: 101_000, providerDrainLimitMs: 100_000,
+  });
+  expect(runnerdRecoveryInternals.runnerCloseDeadlines(1_000, 400, "openai_managed")).toEqual({
+    preparationDeadline: 1_200, closeDeadline: 1_400, providerDrainLimitMs: 400,
   });
 });
 

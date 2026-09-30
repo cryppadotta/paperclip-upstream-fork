@@ -790,11 +790,16 @@ async function awaitRunnerSuspensionBarrier(input: {
 
 function runnerCloseDeadlines(
   startedAtMs: number,
-  graceMs: number,
+  configuredGraceMs: number | undefined,
+  provider = "codex",
 ): {
   preparationDeadline: number;
   closeDeadline: number;
+  providerDrainLimitMs: number;
 } {
+  // Agents API cancellation may take 60s, followed by the provider's bounded
+  // 30s accounting grace. Keep time for the durable suspension acknowledgement.
+  const graceMs = configuredGraceMs ?? (provider === "openai_managed" ? 100_000 : 10_000);
   // Stopping a still-finishing provider and draining its suffix are best-effort
   // preparation. Neither may consume the entire budget and enqueue suspend
   // immediately before force-killing the runner. The suspension proof itself
@@ -803,6 +808,7 @@ function runnerCloseDeadlines(
   return {
     preparationDeadline: startedAtMs + graceMs - suspensionReserveMs,
     closeDeadline: startedAtMs + graceMs,
+    providerDrainLimitMs: provider === "openai_managed" ? graceMs : 5_000,
   };
 }
 
@@ -4219,9 +4225,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // A terminal provider frame can become visible one control loop before
       // its durable provider suffix is ACKed. Drain it before suspension so a
       // fresh run authority never inherits the prior run's pending events.
-      const { preparationDeadline, closeDeadline } = runnerCloseDeadlines(
+      const { preparationDeadline, closeDeadline, providerDrainLimitMs } = runnerCloseDeadlines(
         Date.now(),
-        this.options.closeGraceMs ?? 10_000,
+        this.options.closeGraceMs,
+        this.options.provider,
       );
       if (!(await this.#runnerHasExited())) {
         // Let an already-admitted tool result reach its original provider
@@ -4242,7 +4249,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // runner that just stopped a turn.
         await this.#stopActiveProviderTurnBeforeSuspend(preparationDeadline);
         providerDrained = await this.#drainSettledProviderEventsBeforeSuspend(
-          Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
+          Math.min(providerDrainLimitMs, Math.max(0, preparationDeadline - Date.now())),
         );
       }
       // Local durable roots are reused too. Process exit alone cannot prove

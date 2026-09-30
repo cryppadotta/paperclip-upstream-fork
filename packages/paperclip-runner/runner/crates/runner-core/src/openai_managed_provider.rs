@@ -759,6 +759,7 @@ impl OpenAiManagedProvider {
                 .terminal_observed_at_ms
                 .get_or_insert(now_ms());
             self.checkpoint.deadline_ms = None;
+            self.checkpoint.cancel_deadline_ms = None;
             if self.usage.is_none() && now_ms().saturating_sub(observed) < 30_000 {
                 return self.save_checkpoint();
             }
@@ -1437,8 +1438,10 @@ mod tests {
         let mut p = provider();
         active(&mut p);
         p.checkpoint.terminal_observed_at_ms = None;
+        p.checkpoint.cancel_deadline_ms = Some(now_ms() - 1);
         p.apply_snapshot(snapshot(&p, "completed", json!([]), vec![]))
             .unwrap();
+        assert!(p.checkpoint.cancel_deadline_ms.is_none());
         assert!(p.checkpoint.local_turn_id.is_some());
         assert!(
             matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "turn/started")
