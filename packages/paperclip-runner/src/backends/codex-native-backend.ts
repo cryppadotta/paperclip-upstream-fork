@@ -119,7 +119,8 @@ function createTransportBackedNativeSessionBackend(
   const supportsCollaborativePlanning =
     isCodex ||
     input.provider.kind === "opencode" ||
-    input.provider.kind === "acpx";
+    input.provider.kind === "acpx" ||
+    (input.provider.kind === "openai_managed" && input.provider.openaiProfile.environment.type === "none");
   if (
     input.provider.kind === "codex" &&
     input.provider.approvalPolicy !== undefined &&
@@ -137,7 +138,9 @@ function createTransportBackedNativeSessionBackend(
       ? [
           "Use native plan collaboration mode and do not modify workspace files.",
           "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
-          "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
+          input.provider.kind === "openai_managed"
+            ? "Use the authorized Paperclip document and confirmation tools to publish a revision-bound plan."
+            : "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
           "Keep the final response to a short synchronization summary instead of repeating the full plan.",
         ]
       : []),
