@@ -641,6 +641,18 @@ impl OpenAiManagedProvider {
         if turn.get("session_id").and_then(Value::as_str) != Some(self.session_id.as_str()) {
             return Err(invalid("OpenAI turn belongs to another session"));
         }
+        if self.checkpoint.remote_turn_id.is_none() {
+            // Admit the exact local turn before exposing its calls or completion.
+            // Persisting this event with the remote binding makes replay ordered
+            // and prevents repeated snapshots from announcing another start.
+            self.checkpoint
+                .events
+                .push_back(ProviderEvent::Notification {
+                    method: "turn/started".into(),
+                    params: json!({"turnId":self.checkpoint.local_turn_id,
+                    "turn":{"id":self.checkpoint.local_turn_id,"status":"inProgress"}}),
+                });
+        }
         self.checkpoint.remote_turn_id = Some(remote_turn.clone());
         for item in &snapshot.items {
             if item.get("turn_id").and_then(Value::as_str) != Some(remote_turn.as_str())
@@ -1167,6 +1179,9 @@ mod tests {
         active(&mut p);
         p.apply_snapshot(snapshot(&p, "waiting", json!([]), vec![]))
             .unwrap();
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "turn/started")
+        );
         assert!(p.checkpoint.events.is_empty());
         assert!(p.checkpoint.local_turn_id.is_some());
     }
@@ -1180,7 +1195,14 @@ mod tests {
             .unwrap();
         p.apply_snapshot(snapshot(&p, "waiting", json!([action]), vec![]))
             .unwrap();
-        assert_eq!(p.checkpoint.events.len(), 1);
+        assert_eq!(p.checkpoint.events.len(), 2);
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, params }) if method == "turn/started" && params["turn"]["id"] == "local_turn")
+        );
+        assert!(matches!(
+            p.checkpoint.events.front(),
+            Some(ProviderEvent::ToolCall { .. })
+        ));
         let mut changed = action.clone();
         changed["arguments"] = json!({"id":"task-2"});
         assert!(p
@@ -1199,6 +1221,9 @@ mod tests {
         let item = json!({"id":"item_call","type":"function_call","turn_id":"turn_remote","name":"untrusted","arguments":{}});
         p.apply_snapshot(snapshot(&p, "in_progress", json!([]), vec![item]))
             .unwrap();
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "turn/started")
+        );
         assert!(p.checkpoint.events.is_empty());
     }
     #[test]
@@ -1208,6 +1233,9 @@ mod tests {
         let message = json!({"id":"item_message","type":"message","role":"assistant","status":"completed","turn_id":"turn_remote","content":[{"type":"output_text","text":"Done"}]});
         p.apply_snapshot(snapshot(&p, "completed", json!([]), vec![message]))
             .unwrap();
+        assert!(
+            matches!(p.poll().unwrap(), Some(ProviderEvent::Notification { method, .. }) if method == "turn/started")
+        );
         let first = p.poll().unwrap().unwrap();
         assert!(
             matches!(first,ProviderEvent::Notification{method,..} if method == "item/completed")
@@ -1247,7 +1275,7 @@ mod tests {
             .unwrap();
         assert!(p.usage_snapshot().is_none());
         assert!(p.model_request_count().is_none());
-        assert_eq!(p.checkpoint.events.len(), 1);
+        assert_eq!(p.checkpoint.events.len(), 2);
     }
     fn http_fixture(
         responses: Vec<(&'static str, Value)>,
@@ -1330,6 +1358,7 @@ mod tests {
             .unwrap();
         p.restore_active_turn("local_turn").unwrap();
         assert!(p.checkpoint.local_turn_id.is_none());
+        assert!(p.poll().unwrap().is_some());
         assert!(p.poll().unwrap().is_some());
         assert!(p.poll().unwrap().is_none());
     }
