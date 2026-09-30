@@ -254,6 +254,22 @@ independent measurements. Narrow regression passes do not replace either complet
 roster or qualify a changed build. A new complete 35/35 measurement for each exact
 configuration remains necessary before production enablement.
 
+## Local verification
+
+The implementation passed repository-wide `pnpm -r typecheck` and `pnpm build`,
+followed by a runner rebuild for the final shutdown-backoff change. Focused checks
+passed: 36 drain/suspension tests, 14 Rust OpenAI provider tests, 73 hosted
+handoff/receipt/presentation tests, 30 native backend tests, and 745 Product E2E
+unit tests. The generated protocol report passed the existing Chromium viewer
+checks for passing, failing and missing-recording attempts.
+
+The subsequent `pnpm test:run` did **not** complete green. It was stopped after
+the unchanged 40,000-file Git snapshot stress test failed and server setup issues
+appeared. A fresh two-file rerun passed all 13 native session resumption tests,
+but `workspace-git-snapshot-streaming.test.ts` again exceeded its 300-second
+macOS timeout. This result is a verification limitation; the full suite is not
+claimed to pass.
+
 ## Primary references
 
 - [Architecture](https://developers.openai.com/api/docs/guides/agents-api/architecture)
