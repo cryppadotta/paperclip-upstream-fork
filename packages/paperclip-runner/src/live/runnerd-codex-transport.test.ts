@@ -698,6 +698,24 @@ it("waits for a fresh empty provider suffix after a confirmed drain receipt", as
   expect(commands).toHaveLength(2);
 });
 
+it("bounds drain commands while remote cancellation and accounting take a minute", async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const commands: { commandId: string; status: string; result: unknown }[] = [];
+  try {
+    const waiting = runnerdRecoveryInternals.awaitProviderDrainBarrier({
+      readProviderState: () => ({ pendingEventCount: 0, activeProviderTurnId: Date.now() < 60_000 ? "remote-turn" : null, providerSettled: Date.now() >= 60_000 }),
+      semanticResultsSettled: () => true, commands: () => commands,
+      queueDrain: (commandId) => {
+        if (commands.length >= 500) throw new Error("Durable PRP command journal bound exceeded.");
+        commands.push({ commandId, status: "completed", result: { result: { retainedEventsDrained: Date.now() >= 60_000 } } });
+      }, pump: () => undefined, deadline: 100_000,
+    });
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(await waiting).toBe(true);
+    expect(commands.length).toBeLessThan(100);
+  } finally { vi.useRealTimers(); }
+});
+
 it("refuses a reusable close checkpoint when the local provider snapshot is unreadable", async () => {
   const stateDirectory = await mkdtemp(
     join(tmpdir(), "runnerd-close-unreadable-"),

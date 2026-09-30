@@ -572,6 +572,7 @@ async function awaitProviderDrainBarrier(input: {
   pollIntervalMs?: number;
 }): Promise<boolean> {
   let receiptConfirmed = false;
+  let drainAttempts = 0;
   while (Date.now() < input.deadline) {
     input.pump();
     // A callback is not part of the provider FIFO until its result is durably
@@ -600,6 +601,15 @@ async function awaitProviderDrainBarrier(input: {
       );
       continue;
     }
+    // Each drain is a durable command, not a cheap read. A remote provider
+    // can take tens of seconds to settle; preserve the bounded command journal
+    // while continuing to pump its events. Never reset backoff on a quiet prefix.
+    if (drainAttempts > 0) {
+      const delayMs = Math.min(1_000, 10 * 2 ** Math.min(drainAttempts - 1, 7));
+      await new Promise((resolveWait) => setTimeout(resolveWait, Math.min(delayMs, Math.max(0, input.deadline - Date.now()))));
+      if (Date.now() >= input.deadline) return false;
+    }
+    drainAttempts += 1;
     const commandId = `command_close_drain_${randomUUID().replaceAll("-", "")}`;
     input.queueDrain(commandId);
     while (Date.now() < input.deadline) {
