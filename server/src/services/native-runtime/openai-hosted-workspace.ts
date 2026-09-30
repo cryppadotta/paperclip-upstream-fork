@@ -260,9 +260,10 @@ export async function finalizeOpenAiHostedWorkspace(input: { db: Db; execution: 
     baseline.ignoredPaths = state.ignoredPaths;
     // Persist inspectable files before touching the task worktree.
     for (const { artifact, bytes } of downloaded) {
+      const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
       await prepareNativeRunnerFileHandoff({ db: input.db,
         binding: { ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes },
-        deliverable: { filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef: artifact.path, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
+        deliverable: { filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
       });
     }
     await mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject" });

@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, serializeDirectorySnapshot, type LegacySerializedDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
-import { materializeOpenAiWorkspace, openAiWorkspaceRelativePath, prepareOpenAiHostedWorkspace } from "./openai-hosted-workspace.js";
+import { finalizeOpenAiHostedWorkspace, materializeOpenAiWorkspace, openAiWorkspaceRelativePath, prepareOpenAiHostedWorkspace } from "./openai-hosted-workspace.js";
+import * as fileHandoff from "./native-runner-file-handoff.js";
 const dirs: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllGlobals(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
 const payload = (entries: unknown[]) => Buffer.from(JSON.stringify({ schema: "paperclip.openai-workspace-export.v1", entries }));
 const empty: LegacySerializedDirectorySnapshot = { version: 1, exclude: [], entries: [] };
 async function root() { const result = await mkdtemp(path.join(tmpdir(), "openai-workspace-test-")); dirs.push(result); return result; }
@@ -80,4 +81,37 @@ it("rejects hosted planning before provisioning a writable environment", async (
     provider: { kind: "openai_managed", openaiProfile: { environment: { type: "openai_hosted" } } }, executionMode: "plan",
   } as never })).rejects.toThrow("planning_requires_tools_only");
   expect(request).not.toHaveBeenCalled();
+});
+
+it("hands off relative output paths before merging and deleting the hosted session", async () => {
+  const directory = await root(); const workspace = path.join(directory, "workspace");
+  const stateRoot = path.join(directory, "state"); const hosted = path.join(stateRoot, "openai-hosted");
+  await mkdir(workspace); await mkdir(hosted, { recursive: true }); await mkdir(path.join(stateRoot, "runner"));
+  await writeFile(path.join(workspace, "seed.txt"), "before");
+  const binding = { companyId: "company", runId: "run", issueId: "issue", agentId: "agent" };
+  const baseline = serializeDirectorySnapshot(await captureDirectorySnapshot(workspace, { exclude: [] }));
+  await writeFile(path.join(hosted, "state.json"), JSON.stringify({ binding, cwd: await realpath(workspace), baseline, ignoredPaths: [], uploadedFileIds: [] }), { mode: 0o600 });
+  await writeFile(path.join(stateRoot, "runner", "managed-provider-state.json"), JSON.stringify({ runId: "run", descriptor: { kind: "openai_managed" }, providerSessionId: "sess_owned", durableEventCursor: JSON.stringify({ lastTurnId: "turn_owned" }) }), { mode: 0o600 });
+  const bytes = payload([{ path: "seed.txt", kind: "file", mode: 420, data: Buffer.from("after").toString("base64") }]);
+  const handoff = vi.spyOn(fileHandoff, "prepareNativeRunnerFileHandoff").mockImplementation(async (input) => {
+    expect(input.deliverable.contentRef).toBe("paperclip-workspace.json");
+    expect(input.binding.workspaceRoot).toBe("/workspace/outputs");
+    expect(await input.binding.readRemoteWorkspaceFile!(input.deliverable)).toEqual(bytes);
+    expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("before");
+    return { result: {} as never, rollbackDefinitePreCommitFailure: null };
+  });
+  const request = vi.fn(async (url: string, init: RequestInit) => {
+    if (url.endsWith("/artifacts?order=asc&limit=100")) return Response.json({ data: [{ id: "artifact_owned", turn_id: "turn_owned", path: "/workspace/outputs/paperclip-workspace.json" }], has_more: false });
+    if (url.endsWith("/artifacts/artifact_owned/content")) return new Response(new Uint8Array(bytes));
+    expect(url).toBe("https://api.openai.com/v1/agents/sessions/sess_owned"); expect(init.method).toBe("DELETE");
+    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("after");
+    return Response.json({ deleted: true });
+  });
+  vi.stubGlobal("fetch", request);
+  await finalizeOpenAiHostedWorkspace({ db: {} as never, stateRoot, apiKey: "test-only", execution: {
+    binding, workspace: { cwd: workspace }, provider: { kind: "openai_managed", openaiProfile: { environment: { type: "openai_hosted" } } },
+  } as never });
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"))).toMatchObject({ remoteDeleted: true, finalized: { sessionId: "sess_owned", turnId: "turn_owned" } });
 });
