@@ -1919,6 +1919,13 @@ fn semantic_input_event(
 }
 
 fn terminal_events(state: &ManagedDurableState, event_type: &str) -> Vec<NormalizedProviderEvent> {
+    // OpenAI uses the explicit paperclip_finish/paperclip_block contract. The
+    // controller owns its accepted result and run terminal. Synthesizing another
+    // claim from the final prose conflicts with that result (and could falsely
+    // claim completion when the agent never submitted a completion tool).
+    if state.descriptor.kind() == ManagedProviderKind::OpenaiManaged {
+        return Vec::new();
+    }
     let Some(contract) = state.completion_contract.as_ref() else {
         return Vec::new();
     };
@@ -2703,6 +2710,30 @@ mod tests {
             .pointer("/providerDescriptor/providerVersion"),
             Some(&json!("17"))
         );
+    }
+
+    #[test]
+    fn openai_provider_terminal_never_fabricates_a_completion_claim() {
+        let descriptor = ManagedProviderDescriptor::parse(json!({
+            "kind":"openai_managed", "model":"gpt-6-astra", "profileId":"profile",
+            "apiRevision":"agents=v1", "reasoningEffort":"medium", "environment":{"type":"none"},
+            "maxEstimatedSessionCostUsd":2.0, "timeoutSeconds":180, "instructions":"Work"
+        }))
+        .unwrap();
+        let mut state = ManagedDurableState::new(
+            "run".into(),
+            "session".into(),
+            descriptor,
+            authorized_tool_set(&agentcore_prepare_payload()).unwrap(),
+            Some(CompletionContractBinding {
+                revision: "contract-1".into(),
+                criterion_ids: vec!["requested-work".into()],
+            }),
+        );
+        state.last_agent_message = Some("I completed the work".into());
+        for status in ["turn.completed", "turn.failed", "turn.cancelled"] {
+            assert!(terminal_events(&state, status).is_empty());
+        }
     }
 
     #[test]
