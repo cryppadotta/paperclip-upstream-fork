@@ -245,7 +245,9 @@ $14 for three verified pre-inference failures, leaving $192 in conservative
 reservations against the authorized $200 budget. These are reservations, not
 measured or invoiced spend. Original attempt provenance is unchanged; releases
 are recorded separately. Provider billed cost and incomplete accounting totals
-remain unknown.
+remain unknown. A read-only check of the 90 session IDs found in this worktree's
+evidence found 49 idle sessions and 41 returning HTTP 404, with no active sessions
+or pending tool actions. Retained idle sessions preserve diagnostic history.
 
 Retained attempts, including startup failures and probes on later revisions, are
 independent measurements. Narrow regression passes do not replace either complete
