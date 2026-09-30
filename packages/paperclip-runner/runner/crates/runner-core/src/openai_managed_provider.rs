@@ -716,9 +716,15 @@ impl OpenAiManagedProvider {
             let validator = jsonschema::validator_for(&tool.input_schema)
                 .map_err(|_| invalid("Paperclip function schema is invalid"))?;
             if !input.is_object() || !validator.is_valid(input) {
-                return Err(invalid(
-                    "OpenAI function arguments failed schema validation",
-                ));
+                let paths = validator
+                    .iter_errors(input)
+                    .take(4)
+                    .map(|error| format!("{} at {}", error.schema_path(), error.instance_path()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(invalid(&format!(
+                    "OpenAI function arguments failed schema validation for {name}: {paths}"
+                )));
             }
             if let Some(previous) = self.pending.get(&call) {
                 if previous != action {
