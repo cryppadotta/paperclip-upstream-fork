@@ -895,7 +895,9 @@ impl Provider for OpenAiManagedProvider {
             ));
         }
         if let Some(usage) = &self.usage {
-            // Conservative upper bound uses the long-context input/cache-write and output rates.
+            // Reserve long-context cache-write rates for input whose billing
+            // category is unknown, but use the documented cache-hit rate for
+            // the reported subset. Missing/inconsistent cache counts get no discount.
             let input = usage
                 .get("input_tokens")
                 .and_then(Value::as_u64)
@@ -904,7 +906,14 @@ impl Provider for OpenAiManagedProvider {
                 .get("output_tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            if container_reserve + (input as f64 * 25.0 + output as f64 * 75.0) / 1_000_000.0
+            let cached = usage
+                .pointer("/input_tokens_details/cached_tokens")
+                .and_then(Value::as_u64)
+                .filter(|cached| *cached <= input)
+                .unwrap_or(0);
+            if container_reserve
+                + ((input - cached) as f64 * 25.0 + cached as f64 * 2.0 + output as f64 * 75.0)
+                    / 1_000_000.0
                 >= self.config.max_estimated_session_cost_usd
             {
                 return Err(invalid("OpenAI estimated session budget exhausted"));
@@ -1170,6 +1179,18 @@ mod tests {
     fn active(p: &mut OpenAiManagedProvider) {
         p.session_id = "sess_test".into();
         p.checkpoint.local_turn_id = Some("local_turn".into());
+    }
+    #[test]
+    fn budget_accounts_for_known_cache_hits_and_reserves_unknown_input() {
+        let mut p = provider();
+        p.usage = Some(
+            json!({"input_tokens":121636,"output_tokens":594,"input_tokens_details":{"cached_tokens":108819}}),
+        );
+        assert!(p.preflight_turn().is_ok()); // $0.582613 against the $1 fixture ceiling.
+        for cached in [Value::Null, json!(-1), json!(121637), json!(0.5)] {
+            p.usage.as_mut().unwrap()["input_tokens_details"]["cached_tokens"] = cached;
+            assert!(p.preflight_turn().is_err()); // No discount: $3.08545.
+        }
     }
     #[test]
     fn prepare_is_offline_and_does_not_start_inference() {

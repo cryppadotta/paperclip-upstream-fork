@@ -31,7 +31,7 @@ const RATES: Readonly<Record<string, TokenRatesUsdPerMillion>> = Object.freeze({
 
 export interface EstimatedModelCost {
   estimatedCostNanodollars: number;
-  pricingVersion: typeof MODEL_PRICING_VERSION | "openai-managed-conservative-2026-09-30";
+  pricingVersion: typeof MODEL_PRICING_VERSION | "openai-managed-conservative-2026-09-30-v2";
   ratesUsdPerMillionTokens: TokenRatesUsdPerMillion;
 }
 
@@ -50,13 +50,16 @@ export function estimateModelCostNanodollars(
   return { estimatedCostNanodollars, pricingVersion: MODEL_PRICING_VERSION, ratesUsdPerMillionTokens: { ...rates } };
 }
 
-/** Estimate only: reserve one hour of hosted container use plus the largest
- * documented input/cache-write and output rates. Never an invoice receipt. */
-export function estimateOpenAiManagedCost(usage: { inputTokens: number; outputTokens: number },
+/** Estimate only: reserve one hour of hosted container use plus long-context
+ * rates. Known cache hits use cached pricing; other input reserves cache writes.
+ * Source: https://developers.openai.com/api/docs/pricing. Never an invoice receipt. */
+export function estimateOpenAiManagedCost(usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number },
   environment: { type: string; container_size?: string }): EstimatedModelCost & { containerReservationNanodollars: number } {
   const containerReservationNanodollars = environment.type === "openai_hosted"
     ? ({ small: 90_000_000, medium: 360_000_000, large: 1_440_000_000 }[environment.container_size ?? ""] ?? (() => { throw new Error("OpenAI container pricing unavailable"); })()) : 0;
-  return { estimatedCostNanodollars: Math.round((usage.inputTokens * 25 + usage.outputTokens * 75) * 1_000) + containerReservationNanodollars,
-    containerReservationNanodollars, pricingVersion: "openai-managed-conservative-2026-09-30",
-    ratesUsdPerMillionTokens: { input: 25, cachedInput: 25, output: 75 } };
+  const cachedInput = Number.isSafeInteger(usage.cachedInputTokens) && usage.cachedInputTokens! >= 0 && usage.cachedInputTokens! <= usage.inputTokens
+    ? usage.cachedInputTokens! : 0;
+  return { estimatedCostNanodollars: Math.round(((usage.inputTokens - cachedInput) * 25 + cachedInput * 2 + usage.outputTokens * 75) * 1_000) + containerReservationNanodollars,
+    containerReservationNanodollars, pricingVersion: "openai-managed-conservative-2026-09-30-v2",
+    ratesUsdPerMillionTokens: { input: 25, cachedInput: 2, output: 75 } };
 }

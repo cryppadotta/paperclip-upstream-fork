@@ -138,8 +138,10 @@ unknown charges to the company's dollar spend, so aggregate dollar budget stops
 do not account for OpenAI spend until billing is reconciled. The profile's
 estimated session ceiling and timeout are the automatic controls for these runs.
 
-The controller's estimate uses conservative long-context/cache-write input and
-output rates, plus a one-hour hosted container reservation. It is not an invoice
+The controller's estimate uses conservative long-context rates: known cache hits
+use the cached-input rate; other input reserves the higher cache-write rate.
+Missing or inconsistent cache counts receive no discount. It also includes a
+one-hour hosted container reservation. It is not an invoice
 or a provider-enforced dollar cap. Polling, delayed usage, cancellation and cleanup
 can overshoot estimates. Configure an OpenAI project spending limit as well as the
 Paperclip timeout/estimated session ceiling. See the current
