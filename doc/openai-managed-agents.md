@@ -150,10 +150,14 @@ Paperclip timeout/estimated session ceiling. See the current
 ## Qualification
 
 The private `paperclip-evals` repository contains
-`live-openai-managed-tools.json` and `live-openai-managed-hosted.json`. Each uses
-the unchanged 35-case Claude managed roster, one attempt per case, no automatic
-infrastructure retries, `gpt-6-astra`, and a $2 estimated per-session ceiling.
-Their maintained campaign lanes remain disabled until live qualification passes.
+`live-openai-managed-tools-v1.json` and `live-openai-managed-hosted-v1.json`.
+Each uses the original 35-case Claude managed roster preserved in
+`live-claude-managed-v1.json`, one attempt per case, no automatic infrastructure
+retries, `gpt-6-astra`, and a $2 estimated per-session ceiling. Shared fixture
+actor IDs are valid deterministic UUIDs; tool validation and behavioral assertions
+remain unchanged. The unversioned maintained rosters now contain 39 cases and
+remain disabled until separately qualified. The 35-case v1 evidence does not
+qualify those four additional cases.
 
 The candidate-only server flag `PAPERCLIP_OPENAI_MANAGED_QUALIFICATION=1` permits
 an enabled but unattested profile inside a qualification instance. The product
