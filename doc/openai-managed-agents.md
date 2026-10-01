@@ -338,8 +338,8 @@ claimed to pass.
 On the frozen implementation, repository-wide `pnpm -r typecheck`, `pnpm build`,
 and the UI token gate passed. Product E2E unit tests passed 822 tests; its separate
 TypeScript check passed. The Rust workspace passed 635 tests (two ignored), and
-sandbox synchronization passed 91 tests. The private eval suite passed 139 tests,
-including after its later documentation-only rebase. The generated report passed
+sandbox synchronization passed 91 tests. The private eval suite passed 139 tests at qualification, then 140 after review
+fixes made zero retries the OpenAI default and included its API revision in summaries. The generated report passed
 Chromium navigation, recording, read-only control, reload and narrow-view checks.
 
 The full local suite was run through the repository's supported partitioned test
@@ -352,12 +352,14 @@ files then passed all 204 tests in a serial rerun without source changes.
 The Git deletion fix batches removal after validating every path in each batch.
 Its two new filesystem tests retain the symlink and non-directory ancestor guard.
 The 40,000-file Git snapshot stress test passed in isolation in 118.5 seconds,
-and passed again in the serial server regression run. All seven other previously
-failing server files passed on that rerun. Two remaining workspace/CLI files
-exposed macOS `/var` versus `/private/var` fixture aliases in the direct invocation;
-a repeat uses the canonical temporary-directory setup from the stable test runner.
-The initial full-suite failure remains recorded and is not a claim of a green
-single full-suite invocation.
+and passed again in the serial server regression run. Seven affected server files,
+including that stress test, passed on the rerun. Two workspace/CLI files exposed
+macOS `/var` versus `/private/var` fixture aliases in the direct invocation. With
+the stable runner's canonical temporary-directory setup, those files recorded 224
+passes and one runtime port-conflict timeout. That final test passed an isolated
+repeat in 10.8 seconds without source changes or a timeout increase. Every observed
+failure now has a passing rerun. The initial full-suite failure remains recorded;
+this is not a claim of a green single full-suite invocation.
 
 ## Primary references
 
