@@ -1,8 +1,9 @@
 # OpenAI managed agents
 
-Status: experimental; live qualification attempted on 2026-09-30, not yet passed.
-Implemented against the public Agents API documentation reviewed that day.
-Neither profile has a production qualification attestation.
+Status: experimental. Tools-only passed the original 35-case live qualification
+on 2026-10-01. Hosted passed 34/35 and remains unqualified because one completed
+turn had no usable token accounting. All four Product E2E workflows passed on
+the same integration build. The maintained 39-case campaign remains disabled.
 
 ## Which OpenAI product?
 
@@ -258,7 +259,65 @@ independent measurements. Narrow regression passes do not replace either complet
 roster or qualify a changed build. A new complete 35/35 measurement for each exact
 configuration remains necessary before production enablement.
 
-## Local verification
+## Second qualification: 2026-10-01
+
+Both complete rosters and all four Product E2E workflows used Paperclip
+`729635993266681766a4fa1cd507727c13342b6c`, private eval definitions
+`efd1c6f0ce07b4cbca7db6ed6aae76f6de9d2e56`, and runner binary SHA-256
+`c680e650963f4e908fe31c458ead5c8a8b63e5add441ee1f280a187f737d51b4`.
+The package and CLI were frozen before launch. Both repositories were clean.
+The shared actor UUID correction passed 139 private tests and all three affected
+live probes before these complete runs. Production tool validation was unchanged.
+
+| Environment | Result | Run ID | Automatic retries |
+| --- | --- | --- | --- |
+| Tools-only | 35/35 | `openai-tools-qualification-v2-20261001t041450z` | 0 |
+| Hosted, medium, network disabled | 34/35 | `openai-hosted-qualification-v2-20261001t041356z` | 0 |
+
+The [tools-only attestation](openai-managed-tools-v1-qualification.json) binds the
+exact tested configuration and builds. It passes the production attestation
+validator. It does not enable a company profile or qualify the four newer cases.
+
+Hosted `create-task-document` created the requested document and reached a
+completed turn, but no usable session usage arrived during the 30-second
+accounting grace. Its original infrastructure-failure grade is preserved.
+There is no hosted attestation. OpenAI documents session and turn usage as
+[best-effort, nullable and subject to later updates](https://developers.openai.com/api/docs/guides/agents-api/observability).
+A read-only observation of later sessions found one completed turn with recorded
+turn usage while its session total was still null. That case subsequently passed;
+this does not prove the cause of the failed case. Its empty hosted session had
+already been deleted, and subsequent session and turn reads returned HTTP 404.
+
+All four product cells passed their six matchers, with the source SHA embedded:
+
+| Cell | Product campaign |
+| --- | --- |
+| Message response | `local-2026-10-01T04-26-44-248Z` |
+| Plan, revise, accept (three runs) | `local-2026-10-01T04-28-08-155Z` |
+| Ask-mode answer | `local-2026-10-01T04-30-39-464Z` |
+| Hosted workspace return | `local-2026-10-01T04-32-05-349Z` |
+
+The hosted attachment was visible and downloadable in the browser. The public API
+returned the expected export bytes, and the text and binary file assertions passed.
+Product billing remains incomplete: token usage was captured for four of six runs,
+and no provider-billed dollar amount was available. The earlier message attempt
+failed during local PostgreSQL initialization before creating an agent; its
+failure evidence remains separate from the passing attempt.
+
+The cumulative reservation is $350. An additional $2 startup reservation was
+released only after verifying that no inference ran. These reservations are not
+invoiced spend. The tools roster has a complete conservative token-cost estimate
+of $14.212867; hosted accounting has one unpriced attempt, so its total is unknown.
+The generated report preserves all 154 protocol attempts. A final read-only check
+of 167 session IDs from owned evidence found 89 idle and 78 returning HTTP 404,
+with no active sessions or pending tool actions.
+
+Remaining hosted qualification work is to preserve failed-session accounting
+evidence, investigate reconciliation from turn-level usage, and then measure a
+new complete roster after any integration change. The passing tools-only result
+does not waive the hosted accounting gate.
+
+## Local verification: first qualification
 
 The implementation passed repository-wide `pnpm -r typecheck` and `pnpm build`,
 followed by a runner rebuild for the final shutdown-backoff change. Focused checks
@@ -273,6 +332,32 @@ appeared. A fresh two-file rerun passed all 13 native session resumption tests,
 but `workspace-git-snapshot-streaming.test.ts` again exceeded its 300-second
 macOS timeout. This result is a verification limitation; the full suite is not
 claimed to pass.
+
+## Local verification: second qualification
+
+On the frozen implementation, repository-wide `pnpm -r typecheck`, `pnpm build`,
+and the UI token gate passed. Product E2E unit tests passed 822 tests; its separate
+TypeScript check passed. The Rust workspace passed 635 tests (two ignored), and
+sandbox synchronization passed 91 tests. The private eval suite passed 139 tests,
+including after its later documentation-only rebase. The generated report passed
+Chromium navigation, recording, read-only control, reload and narrow-view checks.
+
+The full local suite was run through the repository's supported partitioned test
+runner. Its first pass recorded 27,416 passing tests, seven failing tests, 1,523
+skips, and additional suite setup failures. PostgreSQL startup contention,
+timeouts and socket failures prevented a green full run. The separate Runner
+TypeScript suite recorded 2,341 passes, two failures and ten skips; both affected
+files then passed all 204 tests in a serial rerun without source changes.
+
+The Git deletion fix batches removal after validating every path in each batch.
+Its two new filesystem tests retain the symlink and non-directory ancestor guard.
+The 40,000-file Git snapshot stress test passed in isolation in 118.5 seconds,
+and passed again in the serial server regression run. All seven other previously
+failing server files passed on that rerun. Two remaining workspace/CLI files
+exposed macOS `/var` versus `/private/var` fixture aliases in the direct invocation;
+a repeat uses the canonical temporary-directory setup from the stable test runner.
+The initial full-suite failure remains recorded and is not a claim of a green
+single full-suite invocation.
 
 ## Primary references
 
