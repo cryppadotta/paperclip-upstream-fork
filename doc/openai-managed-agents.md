@@ -325,8 +325,10 @@ Review fixes after this measurement reconcile complete, unique, owned root-turn
 usage when the session total is absent. They do not add session and turn totals,
 treat missing turns as zero, or report a provider bill. Hosted output registration
 now runs only after a successful merge under the workspace writer lock. A failed
-registration retains the remote session and uses the existing idempotent merge
-and deliverable receipts on retry. Conflict and publication-retry tests cover this.
+registration retains the remote session. A durable checkpoint binds the completed
+workspace import to the session, turn, artifact identities and content digests.
+Publication-only retries preserve later local edits and reuse deliverable receipts;
+changed remote exports are rejected. Conflict and publication-retry tests cover this.
 
 These fixes change the measured integration. The recorded 35/35 tools-only
 attestation is historical evidence, not qualification of the revised code. Before
@@ -378,7 +380,7 @@ repeat in 10.8 seconds without source changes or a timeout increase. Every obser
 failure now has a passing rerun. The initial full-suite failure remains recorded;
 this is not a claim of a green single full-suite invocation.
 
-The subsequent review fixes passed 17 OpenAI provider tests, 27 hosted/profile
+The subsequent review fixes passed 17 OpenAI provider tests, 28 hosted/profile
 server tests, and the server TypeScript check. These local checks do not replace
 new live qualification for the changed implementation.
 

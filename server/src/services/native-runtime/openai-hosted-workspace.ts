@@ -76,6 +76,7 @@ interface HostedState {
   uploadedFileIds: string[];
   remoteDeleted?: boolean;
   cleanupError?: string;
+  workspaceMerged?: { sessionId: string; turnId: string; artifactsSha256: string };
   finalized?: { sessionId: string; turnId: string; artifacts: string[] };
 }
 // No archive produced by the agent is extracted on the controller. The JSON
@@ -258,28 +259,40 @@ export async function finalizeOpenAiHostedWorkspace(input: { db: Db; execution: 
     const baseline = parseDirectorySnapshot(state.baseline);
     if (!baseline) throw new Error("openai_workspace_baseline_invalid");
     baseline.ignoredPaths = state.ignoredPaths;
-    // Reject unsupported output types before changing the workspace. Publish
-    // only after the guarded merge succeeds, while its writer lock is held.
-    // If publication fails, retain the remote session and checkpoint. A retry
-    // accepts already-imported bytes and deduplicates registered deliverables.
+    // Bind a completed import to immutable output identities and bytes. A
+    // publication-only retry must not reapply files that were edited afterward.
+    const artifactsSha256 = sha(JSON.stringify(downloaded.map(({ artifact, bytes }) => ({
+      id: artifact.id, path: artifact.path, sha256: sha(bytes),
+    })).sort((a, b) => a.id.localeCompare(b.id))));
     for (const { artifact } of downloaded) openAiArtifactContentType(artifact.path);
-    await mergeDirectoryWithBaseline({
-      baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject",
-      afterApply: async () => {
-        for (const { artifact, bytes } of downloaded) {
-          const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
-          // Use the existing transactional registration path so attachments retain
-          // their audit/idempotency receipt and their generated preparation comment
-          // cannot displace the provider's final answer during presentation.
-          const authority = new PaperclipRunnerToolAuthority(input.db, {
-            ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes,
-          });
-          await authority.execute({ tool: "register_deliverable", callId: `openai-output:${artifact.id}`,
-            arguments: { idempotencyKey: `openai-output:${sessionId}:${artifact.id}`, filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
-          });
-        }
-      },
-    });
+    const publish = async () => {
+      for (const { artifact, bytes } of downloaded) {
+        const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
+        // Use the existing transactional registration path so attachments retain
+        // their audit/idempotency receipt and their generated preparation comment
+        // cannot displace the provider's final answer during presentation.
+        const authority = new PaperclipRunnerToolAuthority(input.db, {
+          ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes,
+        });
+        await authority.execute({ tool: "register_deliverable", callId: `openai-output:${artifact.id}`,
+          arguments: { idempotencyKey: `openai-output:${sessionId}:${artifact.id}`, filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
+        });
+      }
+    };
+    if (state.workspaceMerged) {
+      if (state.workspaceMerged.sessionId !== sessionId || state.workspaceMerged.turnId !== turnId
+        || state.workspaceMerged.artifactsSha256 !== artifactsSha256) throw new Error("openai_hosted_merged_outputs_changed");
+      await publish();
+    } else {
+      await mergeDirectoryWithBaseline({
+        baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject",
+        afterApply: async () => {
+          state.workspaceMerged = { sessionId, turnId, artifactsSha256 };
+          await save(path.join(directory, "state.json"), state);
+          await publish();
+        },
+      });
+    }
     state.finalized = { sessionId, turnId, artifacts: downloaded.map(({ artifact }) => artifact.id) };
     await save(path.join(directory, "state.json"), state);
     return await cleanup();
