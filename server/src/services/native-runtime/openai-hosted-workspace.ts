@@ -258,20 +258,28 @@ export async function finalizeOpenAiHostedWorkspace(input: { db: Db; execution: 
     const baseline = parseDirectorySnapshot(state.baseline);
     if (!baseline) throw new Error("openai_workspace_baseline_invalid");
     baseline.ignoredPaths = state.ignoredPaths;
-    // Persist inspectable files before touching the task worktree.
-    for (const { artifact, bytes } of downloaded) {
-      const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
-      // Use the existing transactional registration path so attachments retain
-      // their audit/idempotency receipt and their generated preparation comment
-      // cannot displace the provider's final answer during presentation.
-      const authority = new PaperclipRunnerToolAuthority(input.db, {
-        ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes,
-      });
-      await authority.execute({ tool: "register_deliverable", callId: `openai-output:${artifact.id}`,
-        arguments: { idempotencyKey: `openai-output:${sessionId}:${artifact.id}`, filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
-      });
-    }
-    await mergeDirectoryWithBaseline({ baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject" });
+    // Reject unsupported output types before changing the workspace. Publish
+    // only after the guarded merge succeeds, while its writer lock is held.
+    // If publication fails, retain the remote session and checkpoint. A retry
+    // accepts already-imported bytes and deduplicates registered deliverables.
+    for (const { artifact } of downloaded) openAiArtifactContentType(artifact.path);
+    await mergeDirectoryWithBaseline({
+      baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject",
+      afterApply: async () => {
+        for (const { artifact, bytes } of downloaded) {
+          const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
+          // Use the existing transactional registration path so attachments retain
+          // their audit/idempotency receipt and their generated preparation comment
+          // cannot displace the provider's final answer during presentation.
+          const authority = new PaperclipRunnerToolAuthority(input.db, {
+            ...input.execution.binding, workspaceRoot: "/workspace/outputs", executionTargetKind: "remote", readRemoteWorkspaceFile: async () => bytes,
+          });
+          await authority.execute({ tool: "register_deliverable", callId: `openai-output:${artifact.id}`,
+            arguments: { idempotencyKey: `openai-output:${sessionId}:${artifact.id}`, filename: path.posix.basename(artifact.path), contentType: openAiArtifactContentType(artifact.path), byteSize: bytes.length, sha256: sha(bytes), contentRef, title: `OpenAI output: ${path.posix.basename(artifact.path)}` },
+          });
+        }
+      },
+    });
     state.finalized = { sessionId, turnId, artifacts: downloaded.map(({ artifact }) => artifact.id) };
     await save(path.join(directory, "state.json"), state);
     return await cleanup();

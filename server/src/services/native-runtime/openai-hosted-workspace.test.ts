@@ -83,7 +83,7 @@ it("rejects hosted planning before provisioning a writable environment", async (
   expect(request).not.toHaveBeenCalled();
 });
 
-it("hands off relative output paths before merging and deleting the hosted session", async () => {
+it.each(["success", "conflict", "publication retry"])("merges before output handoff and preserves recovery: %s", async (scenario) => {
   const directory = await root(); const workspace = path.join(directory, "workspace");
   const stateRoot = path.join(directory, "state"); const hosted = path.join(stateRoot, "openai-hosted");
   await mkdir(workspace); await mkdir(hosted, { recursive: true }); await mkdir(path.join(stateRoot, "runner"));
@@ -93,25 +93,42 @@ it("hands off relative output paths before merging and deleting the hosted sessi
   await writeFile(path.join(hosted, "state.json"), JSON.stringify({ binding, cwd: await realpath(workspace), baseline, ignoredPaths: [], uploadedFileIds: [] }), { mode: 0o600 });
   await writeFile(path.join(stateRoot, "runner", "managed-provider-state.json"), JSON.stringify({ runId: "run", descriptor: { kind: "openai_managed" }, providerSessionId: "sess_owned", durableEventCursor: JSON.stringify({ lastTurnId: "turn_owned" }) }), { mode: 0o600 });
   const bytes = payload([{ path: "seed.txt", kind: "file", mode: 420, data: Buffer.from("after").toString("base64") }]);
+  if (scenario === "conflict") await writeFile(path.join(workspace, "seed.txt"), "local edit");
+  let failPublication = scenario === "publication retry";
   const handoff = vi.spyOn(PaperclipRunnerToolAuthority.prototype, "execute").mockImplementation(async function (this: PaperclipRunnerToolAuthority, call) {
     expect(call).toMatchObject({ tool: "register_deliverable", arguments: { idempotencyKey: "openai-output:sess_owned:artifact_owned", contentRef: "paperclip-workspace.json" } });
     expect(this.binding.workspaceRoot).toBe("/workspace/outputs");
     expect(await this.binding.readRemoteWorkspaceFile!(call.arguments as never)).toEqual(bytes);
-    expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("before");
+    expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("after");
+    if (failPublication) { failPublication = false; throw new Error("publication unavailable"); }
     return { disposition: "applied" };
   });
   const request = vi.fn(async (url: string, init: RequestInit) => {
     if (url.endsWith("/artifacts?order=asc&limit=100")) return Response.json({ data: [{ id: "artifact_owned", turn_id: "turn_owned", path: "/workspace/outputs/paperclip-workspace.json" }], has_more: false });
     if (url.endsWith("/artifacts/artifact_owned/content")) return new Response(new Uint8Array(bytes));
     expect(url).toBe("https://api.openai.com/v1/agents/sessions/sess_owned"); expect(init.method).toBe("DELETE");
-    expect(handoff).toHaveBeenCalledTimes(1);
+    expect(handoff).toHaveBeenCalledTimes(scenario === "publication retry" ? 2 : 1);
     expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("after");
     return Response.json({ deleted: true });
   });
   vi.stubGlobal("fetch", request);
-  await finalizeOpenAiHostedWorkspace({ db: {} as never, stateRoot, apiKey: "test-only", execution: {
+  const finalize = () => finalizeOpenAiHostedWorkspace({ db: {} as never, stateRoot, apiKey: "test-only", execution: {
     binding, workspace: { cwd: workspace }, provider: { kind: "openai_managed", openaiProfile: { environment: { type: "openai_hosted" } } },
   } as never });
-  expect(request).toHaveBeenCalledTimes(3);
+  if (scenario === "conflict") {
+    await expect(finalize()).rejects.toThrow();
+    expect(handoff).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe("local edit");
+    expect(JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"))).not.toHaveProperty("finalized");
+    return;
+  }
+  if (scenario === "publication retry") {
+    await expect(finalize()).rejects.toThrow("publication unavailable");
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"))).not.toHaveProperty("finalized");
+  }
+  await finalize();
+  expect(request).toHaveBeenCalledTimes(scenario === "publication retry" ? 5 : 3);
   expect(JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"))).toMatchObject({ remoteDeleted: true, finalized: { sessionId: "sess_owned", turnId: "turn_owned" } });
 });

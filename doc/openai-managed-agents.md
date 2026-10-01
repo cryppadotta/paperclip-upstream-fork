@@ -3,7 +3,10 @@
 Status: experimental. Tools-only passed the original 35-case live qualification
 on 2026-10-01. Hosted passed 34/35 and remains unqualified because one completed
 turn had no usable token accounting. All four Product E2E workflows passed on
-the same integration build. The maintained 39-case campaign remains disabled.
+the same integration build. Later review fixes changed accounting and hosted
+handoff; those changes have local regression coverage but no new live qualification.
+The attestation below applies only to its recorded build. The maintained 39-case
+campaign remains disabled.
 
 ## Which OpenAI product?
 
@@ -29,7 +32,13 @@ Existing board authorization and audit logging protect profile changes.
 
 The UI saves new profiles disabled. Production enablement requires a 35/35 live
 attestation for the exact configuration. A hosted profile requires its own
-attestation, separate from the tools-only profile.
+attestation, separate from the tools-only profile. This is an operator attestation,
+matching the existing Claude and AgentCore trust model. Only a company-authorized
+board actor can create or enable profiles; agents cannot. The validator checks
+fields and configuration binding, not external signatures, repository contents,
+or the running binary's digest. The board operator must inspect the immutable
+evidence and verify the deployed build before asserting qualification. A fabricated
+board assertion is not independently detected by this API.
 
 Example `configuration` for `POST /api/companies/:companyId/remote-agent-profiles`:
 
@@ -312,10 +321,18 @@ The generated report preserves all 154 protocol attempts. A final read-only chec
 of 167 session IDs from owned evidence found 89 idle and 78 returning HTTP 404,
 with no active sessions or pending tool actions.
 
-Remaining hosted qualification work is to preserve failed-session accounting
-evidence, investigate reconciliation from turn-level usage, and then measure a
-new complete roster after any integration change. The passing tools-only result
-does not waive the hosted accounting gate.
+Review fixes after this measurement reconcile complete, unique, owned root-turn
+usage when the session total is absent. They do not add session and turn totals,
+treat missing turns as zero, or report a provider bill. Hosted output registration
+now runs only after a successful merge under the workspace writer lock. A failed
+registration retains the remote session and uses the existing idempotent merge
+and deliverable receipts on retry. Conflict and publication-retry tests cover this.
+
+These fixes change the measured integration. The recorded 35/35 tools-only
+attestation is historical evidence, not qualification of the revised code. Before
+production enablement, preserve accounting evidence and run fresh full rosters and
+Product E2E checks on one new frozen build. No paid rerun was launched after the
+$350 authorization was fully reserved.
 
 ## Local verification: first qualification
 
@@ -360,6 +377,10 @@ passes and one runtime port-conflict timeout. That final test passed an isolated
 repeat in 10.8 seconds without source changes or a timeout increase. Every observed
 failure now has a passing rerun. The initial full-suite failure remains recorded;
 this is not a claim of a green single full-suite invocation.
+
+The subsequent review fixes passed 17 OpenAI provider tests, 27 hosted/profile
+server tests, and the server TypeScript check. These local checks do not replace
+new live qualification for the changed implementation.
 
 ## Primary references
 

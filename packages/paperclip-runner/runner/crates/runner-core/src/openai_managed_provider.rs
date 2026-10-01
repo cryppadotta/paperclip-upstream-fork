@@ -593,11 +593,7 @@ impl OpenAiManagedProvider {
     }
     fn apply_snapshot(&mut self, snapshot: Snapshot) -> Result<()> {
         self.verify_session(&snapshot.session)?;
-        self.usage = snapshot
-            .session
-            .get("usage")
-            .filter(|v| v.is_object())
-            .cloned();
+        self.usage = reconcile_usage(&snapshot, &self.session_id);
         if self.checkpoint.last_turn_id.as_ref().is_some_and(|last| {
             !snapshot
                 .turns
@@ -782,6 +778,50 @@ impl OpenAiManagedProvider {
         }
         self.save_checkpoint()
     }
+}
+
+// Session accounting can lag completed turns. Derive a cumulative snapshot only
+// from complete, unique, owned root turns (this provider disables subagents).
+// Never combine session and turn totals, or treat missing turn usage as zero.
+fn reconcile_usage(snapshot: &Snapshot, session_id: &str) -> Option<Value> {
+    fn complete(usage: &Value) -> bool {
+        usage.get("input_tokens").and_then(Value::as_u64).is_some()
+            && usage.get("output_tokens").and_then(Value::as_u64).is_some()
+    }
+    if let Some(usage) = snapshot
+        .session
+        .get("usage")
+        .filter(|usage| complete(usage))
+    {
+        return Some(usage.clone());
+    }
+    if snapshot.turns.is_empty() {
+        return None;
+    }
+    let mut seen = BTreeSet::new();
+    let (mut input, mut output, mut cached) = (0u64, 0u64, Some(0u64));
+    for turn in &snapshot.turns {
+        if turn.get("session_id").and_then(Value::as_str) != Some(session_id)
+            || !turn.get("subagent_id").is_none_or(Value::is_null)
+            || !seen.insert(id(turn, "id").ok()?)
+        {
+            return None;
+        }
+        let usage = turn.get("usage").filter(|usage| complete(usage))?;
+        let turn_input = usage["input_tokens"].as_u64()?;
+        input = input.checked_add(turn_input)?;
+        output = output.checked_add(usage["output_tokens"].as_u64()?)?;
+        cached = cached
+            .zip(
+                usage
+                    .pointer("/input_tokens_details/cached_tokens")
+                    .and_then(Value::as_u64)
+                    .filter(|value| *value <= turn_input),
+            )
+            .and_then(|(sum, value)| sum.checked_add(value));
+    }
+    Some(json!({"input_tokens":input,"output_tokens":output,
+        "input_tokens_details":{"cached_tokens":cached}}))
 }
 
 fn normalize_usage(usage: &Value) -> Value {
@@ -1432,6 +1472,65 @@ mod tests {
         assert!(
             matches!(events[3], ProviderEvent::Notification { method, .. } if method == "turn/completed")
         );
+    }
+    #[test]
+    fn terminal_uses_complete_turn_accounting_when_session_usage_is_missing() {
+        let mut p = provider();
+        active(&mut p);
+        let mut s = snapshot(&p, "completed", json!([]), vec![]);
+        s.turns[0]["usage"] =
+            json!({"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4}});
+        p.apply_snapshot(s).unwrap();
+        assert_eq!(p.usage_snapshot().unwrap()["input_tokens"], 12);
+        assert!(p.checkpoint.local_turn_id.is_none());
+        assert!(p.checkpoint.events.iter().any(|event| matches!(event,
+            ProviderEvent::Notification { method, params } if method == "thread/tokenUsage/updated"
+            && params["usage"]["cacheReadInputTokens"] == 4)));
+    }
+    #[test]
+    fn turn_accounting_is_cumulative_without_double_counting_or_partial_totals() {
+        let p = provider();
+        let mut s = snapshot(&p, "completed", json!([]), vec![]);
+        s.turns[0]["usage"] =
+            json!({"input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":4}});
+        let mut older = s.turns[0].clone();
+        older["id"] = json!("turn_older");
+        older["usage"] = json!({"input_tokens":20,"output_tokens":5});
+        s.turns.insert(0, older);
+        let usage = reconcile_usage(&s, "sess_test").unwrap();
+        assert_eq!(usage["input_tokens"], 32);
+        assert_eq!(usage["output_tokens"], 8);
+        assert!(usage["input_tokens_details"]["cached_tokens"].is_null());
+        // Re-reading the same full history does not add the previous snapshot.
+        assert_eq!(reconcile_usage(&s, "sess_test"), Some(usage));
+        s.session["usage"] = json!({"input_tokens":32,"output_tokens":8});
+        assert_eq!(
+            reconcile_usage(&s, "sess_test"),
+            Some(s.session["usage"].clone())
+        );
+        s.session["usage"] = Value::Null;
+        for invalid in [
+            Value::Null,
+            json!({}),
+            json!({"input_tokens":-1,"output_tokens":1}),
+        ] {
+            s.turns[0]["usage"] = invalid;
+            assert!(reconcile_usage(&s, "sess_test").is_none());
+        }
+    }
+    #[test]
+    fn turn_accounting_rejects_duplicate_foreign_and_subagent_history() {
+        let p = provider();
+        let mut s = snapshot(&p, "completed", json!([]), vec![]);
+        s.turns[0]["usage"] = json!({"input_tokens":12,"output_tokens":3});
+        s.turns.push(s.turns[0].clone());
+        assert!(reconcile_usage(&s, "sess_test").is_none());
+        s.turns.pop();
+        s.turns[0]["session_id"] = json!("other_session");
+        assert!(reconcile_usage(&s, "sess_test").is_none());
+        s.turns[0]["session_id"] = json!("sess_test");
+        s.turns[0]["subagent_id"] = json!("unexpected_subagent");
+        assert!(reconcile_usage(&s, "sess_test").is_none());
     }
     #[test]
     fn terminal_waits_for_delayed_usage_without_repeating_messages_or_start() {

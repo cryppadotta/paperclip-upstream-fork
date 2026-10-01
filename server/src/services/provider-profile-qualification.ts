@@ -167,7 +167,11 @@ export function isQualifiedProfileRevision(value: unknown): value is string {
 }
 
 
-/** Attests a local integration/configuration build; OpenAI does not expose a pinned harness release. */
+/** Validate a company board operator's attestation, as for Claude and AgentCore.
+ * This is a full-control operator assertion, not a signed external test receipt.
+ * Agents cannot create profiles; the board must inspect the retained evidence.
+ * OpenAI does not expose a pinned harness release.
+ */
 export function assertOpenAiManagedQualification(
   configuration: Record<string, unknown>, qualification: Record<string, unknown>, options: { required: boolean },
 ): boolean {
