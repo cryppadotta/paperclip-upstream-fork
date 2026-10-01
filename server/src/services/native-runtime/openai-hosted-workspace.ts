@@ -76,7 +76,7 @@ interface HostedState {
   uploadedFileIds: string[];
   remoteDeleted?: boolean;
   cleanupError?: string;
-  workspaceMerged?: { sessionId: string; turnId: string; artifactsSha256: string };
+  workspaceMerged?: { sessionId: string; turnId: string; artifactsSha256: string; workspaceIdentity: string };
   finalized?: { sessionId: string; turnId: string; artifacts: string[] };
 }
 // No archive produced by the agent is extracted on the controller. The JSON
@@ -265,6 +265,10 @@ export async function finalizeOpenAiHostedWorkspace(input: { db: Db; execution: 
       id: artifact.id, path: artifact.path, sha256: sha(bytes),
     })).sort((a, b) => a.id.localeCompare(b.id))));
     for (const { artifact } of downloaded) openAiArtifactContentType(artifact.path);
+    const workspaceIdentity = async () => {
+      const stat = await fs.stat(state.cwd, { bigint: true });
+      return `${stat.dev}:${stat.ino}:${stat.birthtimeNs}`;
+    };
     const publish = async () => {
       for (const { artifact, bytes } of downloaded) {
         const contentRef = openAiWorkspaceRelativePath(artifact.path.slice("/workspace/outputs/".length));
@@ -282,12 +286,15 @@ export async function finalizeOpenAiHostedWorkspace(input: { db: Db; execution: 
     if (state.workspaceMerged) {
       if (state.workspaceMerged.sessionId !== sessionId || state.workspaceMerged.turnId !== turnId
         || state.workspaceMerged.artifactsSha256 !== artifactsSha256) throw new Error("openai_hosted_merged_outputs_changed");
+      if (state.workspaceMerged.workspaceIdentity !== await workspaceIdentity()) throw new Error("openai_hosted_merged_workspace_replaced");
+      // A reset in the same worktree is a later operator edit, just like a new
+      // commit. The import receipt is historical; never undo later edits here.
       await publish();
     } else {
       await mergeDirectoryWithBaseline({
         baseline, sourceDir: source, targetDir: state.cwd, conflictPolicy: "reject",
         afterApply: async () => {
-          state.workspaceMerged = { sessionId, turnId, artifactsSha256 };
+          state.workspaceMerged = { sessionId, turnId, artifactsSha256, workspaceIdentity: await workspaceIdentity() };
           await save(path.join(directory, "state.json"), state);
           await publish();
         },

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, writeFile, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, realpath, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, serializeDirectorySnapshot, type LegacySerializedDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -83,7 +83,7 @@ it("rejects hosted planning before provisioning a writable environment", async (
   expect(request).not.toHaveBeenCalled();
 });
 
-it.each(["success", "conflict", "publication retry", "changed export"])("merges before output handoff and preserves recovery: %s", async (scenario) => {
+it.each(["success", "conflict", "publication retry", "changed export", "reset after import", "recreated workspace"])("merges before output handoff and preserves recovery: %s", async (scenario) => {
   const directory = await root(); const workspace = path.join(directory, "workspace");
   const stateRoot = path.join(directory, "state"); const hosted = path.join(stateRoot, "openai-hosted");
   await mkdir(workspace); await mkdir(hosted, { recursive: true }); await mkdir(path.join(stateRoot, "runner"));
@@ -94,7 +94,8 @@ it.each(["success", "conflict", "publication retry", "changed export"])("merges 
   await writeFile(path.join(stateRoot, "runner", "managed-provider-state.json"), JSON.stringify({ runId: "run", descriptor: { kind: "openai_managed" }, providerSessionId: "sess_owned", durableEventCursor: JSON.stringify({ lastTurnId: "turn_owned" }) }), { mode: 0o600 });
   const bytes = payload([{ path: "seed.txt", kind: "file", mode: 420, data: Buffer.from("after").toString("base64") }]);
   if (scenario === "conflict") await writeFile(path.join(workspace, "seed.txt"), "local edit");
-  let failPublication = scenario === "publication retry" || scenario === "changed export";
+  const publicationRetry = !["success", "conflict"].includes(scenario);
+  let failPublication = publicationRetry;
   let wireBytes = bytes;
   let expectedWorkspace = "after";
   const handoff = vi.spyOn(PaperclipRunnerToolAuthority.prototype, "execute").mockImplementation(async function (this: PaperclipRunnerToolAuthority, call) {
@@ -109,7 +110,7 @@ it.each(["success", "conflict", "publication retry", "changed export"])("merges 
     if (url.endsWith("/artifacts?order=asc&limit=100")) return Response.json({ data: [{ id: "artifact_owned", turn_id: "turn_owned", path: "/workspace/outputs/paperclip-workspace.json" }], has_more: false });
     if (url.endsWith("/artifacts/artifact_owned/content")) return new Response(new Uint8Array(wireBytes));
     expect(url).toBe("https://api.openai.com/v1/agents/sessions/sess_owned"); expect(init.method).toBe("DELETE");
-    expect(handoff).toHaveBeenCalledTimes(scenario === "publication retry" ? 2 : 1);
+    expect(handoff).toHaveBeenCalledTimes(publicationRetry ? 2 : 1);
     expect(await readFile(path.join(workspace, "seed.txt"), "utf8")).toBe(expectedWorkspace);
     return Response.json({ deleted: true });
   });
@@ -125,14 +126,23 @@ it.each(["success", "conflict", "publication retry", "changed export"])("merges 
     expect(JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"))).not.toHaveProperty("finalized");
     return;
   }
-  if (scenario === "publication retry" || scenario === "changed export") {
+  if (publicationRetry) {
     await expect(finalize()).rejects.toThrow("publication unavailable");
     expect(request).toHaveBeenCalledTimes(2);
     const state = JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"));
     expect(state).not.toHaveProperty("finalized");
     expect(state.workspaceMerged).toMatchObject({ sessionId: "sess_owned", turnId: "turn_owned", artifactsSha256: expect.any(String) });
-    expectedWorkspace = "local edit after import";
+    expectedWorkspace = scenario === "reset after import" ? "before" : "local edit after import";
     await writeFile(path.join(workspace, "seed.txt"), expectedWorkspace);
+    if (scenario === "recreated workspace") {
+      await rename(workspace, `${workspace}-imported`);
+      await mkdir(workspace);
+      await writeFile(path.join(workspace, "seed.txt"), expectedWorkspace);
+      await expect(finalize()).rejects.toThrow("merged_workspace_replaced");
+      expect(handoff).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledTimes(4);
+      return;
+    }
     if (scenario === "changed export") {
       wireBytes = payload([{ path: "seed.txt", kind: "file", mode: 420, data: Buffer.from("changed remote").toString("base64") }]);
       await expect(finalize()).rejects.toThrow("merged_outputs_changed");
@@ -143,6 +153,6 @@ it.each(["success", "conflict", "publication retry", "changed export"])("merges 
     }
   }
   await finalize();
-  expect(request).toHaveBeenCalledTimes(scenario === "publication retry" ? 5 : 3);
+  expect(request).toHaveBeenCalledTimes(publicationRetry ? 5 : 3);
   expect(JSON.parse(await readFile(path.join(hosted, "state.json"), "utf8"))).toMatchObject({ remoteDeleted: true, finalized: { sessionId: "sess_owned", turnId: "turn_owned" } });
 });
