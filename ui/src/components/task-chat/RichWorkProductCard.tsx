@@ -276,7 +276,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <strong className={cn("block text-sm font-medium text-foreground", expandable ? "break-words" : "truncate")}>{workProduct.title}</strong>
+        <strong className={cn("block text-sm font-medium text-foreground", expandable ? detailsOpen ? "break-words" : "line-clamp-2 break-words" : "truncate")}>{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
         {statsLabel ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">{statsLabel}</p> : null}
         {!compact && summary ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}

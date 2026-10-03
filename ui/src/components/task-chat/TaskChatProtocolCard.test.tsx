@@ -223,6 +223,7 @@ describe("TaskChatProtocolCard", () => {
     ));
     expect(container.textContent).toContain("Uncommitted implementation changes");
     expect(container.textContent).toContain("Branch · no remote link");
+    expect(container.querySelector("strong")?.className).toContain("line-clamp-2");
     expect(container.querySelector("a")).toBeNull();
     const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Show details:"]');
     expect(button?.getAttribute("aria-expanded")).toBe("false");
@@ -230,6 +231,11 @@ describe("TaskChatProtocolCard", () => {
     expect(container.textContent).toContain("No remote link was provided for this branch.");
     expect(container.textContent).toContain("git · active · Updated");
     expect(container.querySelector('button[aria-label^="Hide details:"]')?.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("strong")?.className).not.toContain("line-clamp-2");
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label^="Hide details:"]')!.click());
+    expect(container.textContent).not.toContain("No remote link was provided for this branch.");
+    expect(container.textContent).toContain("Uncommitted implementation changes");
+    expect(container.querySelector('button[aria-label^="Show details:"]')?.getAttribute("aria-expanded")).toBe("false");
   });
 
   it.each(["text/html", "application/zip"])("labels %s artifact links as downloads", (contentType) => {
