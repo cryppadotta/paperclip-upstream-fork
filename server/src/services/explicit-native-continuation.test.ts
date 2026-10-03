@@ -627,8 +627,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const f = await seedCancelledReviewWait();
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: true });
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
-    const successor = await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "manual",
-      reason: kind === "retry" ? "manual_retry" : "issue_commented",
+    const successor = await heartbeatService(db).wakeup(f.agentId, { source: kind === "retry" ? "on_demand" : "automation", triggerDetail: "manual",
+      reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
       ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
       contextSnapshot: { issueId: f.issueId, ...(kind === "message" ? { wakeCommentId: f.commentId } : {}) },
@@ -670,8 +670,12 @@ const support = await getEmbeddedPostgresTestSupport();
     else await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId,
       agentId: f.agentId, seq: 1, eventType: kind === "launch" ? PROCESS_START_REQUESTED : "provider.event",
       stream: "system", level: "info", message: "Contradictory execution evidence" });
-    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: false });
-    expect(await admit(f)).toBeNull();
+    try {
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: false });
+      expect(await admit(f)).toBeNull();
+    } finally {
+      await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.sourceRunId));
+    }
   });
 
   it.each([false, true].flatMap(receipt => ["message", "retry"].map(kind => ({ receipt, kind }))))(
