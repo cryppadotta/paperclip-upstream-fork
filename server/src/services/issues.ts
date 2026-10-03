@@ -6621,6 +6621,24 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  function provisionalTitleFromDescription(description: string) {
+    const clean = (imageReplacement: string) =>
+      description
+        .replace(/!\[([^\]]*)\]\([^\n)]*\)/g, imageReplacement)
+        .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, imageReplacement)
+        .replace(/\[([^\]]+)\]\([^\n)]*\)/g, "$1")
+        .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
+        .replace(/<https?:\/\/[^>]+>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/```(?:[^\n]*)?\n?/g, " ")
+        .replace(/`([^`]+)`/g, "$1")
+        .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-+*]\s+)/gm, "")
+        .replace(/[*_~]+/g, "")
+        .trim()
+        .replace(/\s+/g, " ");
+    return (clean(" ") || clean("$1")).slice(0, 120);
+  }
+
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
@@ -9759,7 +9777,9 @@ export function issueService(db: Db) {
         ...issueData
       } = data;
       const explicitTitle = issueData.title?.trim();
-      const provisionalTitle = issueData.description?.trim().replace(/\s+/g, " ").slice(0, 120);
+      const provisionalTitle = issueData.description
+        ? provisionalTitleFromDescription(issueData.description)
+        : undefined;
       const resolvedTitle = explicitTitle || provisionalTitle;
       if (!resolvedTitle) throw unprocessable("Provide a title or task description");
       const titleNeedsGeneration = !explicitTitle;

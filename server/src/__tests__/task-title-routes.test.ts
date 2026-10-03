@@ -49,6 +49,24 @@ describe("task titles", () => {
     expect(setIssueTitleSchema.safeParse({ title: "x".repeat(241) }).success).toBe(false);
   });
 
+  it("removes leading Markdown before truncating a provisional title", async () => {
+    const f = await server.fixture();
+    const description = [
+      "![Screenshot](https://example.com/a-very-long-image-name.png)",
+      "# Fix the [sign-in redirect](https://example.com/issues/42)",
+      "Keep `returnTo` working with **saved sessions**.",
+    ].join("\n\n");
+    const result = await issueService(server.db).create(f.companyId, { description });
+    expect(result).toMatchObject({
+      title: "Fix the sign-in redirect Keep returnTo working with saved sessions.",
+      description,
+      titleNeedsGeneration: true,
+    });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![Error dialog](https://example.com/error.png)",
+    })).resolves.toMatchObject({ title: "Error dialog", titleNeedsGeneration: true });
+  });
+
   it("creates prompt-only children and still accepts explicit child titles", async () => {
     const f = await server.fixture();
     const description = "Investigate the child sign-in redirect";
