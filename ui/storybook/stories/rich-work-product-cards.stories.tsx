@@ -337,6 +337,7 @@ export const BranchDetailsExpanded: Story = {
     const button = canvasElement.querySelector<HTMLButtonElement>('button[aria-label^="Show details:"]');
     await userEvent.click(button!);
     expect(canvasElement.textContent).toContain("git · active · Updated");
-    expect(canvasElement.textContent).not.toContain("Uncommitted implementation changes");
+    expect(canvasElement.textContent).toContain("Saved description");
+    expect(canvasElement.querySelector("details")?.open).toBe(false);
   },
 };

@@ -235,7 +235,8 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       : href)
     : href;
   const expandable = !compact && !mediaPath && !actionHref;
-  const summary = workProduct.type === "branch" && !href ? null : workProduct.summary?.trim();
+  const summary = workProduct.summary?.trim();
+  const linklessBranch = workProduct.type === "branch" && !href;
   const openGallery = () => {
     if (mediaPath && !openIssueGallery?.(mediaPath)) setGalleryOpen(true);
   };
@@ -279,11 +280,17 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
         <strong className={cn("block text-sm font-medium text-foreground", expandable ? detailsOpen ? "break-words" : "line-clamp-2 break-words" : "truncate")}>{workProduct.title}</strong>
         {visibleMeta.length > 0 ? <p className="mt-1 truncate text-xs text-muted-foreground">{visibleMeta.join(" · ")}</p> : null}
         {statsLabel ? <p className="mt-1 whitespace-nowrap text-xs text-muted-foreground">{statsLabel}</p> : null}
-        {!compact && summary ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}
+        {!compact && summary && !linklessBranch ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}
         {expandable && detailsOpen ? (
           <div className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
             {workProduct.type !== "branch" ? <p>No link was provided for this work product.</p> : null}
             <p>{workProduct.provider} · {workProduct.status.replaceAll("_", " ")} · Updated {formatDateTime(workProduct.updatedAt)}</p>
+            {linklessBranch && summary ? (
+              <details className="relative z-10 mt-1">
+                <summary className="w-fit cursor-pointer font-medium text-foreground">Saved description</summary>
+                <p className="mt-1 whitespace-pre-wrap break-words">{summary}</p>
+              </details>
+            ) : null}
           </div>
         ) : null}
       </div>
