@@ -5998,7 +5998,7 @@ export function agentRoutes(
           "An exact failed-run retry cannot override its execution context.",
         );
       }
-      const failedRun = await heartbeat.getRun(req.body.failedRunId);
+      const failedRun = await heartbeat.getRun(req.body.failedRunId, { includeExecutionEvidence: true });
       if (
         !failedRun ||
         failedRun.companyId !== agent.companyId ||

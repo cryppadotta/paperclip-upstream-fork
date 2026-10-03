@@ -668,6 +668,8 @@ The same bounded rule applies when the previous heartbeat reported waiting on a 
 
 A continuation that the staleness gate cancelled with `issue_continuation_waiting_on_review` is a *deliberate park*, not a disappeared execution path. The latest run reported that the issue is waiting for review/approval (for example, an umbrella issue whose work was just decomposed into sub-tasks). Treating that park as a stranded run would retry it, then escalate it to `blocked` with a recovery action and an operator-facing failure notice — even though nothing failed and there is nothing for a human to do.
 
+Execution admission reads a narrow server-owned cancellation-evidence projection. Ordinary run presentation can redact `resultJson` for database encoding or output size; that presentation projection must not decide Retry eligibility or saved-input recovery. The admission projection excludes provider diagnostics and preserves whether the stored result is absent.
+
 Recovery rule for a parked-for-review continuation:
 
 - if the issue has a real waiting target — open (non-terminal) sub-tasks or existing unresolved blockers — Paperclip converts the deliberate wait into a first-class dependency wait: it sets the issue `blocked` by those issues, keeps the original assignee, and posts a plain-language comment explaining that the task will resume automatically when its dependencies finish. The issue then self-resumes through the normal `issue_blockers_resolved` path; no recovery action or escalation owner is involved
