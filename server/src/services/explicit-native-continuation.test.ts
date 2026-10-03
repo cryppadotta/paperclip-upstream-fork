@@ -677,6 +677,9 @@ const support = await getEmbeddedPostgresTestSupport();
         status: "pending_cleanup", cleanupStatus: "failed" });
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: false });
       expect(await admit(f)).toBeNull();
+      // Later tests exercise the global cleanup sweep with their own retry
+      // counters. Do not leave this negative fixture as another cleanup target.
+      await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.sourceRunId));
     },
   );
 
