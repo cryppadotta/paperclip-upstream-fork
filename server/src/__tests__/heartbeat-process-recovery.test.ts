@@ -6221,7 +6221,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
   });
 
-  it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
+  it.each([false, true])("converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: %s)", async dispatchReceipt => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
@@ -6229,6 +6229,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runErrorCode: "issue_continuation_waiting_on_review",
       runError: "Continuation parked: issue is waiting on review/approval",
     });
+    if (dispatchReceipt) {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+      await db.update(heartbeatRuns).set({ startedAt: null,
+        resultJson: { stopReason: "issue_continuation_waiting_on_review", timeoutSource: "stale_queued_run_gate" },
+      }).where(eq(heartbeatRuns.id, run.id));
+    }
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const openChildTodoId = randomUUID();
     const openChildInProgressId = randomUUID();

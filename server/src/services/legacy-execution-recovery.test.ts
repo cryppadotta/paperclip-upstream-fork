@@ -86,3 +86,22 @@ it("retains conversation retry eligibility for a transient restore lock timeout"
     workspaceRestoreFailure: "restore_lock_timeout", conversationContinuation: "continue_conversation_v1",
   } })).toBe(false);
 });
+
+
+it("does not turn a pre-dispatch review wait into unknown provider actions", () => {
+  const run = { runtimeMode: "legacy", status: "cancelled", errorCode: "issue_continuation_waiting_on_review",
+    startedAt: null, runtimeModeResolvedAt: null, processPid: null, processGroupId: null,
+    processStartedAt: null, nativeIssueId: null, nativeSessionId: null, sessionIdAfter: null,
+    controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null,
+    resultJson: { stopReason: "issue_continuation_waiting_on_review", timeoutSource: "stale_queued_run_gate" } };
+  expect(legacyExecutionNeedsReconciliation(run)).toBe(false);
+  for (const patch of [
+    { startedAt: new Date() }, { processPid: 123 }, { processGroupId: 123 },
+    { processStartedAt: new Date() }, { nativeSessionId: "provider-session" }, { nativeIssueId: "native-task" },
+    { sessionIdAfter: "provider-session" }, { runtimeModeResolvedAt: new Date() },
+    { controllerBootId: "live-controller" }, { controllerLeaseExpiresAt: new Date() }, { executionStage: "preparing" },
+    { errorCode: "operator_interrupted" }, { resultJson: {} },
+    { resultJson: { ...run.resultJson, stopReason: "cancelled" } },
+    { resultJson: { ...run.resultJson, workspaceRestoreFailure: "restore_unsafe_archive" } },
+  ]) expect(legacyExecutionNeedsReconciliation({ ...run, ...patch })).toBe(true);
+});

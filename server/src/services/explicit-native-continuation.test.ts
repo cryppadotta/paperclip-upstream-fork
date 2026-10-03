@@ -613,6 +613,67 @@ const support = await getEmbeddedPostgresTestSupport();
     return f;
   }
 
+  async function seedCancelledReviewWait() {
+    const f = await seedHistoricalCancelledPreparation();
+    await db.update(heartbeatRuns).set({ startedAt: null, executionStage: null,
+      controllerBootId: null, controllerLeaseExpiresAt: null, runnerProfileJson: null,
+      errorCode: "issue_continuation_waiting_on_review",
+      resultJson: { stopReason: "issue_continuation_waiting_on_review", timeoutSource: "stale_queued_run_gate" },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    return f;
+  }
+
+  it.each(["message", "retry"])("recovers a pre-dispatch review wait through an explicit %s", async kind => {
+    const f = await seedCancelledReviewWait();
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: true });
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const successor = await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "manual",
+      reason: kind === "retry" ? "manual_retry" : "issue_commented",
+      ...(kind === "retry" ? { failedRunId: f.sourceRunId } : {}), requestedByActorType: "user", requestedByActorId: "board",
+      payload: { issueId: f.issueId, ...(kind === "message" ? { commentId: f.commentId } : {}) },
+      contextSnapshot: { issueId: f.issueId, ...(kind === "message" ? { wakeCommentId: f.commentId } : {}) },
+    });
+    expect(successor).toMatchObject({ status: "queued", contextSnapshot: { forceFreshSession: true,
+      previousRunId: f.sourceRunId, explicitUserContinuation: { commentId: kind === "message" ? f.commentId : null } } });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0].status).toBe("cancelled");
+  });
+
+  it("reconsiders saved input after a pre-dispatch review wait exactly once", async () => {
+    const f = await seedCancelledReviewWait();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const leaseId = randomUUID();
+    await db.insert(environmentLeases).values({ id: leaseId, companyId: f.companyId,
+      heartbeatRunId: f.sourceRunId, provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+    await heartbeatService(db).wakeup(f.agentId, { source: "automation", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(waiting.status).toBe("deferred_issue_execution");
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "succeeded" })
+      .where(eq(environmentLeases.id, leaseId));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+    await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ wakeCommentIds: [f.commentId],
+      explicitUserContinuation: { commentId: f.commentId }, forceFreshSession: true });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id)))[0])
+      .toMatchObject({ status: "coalesced", runId: successors[0].id });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  });
+
+  it.each(["launch", "provider", "cleanup"])("retains a pre-dispatch review wait with contradictory %s evidence", async kind => {
+    const f = await seedCancelledReviewWait();
+    if (kind === "cleanup") await db.insert(environmentLeases).values({ companyId: f.companyId,
+      heartbeatRunId: f.sourceRunId, provider: "local", status: "pending_cleanup", cleanupStatus: "failed" });
+    else await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId,
+      agentId: f.agentId, seq: 1, eventType: kind === "launch" ? PROCESS_START_REQUESTED : "provider.event",
+      stream: "system", level: "info", message: "Contradictory execution evidence" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: false });
+    expect(await admit(f)).toBeNull();
+  });
+
   it.each([false, true].flatMap(receipt => ["message", "retry"].map(kind => ({ receipt, kind }))))(
     "recovers historical native preparation through an explicit $kind (receipt: $receipt)", async ({ receipt, kind }) => {
     const f = await seedHistoricalCancelledPreparation(receipt);
