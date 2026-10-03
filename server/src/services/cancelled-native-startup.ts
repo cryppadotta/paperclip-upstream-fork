@@ -28,14 +28,15 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   if (run.status !== "cancelled" || !run.finishedAt || run.processPid || run.processGroupId ||
       run.processStartedAt || run.sessionIdAfter) return false;
   const cancellation = run.resultJson?.startupCancellation as Record<string, unknown> | undefined;
-  // Older builds did not retain the cancellation fence. Their immutable
+  // Older builds could omit the cancellation fence or its unwind marker. Their immutable
   // native-adapter claim and unresolved preparation stage still prove that
   // provider dispatch did not begin. Require an expired owner from another
   // server boot; neither a missing PID nor mutable agent settings is proof.
   const historicalBeforeSelection = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     run.executionStage === "preparing" && !run.nativeIssueId && !run.nativeSessionId && !coordinator &&
     claimedAdapterType(run) === "paperclip_runner" && run.errorCode === "operator_interrupted" &&
-    run.resultJson === null && Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
+    (run.resultJson === null || cancellation?.beforeNativeSelection === true) &&
+    Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
       run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
   const beforeSelection = historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
