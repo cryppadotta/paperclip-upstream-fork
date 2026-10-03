@@ -628,7 +628,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(source).toMatchObject({ status: "cancelled", runtimeMode: "legacy", resultJson: null });
   });
 
-  it("resumes saved input after historical native preparation expires across restart exactly once", async () => {
+  it.each(["fresh", "earlier_delivered", "last_delivered"])("resumes saved input after historical native preparation expires across restart exactly once (%s)", async kind => {
     const f = await seedHistoricalCancelledPreparation();
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
@@ -638,6 +638,18 @@ const support = await getEmbeddedPostgresTestSupport();
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
     expect(waiting.status).toBe("deferred_issue_execution");
+    if (kind !== "fresh") {
+      const deliveredId = randomUUID();
+      await db.insert(issueComments).values({ id: deliveredId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "another-author", body: "Already handled",
+        createdAt: new Date(kind === "earlier_delivered" ? "2026-09-11T10:30:00Z" : "2026-09-11T11:30:00Z") });
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+        startedAt: new Date("2026-09-11T12:00:00Z"), finishedAt: new Date("2026-09-11T12:01:00Z"),
+        contextSnapshot: { issueId: f.issueId, wakeCommentIds: [deliveredId] } });
+      await db.update(agentWakeupRequests).set({ payload: { ...waiting.payload,
+        _paperclipWakeContext: { wakeCommentIds: kind === "earlier_delivered" ? [deliveredId, f.commentId] : [f.commentId, deliveredId] } },
+      }).where(eq(agentWakeupRequests.id, waiting.id));
+    }
     await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(0) })
       .where(eq(heartbeatRuns.id, f.sourceRunId));
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
