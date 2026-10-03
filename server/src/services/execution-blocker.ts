@@ -1,3 +1,4 @@
+import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
@@ -79,13 +80,15 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
         or consumed.context_snapshot->'wakeCommentIds' @> jsonb_build_array(${issueComments.id}::text)))`,
   )) : [];
   const cancellation = run ? readRunCancellation(run.resultJson) : null;
-  const runError = cancellation?.reason ?? (run?.status === "cancelled"
-    ? "Execution was cancelled; its source was not recorded."
-    : run?.error);
   const eligibleContinuation = Boolean(run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && canContinueCancelledRun(run));
   const canRetry = Boolean(run && conversation?.assigneeAgentId === run.agentId &&
     !["done", "cancelled"].includes(conversation.status) && await canRetryStoppedRun(db, run));
+  const runError = run && canRetry && isPreDispatchReviewWait(run)
+    ? "Waiting for review; this continuation never started."
+    : cancellation?.reason ?? (run?.status === "cancelled"
+      ? "Execution was cancelled; its source was not recorded."
+      : run?.error);
   const [chatBinding] = eligibleContinuation || canRetry ? await db.select({
     state: chatConversations.state, endpointStatus: chatEndpoints.status,
     connectionStatus: toolConnections.status, connectionEnabled: toolConnections.enabled,
@@ -107,7 +110,7 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     } else {
       nextAction = "Send a new chat message to continue this conversation.";
     }
-  } else if (run?.status === "cancelled" && !eligibleContinuation && action.cause === "legacy_execution_requires_reconciliation") {
+  } else if (run?.status === "cancelled" && !eligibleContinuation && !canRetry && action.cause === "legacy_execution_requires_reconciliation") {
     nextAction += " Inspect the run before sending a new message to request continuation.";
   }
 

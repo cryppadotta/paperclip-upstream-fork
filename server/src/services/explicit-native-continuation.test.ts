@@ -625,7 +625,9 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it.each(["message", "retry"])("recovers a pre-dispatch review wait through an explicit %s", async kind => {
     const f = await seedCancelledReviewWait();
-    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ canRetry: true });
+    const notice = await getExecutionBlocker(db, f.companyId, f.issueId);
+    expect(notice).toMatchObject({ canRetry: true, runError: "Waiting for review; this continuation never started." });
+    expect(notice?.nextAction).not.toContain("Inspect the run before sending a new message");
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const successor = await heartbeatService(db).wakeup(f.agentId, { source: kind === "retry" ? "on_demand" : "automation", triggerDetail: "manual",
       reason: kind === "retry" ? "retry_failed_run" : "issue_commented",
