@@ -235,7 +235,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       : href)
     : href;
   const expandable = !compact && !mediaPath && !actionHref;
-  const summary = workProduct.summary?.trim();
+  const summary = workProduct.type === "branch" && !href ? null : workProduct.summary?.trim();
   const openGallery = () => {
     if (mediaPath && !openIssueGallery?.(mediaPath)) setGalleryOpen(true);
   };
@@ -282,7 +282,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
         {!compact && summary ? <p className={cn("mt-1 text-xs text-muted-foreground", detailsOpen ? "whitespace-pre-wrap break-words" : "line-clamp-2")}>{summary}</p> : null}
         {expandable && detailsOpen ? (
           <div className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
-            <p>{workProduct.type === "branch" ? "No remote link was provided for this branch." : "No link was provided for this work product."}</p>
+            {workProduct.type !== "branch" ? <p>No link was provided for this work product.</p> : null}
             <p>{workProduct.provider} · {workProduct.status.replaceAll("_", " ")} · Updated {formatDateTime(workProduct.updatedAt)}</p>
           </div>
         ) : null}

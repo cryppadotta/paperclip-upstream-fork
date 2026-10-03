@@ -325,7 +325,8 @@ export const BranchWithoutRemoteLink: Story = {
     </div>
   ),
   play: async ({ canvasElement }) => {
-    expect(canvasElement.textContent).toContain("Uncommitted implementation changes");
+    expect(canvasElement.textContent).toContain("Branch · no remote link");
+    expect(canvasElement.textContent).not.toContain("Uncommitted implementation changes");
     expect(canvasElement.querySelector('button[aria-label^="Show details:"]')).not.toBeNull();
   },
 };
@@ -335,6 +336,7 @@ export const BranchDetailsExpanded: Story = {
   play: async ({ canvasElement, userEvent }) => {
     const button = canvasElement.querySelector<HTMLButtonElement>('button[aria-label^="Show details:"]');
     await userEvent.click(button!);
-    expect(canvasElement.textContent).toContain("No remote link was provided for this branch.");
+    expect(canvasElement.textContent).toContain("git · active · Updated");
+    expect(canvasElement.textContent).not.toContain("Uncommitted implementation changes");
   },
 };
