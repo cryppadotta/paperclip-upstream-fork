@@ -65,6 +65,18 @@ describe("task titles", () => {
     await expect(issueService(server.db).create(f.companyId, {
       description: "![Error dialog](https://example.com/error.png)",
     })).resolves.toMatchObject({ title: "Error dialog", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![](https://example.com/image.png)",
+    })).resolves.toMatchObject({ title: "Image", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![Map](https://example.com/Map_(1).png)",
+    })).resolves.toMatchObject({ title: "Map", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "Fix `set_task_title`",
+    })).resolves.toMatchObject({ title: "Fix set_task_title", titleNeedsGeneration: true });
+    await expect(issueService(server.db).create(f.companyId, {
+      description: "![Screenshot][img]\n\n[img]: https://example.com/image.png\n\nFix login",
+    })).resolves.toMatchObject({ title: "Fix login", titleNeedsGeneration: true });
   });
 
   it("creates prompt-only children and still accepts explicit child titles", async () => {

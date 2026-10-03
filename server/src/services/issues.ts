@@ -9,6 +9,7 @@ import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
+import { markdownToPlainText, parseMarkdown } from "chat";
 import {
   and,
   asc,
@@ -6622,21 +6623,32 @@ export function issueService(db: Db) {
   const treeControlSvc = issueTreeControlService(db);
 
   function provisionalTitleFromDescription(description: string) {
-    const clean = (imageReplacement: string) =>
-      description
-        .replace(/!\[([^\]]*)\]\([^\n)]*\)/g, imageReplacement)
-        .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, imageReplacement)
-        .replace(/\[([^\]]+)\]\([^\n)]*\)/g, "$1")
-        .replace(/\[([^\]]+)\]\[[^\]]*\]/g, "$1")
-        .replace(/<https?:\/\/[^>]+>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/```(?:[^\n]*)?\n?/g, " ")
-        .replace(/`([^`]+)`/g, "$1")
-        .replace(/^\s{0,3}(?:#{1,6}\s+|>\s*|[-+*]\s+)/gm, "")
-        .replace(/[*_~]+/g, "")
-        .trim()
-        .replace(/\s+/g, " ");
-    return (clean(" ") || clean("$1")).slice(0, 120);
+    type MarkdownNode = {
+      type: string;
+      alt?: string | null;
+      children?: MarkdownNode[];
+      position?: { start: { offset?: number }; end: { offset?: number } };
+    };
+    const imageRanges: Array<{ start: number; end: number }> = [];
+    const imageAlts: string[] = [];
+    const visit = (node: MarkdownNode) => {
+      if (node.type === "image" || node.type === "imageReference") {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        if (start !== undefined && end !== undefined) imageRanges.push({ start, end });
+        if (node.alt?.trim()) imageAlts.push(node.alt.trim());
+      }
+      node.children?.forEach(visit);
+    };
+    visit(parseMarkdown(description) as MarkdownNode);
+    const withoutImages = imageRanges
+      .sort((a, b) => b.start - a.start)
+      .reduce((text, range) => `${text.slice(0, range.start)} ${text.slice(range.end)}`, description);
+    const plainText = markdownToPlainText(withoutImages).trim().replace(/\s+/g, " ");
+    const fallback = imageRanges.length > 0
+      ? imageAlts.join(" ") || "Image"
+      : description.trim().replace(/\s+/g, " ");
+    return (plainText || fallback).slice(0, 120);
   }
 
   function normalizeCreateIssueTitle(title: string) {
