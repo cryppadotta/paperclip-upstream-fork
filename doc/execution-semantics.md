@@ -1156,6 +1156,13 @@ controller, lease, or result). It also checks for contradictory launch/process
 evidence and verifies local cleanup or exact remote termination receipts. The
 preparer must have finished or its startup lease must have expired. A missing
 PID alone does not establish this proof.
+For older interrupted preparation rows without a cancellation receipt, the
+immutable Paperclip Runner adapter claim, unresolved runtime, and preparing stage
+must agree. The old controller must belong to another server boot and its lease
+must have expired. No native identity, coordinator, result, adapter invocation,
+provider event, or process-launch evidence may exist. Environment cleanup still
+requires the same receipts. This historical proof permits explicit Retry or a
+newer saved user message; it does not replay the cancelled input.
 
 The existing bounded saved-message worker rechecks this proof after restart.
 Admission atomically settles an unclaimed coordinator and admits one fresh turn,

@@ -4,6 +4,7 @@ import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
@@ -27,7 +28,16 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   if (run.status !== "cancelled" || !run.finishedAt || run.processPid || run.processGroupId ||
       run.processStartedAt || run.sessionIdAfter) return false;
   const cancellation = run.resultJson?.startupCancellation as Record<string, unknown> | undefined;
-  const beforeSelection = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+  // Older builds did not retain the cancellation fence. Their immutable
+  // native-adapter claim and unresolved preparation stage still prove that
+  // provider dispatch did not begin. Require an expired owner from another
+  // server boot; neither a missing PID nor mutable agent settings is proof.
+  const historicalBeforeSelection = run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+    run.executionStage === "preparing" && !run.nativeIssueId && !run.nativeSessionId && !coordinator &&
+    claimedAdapterType(run) === "paperclip_runner" && run.errorCode === "operator_interrupted" &&
+    run.resultJson === null && Boolean(run.controllerBootId && run.controllerBootId !== legacyControllerBootId &&
+      run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt <= new Date());
+  const beforeSelection = historicalBeforeSelection || run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
     !run.nativeSessionId && !coordinator && claimedAdapterType(run) === "paperclip_runner" &&
     cancellation?.beforeNativeSelection === true;
   const neverClaimed = run.runtimeMode === "native" && coordinator &&
@@ -42,7 +52,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
   ));
-  if ((!settled && leases.length === 0) || leases.some(lease =>
+  if ((!settled && leases.length === 0 && !historicalBeforeSelection) || leases.some(lease =>
     lease.provider === "local"
       ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
       : !hasRemoteTerminationReceipt(lease))) return false;
@@ -51,7 +61,7 @@ export async function isCancelledNativeStartup(db: Db, run: Run, coordinator: Co
   const [execution] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
     eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
     or(isNotNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED,
         "harness.ready", "session.started", "session.resumed", "session.updated", "turn.started",
         "provider.event", "provider.rpc_result", "tool.execution.started"])),
   )).limit(1);
