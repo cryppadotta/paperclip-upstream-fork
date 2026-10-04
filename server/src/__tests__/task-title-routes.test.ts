@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import * as chat from "chat";
+
+vi.mock("chat", async importOriginal => {
+  const original = await importOriginal<typeof import("chat")>();
+  return {
+    ...original,
+    parseMarkdown: vi.fn(original.parseMarkdown),
+    markdownToPlainText: vi.fn(original.markdownToPlainText),
+  };
+});
 import { and, eq } from "drizzle-orm";
 import { activityLog, externalObjectMentions, heartbeatRuns, issues } from "@paperclipai/db";
 import { createChildIssueSchema, createIssueSchema, setIssueTitleSchema } from "@paperclipai/shared";
@@ -77,6 +87,22 @@ describe("task titles", () => {
     await expect(issueService(server.db).create(f.companyId, {
       description: "![Screenshot][img]\n\n[img]: https://example.com/image.png\n\nFix login",
     })).resolves.toMatchObject({ title: "Fix login", titleNeedsGeneration: true });
+  });
+
+  it.each(["parseMarkdown", "markdownToPlainText"] as const)("falls back to a simple title if %s throws", async parser => {
+    const f = await server.fixture();
+    const description = `  Fix the login flow after a failed parser\n${"long ".repeat(30)}`;
+    vi.mocked(chat[parser]).mockImplementationOnce(() => { throw new Error("parser failed"); });
+    try {
+      const result = await issueService(server.db).create(f.companyId, { description });
+      expect(result).toMatchObject({
+        title: description.trim().replace(/\s+/g, " ").slice(0, 120),
+        description,
+        titleNeedsGeneration: true,
+      });
+    } finally {
+      vi.mocked(chat[parser]).mockClear();
+    }
   });
 
   it("creates prompt-only children and still accepts explicit child titles", async () => {
