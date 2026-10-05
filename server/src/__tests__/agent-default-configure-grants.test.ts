@@ -71,6 +71,12 @@ describeDatabase("new agent configuration defaults", () => {
     });
     expect(decision).toMatchObject({ allowed: true, reason: "allow_direct_change" });
 
+    // A later ordinary self-update must not recreate a grant removed by an operator.
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, standard.id));
+    await agentService(db).update(standard.id, { title: "Updated own title" });
+    expect(await db.select().from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, standard.id))).toEqual([]);
+
     await agentService(db).remove(peer.id);
     expect(await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.principalId, peer.id))).toEqual([]);
