@@ -111,7 +111,7 @@ describeDatabase("new agent configuration defaults", () => {
       scope: { agentIds: [rows[0]!.id] },
     });
 
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0297_agent_configure_default_grants.sql", import.meta.url), "utf8");
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0298_agent_configure_default_grants.sql", import.meta.url), "utf8");
     await db.execute(sql.raw(migration));
     await db.execute(sql.raw(migration));
     const grants = await db.select().from(principalPermissionGrants)

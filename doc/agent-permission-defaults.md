@@ -6,7 +6,7 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 | Capability | Source and limit |
 | --- | --- |
-| `agents:configure` | A direct, company-scoped grant is added when a standard agent is created. Migration 0297 adds it once to eligible existing agents. This permits peer agent configuration, subject to protected-change and responsible-user checks. An administrator can remove the grant later. |
+| `agents:configure` | A direct, company-scoped grant is added when a standard agent is created. Migration 0298 adds it once to eligible existing agents. This permits peer agent configuration, subject to protected-change and responsible-user checks. An administrator can remove the grant later. |
 | Agent creation | New standard agents have `canCreateAgents: true`. This is a legacy authorization path for `agents:create`, not an `agents:create` grant row. Stored legacy records without the flag stay closed. |
 | Skill creation setting | `canCreateSkills: true` is the normalized setting. Protected skill configuration changes still require a direct `skills:create` grant or a consented `skills:suggest-changes` grant. |
 | Same-company visibility and work | Standard agents can read same-company agents, projects, issues, and company scope; read and manage decision queues; read runtime and secret metadata where the route allows it; comment or mutate their own or unassigned issues; and assign tasks under the assignment policy. The route and resource checks still apply. |
