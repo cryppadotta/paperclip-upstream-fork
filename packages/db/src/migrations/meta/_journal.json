@@ -2077,8 +2077,15 @@
     {
       "idx": 298,
       "version": "7",
-      "when": 1791241882287,
-      "tag": "0298_agent_configure_default_grants",
+      "when": 1791241297512,
+      "tag": "0298_connection_agent_instructions",
+      "breakpoints": true
+    },
+    {
+      "idx": 299,
+      "version": "7",
+      "when": 1791242525967,
+      "tag": "0299_agent_configure_default_grants",
       "breakpoints": true
     }
   ]

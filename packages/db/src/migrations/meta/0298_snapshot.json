@@ -1,5 +1,5 @@
 {
-  "id": "1e20ded5-32ec-4359-907f-62aee2cb2092",
+  "id": "792dfb38-10bf-4147-a541-5c52ce0e80b6",
   "prevId": "ed75c75c-748b-4420-8a68-ec5b34394e75",
   "version": "7",
   "dialect": "postgresql",
@@ -45215,6 +45215,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "agent_instructions": {
+          "name": "agent_instructions",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "config": {
           "name": "config",
