@@ -4376,7 +4376,7 @@ export function agentRoutes(
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
     assertNoAgentProcessAdapterMutation(
       req,
-      rollbackAdapterType === "process" || existing.adapterType === "process" ? "process" : rollbackAdapterType,
+      rollbackAdapterType,
       true,
     );
     assertExternalInstructionsAdmin(req, existing);

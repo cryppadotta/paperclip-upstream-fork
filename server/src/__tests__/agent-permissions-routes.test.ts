@@ -985,6 +985,30 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
   });
 
+  it("allows an agent to restore a non-process revision for a process peer", async () => {
+    const revisionId = "33333333-3333-4333-8333-333333333333";
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: revisionId,
+      afterConfig: { adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {} },
+    });
+    mockAgentService.rollbackConfigRevision.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "codex_local",
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/${revisionId}/rollback`));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalledOnce();
+  });
+
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
     const app = await createApp({
       type: "agent",
