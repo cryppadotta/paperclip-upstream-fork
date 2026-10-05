@@ -592,7 +592,7 @@ conversation lifecycles, and protection against replaying superseded requests.
 | Action | Board | Agent |
 |---|---|---|
 | Create company | yes | no |
-| Hire/create agent | yes (direct) | request via approval |
+| Hire/create agent | yes (direct) | new standard agents: direct via `canCreateAgents`; low-trust policy or approval gates can restrict |
 | Pause/resume agent | yes | pause: no; resume: direct `agents:configure` grant only |
 | Create/update task | yes | yes |
 | Force reassign task | yes | limited |
@@ -610,6 +610,11 @@ agent actor calling `POST /agents/:agentId/resume` must pass the protected
 access does not bypass that decision, and `agents:suggest-changes` alone cannot
 apply the lifecycle change. Pause, clear-error, terminate, approval, and
 key-management routes remain board-only.
+
+An ordinary standard agent receives a direct `agents:configure` grant on
+creation; eligible existing agents receive it through a one-time backfill.
+Low-trust and managed built-in agents do not receive this default. See
+[agent permission defaults](agent-permission-defaults.md) for the full inventory.
 
 ### 9.3.1 Shared default-open issue writes
 

@@ -2066,6 +2066,13 @@
       "when": 1791028244412,
       "tag": "0296_stiff_thaddeus_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 297,
+      "version": "7",
+      "when": 1791200000000,
+      "tag": "0297_agent_configure_default_grants",
+      "breakpoints": true
     }
   ]
 }
