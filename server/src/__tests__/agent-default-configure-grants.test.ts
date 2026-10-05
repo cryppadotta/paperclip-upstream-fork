@@ -7,6 +7,8 @@ import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
 import { authorizationService } from "../services/authorization.js";
+import { accessService } from "../services/access.js";
+import { agentJoinGrantsFromDefaults } from "../services/invite-grants.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -147,6 +149,34 @@ describeDatabase("new agent configuration defaults", () => {
       .toEqual([expect.objectContaining({ principalId: pending.id, permissionKey: "agents:configure" })]);
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+    await db.delete(agents).where(eq(agents.companyId, companyId));
+    await db.delete(companies).where(eq(companies.id, companyId));
+  });
+
+  it("keeps configuration access when invitation approval replaces a new agent's grants", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Invited permission default",
+      issuePrefix: `PI${companyId.slice(0, 6).toUpperCase()}`,
+    });
+    const invited = await agentService(db).create(companyId, {
+      name: "Invited agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+    });
+    await accessService(db).ensureMembership(companyId, "agent", invited.id, "member", "active");
+    await accessService(db).setPrincipalGrants(
+      companyId, "agent", invited.id, agentJoinGrantsFromDefaults(null), null,
+    );
+    const grants = await db.select().from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, invited.id));
+    expect(grants.map((grant) => grant.permissionKey).sort()).toEqual(["agents:configure", "tasks:assign"]);
+
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+    await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
   });

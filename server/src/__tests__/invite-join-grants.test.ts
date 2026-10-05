@@ -10,8 +10,12 @@ import {
 } from "../services/company-member-roles.js";
 
 describe("agentJoinGrantsFromDefaults", () => {
-  it("adds tasks:assign when invite defaults do not specify agent grants", () => {
+  it("adds agent configuration and task assignment when invite defaults do not specify grants", () => {
     expect(agentJoinGrantsFromDefaults(null)).toEqual([
+      {
+        permissionKey: "agents:configure",
+        scope: null,
+      },
       {
         permissionKey: "tasks:assign",
         scope: null,
@@ -19,7 +23,7 @@ describe("agentJoinGrantsFromDefaults", () => {
     ]);
   });
 
-  it("preserves invite agent grants and appends tasks:assign", () => {
+  it("preserves invite agent grants and appends the missing defaults", () => {
     expect(
       agentJoinGrantsFromDefaults({
         agent: {
@@ -34,6 +38,10 @@ describe("agentJoinGrantsFromDefaults", () => {
     ).toEqual([
       {
         permissionKey: "agents:create",
+        scope: null,
+      },
+      {
+        permissionKey: "agents:configure",
         scope: null,
       },
       {
@@ -60,6 +68,19 @@ describe("agentJoinGrantsFromDefaults", () => {
         permissionKey: "tasks:assign",
         scope: { projectId: "project-1" },
       },
+      {
+        permissionKey: "agents:configure",
+        scope: null,
+      },
+    ]);
+  });
+
+  it("preserves an explicit scoped agent configuration grant", () => {
+    expect(agentJoinGrantsFromDefaults({
+      agent: { grants: [{ permissionKey: "agents:configure", scope: { agentIds: ["agent-1"] } }] },
+    })).toEqual([
+      { permissionKey: "agents:configure", scope: { agentIds: ["agent-1"] } },
+      { permissionKey: "tasks:assign", scope: null },
     ]);
   });
 });

@@ -44,16 +44,15 @@ export function agentJoinGrantsFromDefaults(
   scope: Record<string, unknown> | null;
 }> {
   const grants = grantsFromDefaults(defaultsPayload, "agent");
-  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
-    return grants;
+  // Invitation approval replaces the whole grant set after agent creation.
+  // Retain the creation default, but never widen an explicitly scoped grant.
+  if (!grants.some((grant) => grant.permissionKey === "agents:configure")) {
+    grants.push({ permissionKey: "agents:configure", scope: null });
   }
-  return [
-    ...grants,
-    {
-      permissionKey: "tasks:assign",
-      scope: null,
-    },
-  ];
+  if (!grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    grants.push({ permissionKey: "tasks:assign", scope: null });
+  }
+  return grants;
 }
 
 export function humanJoinGrantsFromDefaults(

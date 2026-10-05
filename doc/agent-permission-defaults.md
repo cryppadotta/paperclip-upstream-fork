@@ -20,6 +20,6 @@ The direct `agents:configure` default does not grant company administration, use
 
 ## Exceptions and rollout
 
-The new direct grant is withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged configuration even if an agent has a grant. Existing pending and terminated agents are not backfilled. A standard pending agent receives the grant when approved and activated. Existing scoped grants are preserved by the backfill. A grant removed after migration stays removed; startup does not reapply it.
+The new direct grant is withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged configuration even if an agent has a grant. Existing pending and terminated agents are not backfilled. A standard pending agent receives the grant when approved and activated. Invitation approval retains the grant when it replaces a new agent's grant set and preserves an explicitly scoped configuration grant. Existing scoped grants are preserved by the backfill. A grant removed after migration stays removed; startup does not reapply it.
 
 The standard agent configuration default supports the agent setup in the linked runner task. Enabling a warm runtime can still depend on the target agent's adapter and runtime configuration, provider availability, and any responsible-user or approval checks.
