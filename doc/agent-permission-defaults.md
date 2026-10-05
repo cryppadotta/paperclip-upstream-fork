@@ -18,7 +18,7 @@ These permission keys have no blanket standard-agent grant: `agents:create` (the
 
 The direct `agents:configure` default does not grant company administration, user permission management, tool administration, cross-company access, or the power to change another active issue checkout. The responsible user's permissions and the normal approval gates still apply.
 
-Agent-authenticated callers cannot set process adapter configuration or switch an existing agent onto the process adapter. For local adapters, they cannot change host command, argument, working-directory, environment, or filesystem sandbox command settings. The same limits apply to creation, hiring, adapter switches, and configuration rollback. They also cannot restore host-executed workspace commands through a configuration revision. This keeps host-executed commands under board control while standard agents configure other supported agent settings.
+Agent-authenticated callers cannot set process adapter configuration or switch an existing agent onto the process adapter. For local adapters, they cannot change host command, argument, working-directory, arbitrary environment, or filesystem sandbox command settings. Provider credential secret references on known environment keys remain allowed so agents can hire peers with their own credentials. The same limits apply to creation, hiring, adapter switches, and configuration rollback. They also cannot restore host-executed workspace commands through a configuration revision. This keeps host-executed commands under board control while standard agents configure other supported agent settings.
 
 ## Exceptions and rollout
 

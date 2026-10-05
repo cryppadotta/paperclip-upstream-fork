@@ -2927,6 +2927,24 @@ export function agentRoutes(
     "filesystemSandboxCommand",
   ] as const;
 
+  const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
+    ...INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS,
+    gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    kimi_local: ["KIMI_MODEL_API_KEY"],
+  };
+
+  function containsOnlyLocalAdapterCredentialRefs(
+    adapterType: string,
+    env: unknown,
+  ): boolean {
+    const envRecord = asRecord(env);
+    if (!envRecord) return false;
+    const allowedKeys = LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS[adapterType] ?? [];
+    return Object.entries(envRecord).every(([key, value]) =>
+      allowedKeys.includes(key) && isInheritableCredentialReference(value),
+    );
+  }
+
   function assertNoAgentLocalAdapterHostCommandMutation(
     req: Request,
     adapterType: string,
@@ -2934,7 +2952,8 @@ export function agentRoutes(
   ) {
     if (req.actor.type !== "agent" || !adapterType.endsWith("_local")) return;
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
-      adapterConfig[key] !== undefined,
+      adapterConfig[key] !== undefined &&
+      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(adapterType, adapterConfig.env)),
     );
     if (changedKeys.length === 0) return;
     throw forbidden(

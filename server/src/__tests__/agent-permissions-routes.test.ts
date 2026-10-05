@@ -993,6 +993,17 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.update).toHaveBeenCalledOnce();
   });
 
+  it("allows a provider credential reference without allowing arbitrary environment variables", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType: "claude_local" });
+    const app = await createApp({ type: "agent", agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId, source: "agent_key", runId: "run-1" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig: { env: { ANTHROPIC_API_KEY: { type: "secret_ref", secretId: "33333333-3333-4333-8333-333333333333" } } } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledOnce();
+  });
+
   it("blocks an agent from activating inherited host settings by switching onto a local adapter", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
