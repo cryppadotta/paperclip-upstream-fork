@@ -918,6 +918,73 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["command", { command: "sh" }],
+    ["arguments", { args: ["-c", "id"] }],
+    ["environment", { env: { PATH: "/tmp" } }],
+  ])("blocks agent-authenticated process adapter %s updates", async (_label, adapterConfig) => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterConfig }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("host-executed process adapters");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks an agent from switching a peer onto the process adapter", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType: "codex_local" });
+    const app = await createApp({
+      type: "agent",
+      agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ adapterType: "process" }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("host-executed process adapters");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["create", `/api/companies/${companyId}/agents`],
+    ["hire", `/api/companies/${companyId}/agent-hires`],
+  ])("blocks agent-authenticated process adapter commands on %s", async (_label, path) => {
+    const app = await createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(path)
+      .send({ name: "Host process", role: "engineer", adapterType: "process", adapterConfig: { command: "sh" } }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("host-executed process adapters");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("blocks agent-authenticated rollback into process adapter configuration", async () => {
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "33333333-3333-4333-8333-333333333333",
+      afterConfig: { adapterType: "process", adapterConfig: { command: "sh" }, runtimeConfig: {} },
+    });
+    const app = await createApp({ type: "agent", agentId, companyId, source: "agent_key", runId: "run-1" });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/33333333-3333-4333-8333-333333333333/rollback`));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("host-executed process adapters");
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+
   it("blocks agent-authenticated self-updates that set instructions bundle roots", async () => {
     const app = await createApp({
       type: "agent",

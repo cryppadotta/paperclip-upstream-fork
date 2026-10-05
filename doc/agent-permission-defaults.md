@@ -18,6 +18,8 @@ These permission keys have no blanket standard-agent grant: `agents:create` (the
 
 The direct `agents:configure` default does not grant company administration, user permission management, tool administration, cross-company access, or the power to change another active issue checkout. The responsible user's permissions and the normal approval gates still apply.
 
+Agent-authenticated callers cannot set process adapter configuration or switch an existing agent onto the process adapter. They also cannot roll back into process adapter configuration. This keeps host-executed commands under board control while standard agents configure other supported agent settings.
+
 ## Exceptions and rollout
 
 The new direct grant is withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged configuration even if an agent has a grant. Existing pending and terminated agents are not backfilled. A standard pending agent receives the grant when approved and activated. Invitation approval retains the grant when it replaces a new agent's grant set and preserves an explicitly scoped configuration grant. Existing scoped grants are preserved by the backfill. A grant removed after migration stays removed; startup does not reapply it.
