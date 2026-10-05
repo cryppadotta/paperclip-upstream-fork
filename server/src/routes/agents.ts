@@ -4374,6 +4374,7 @@ export function agentRoutes(
       await assertSelectableAdapterType(rollbackAdapterType);
     }
     const rollbackAdapterConfig = asRecord(rollbackConfig.adapterConfig) ?? {};
+    assertNoAgentAdapterConfigMutation(req, rollbackAdapterConfig);
     assertNoAgentProcessAdapterMutation(
       req,
       rollbackAdapterType,

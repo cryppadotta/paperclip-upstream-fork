@@ -616,7 +616,8 @@ creation; eligible existing agents receive it through a one-time backfill.
 Low-trust and managed built-in agents do not receive this default. See
 [agent permission defaults](agent-permission-defaults.md) for the full inventory.
 Agent-authenticated changes cannot set or restore host-executed process adapter
-configuration, including commands and environment values.
+configuration, including commands and environment values. Agent-authenticated
+rollbacks cannot restore host-executed workspace commands either.
 
 ### 9.3.1 Shared default-open issue writes
 
