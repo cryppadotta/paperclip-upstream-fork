@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
-import { getAppStoreDefinition } from "@paperclipai/shared";
+import { aiConnectionRouterAppDefinition, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { AggregatorAppCatalogEntry } from "@paperclipai/shared/aggregator-app-catalog";
@@ -34,6 +34,10 @@ vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIs
 
 const accountIdentity = vi.hoisted(() => ({ userId: "board-user" as string | null, settled: true, failed: false }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => accountIdentity }));
+
+const poolListMock = vi.hoisted(() => vi.fn());
+const poolRemoveMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: poolListMock, remove: poolRemoveMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -1145,6 +1149,29 @@ describe("Connectors landing page", () => {
         tone: "success",
       }),
     );
+  });
+
+  it("retains the confirmed pool revision when a concurrent edit rejects removal", async () => {
+    const app = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+    listGalleryMock.mockResolvedValue({ apps: [app] });
+    listApplicationsMock.mockResolvedValue({ applications: [application({ name: app.name, metadata: { sourceTemplateKey: app.slug } })] });
+    listConnectionsMock.mockResolvedValue({ connections: [connection({ name: "Research", config: { aiRouter: { pluginKey: "example.pool" } } })] });
+    poolListMock.mockResolvedValue([{ id: "conn-notion", name: "Research", revision: 7 }]);
+    poolRemoveMock.mockRejectedValue(new Error("Pool changed; reload before deleting"));
+    await renderBrowse();
+    await act(() => { container.querySelector<HTMLButtonElement>('button[aria-label="Manage Research connection"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); });
+    await flushReact();
+    await act(() => Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(item => item.textContent?.trim() === "Remove connection")!.click());
+    await flushReact();
+    expect(document.body.textContent).toContain("The connections in this pool are kept.");
+    poolListMock.mockResolvedValue([{ id: "conn-notion", name: "Edited elsewhere", revision: 8 }]);
+    await act(() => Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.trim() === "Remove connection")!.click());
+    await flushReact();
+    expect(poolRemoveMock).toHaveBeenCalledWith("company-1", "conn-notion", 7);
+    expect(poolListMock).toHaveBeenCalledTimes(1);
+    expect(archiveConnectionMock).not.toHaveBeenCalled();
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull();
+    expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ body: "Pool changed; reload before deleting" }));
   });
 
   it("starts each AgentMail Add connection with a distinct setup identity", async () => {

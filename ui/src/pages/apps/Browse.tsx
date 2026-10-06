@@ -4,6 +4,7 @@ import { ExecutorManagementSetup } from "./ExecutorManagementSetup";
 import { ArcadeDiscoverySetup } from "./ArcadeDiscoverySetup";
 import { AggregatorAppManager } from "./AggregatorAppManager";
 import {
+  aiConnectionRouterPluginKey,
   connectionSetupVerbForApp,
   isRetiredComposioConnection,
   RETIRED_COMPOSIO_MESSAGE,
@@ -45,6 +46,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { aiConnectionPoolsApi } from "@/api/ai-connection-pools";
 import { toolsApi } from "@/api/tools";
 import { emailApi } from "@/api/email";
 import { useAccountIdentity } from "@/api/companies-query";
@@ -131,6 +133,8 @@ type ConnectionRemovalTarget = {
   accountName: string;
   providerName: string;
   remainingConnectionCount: number;
+  pool?: boolean;
+  poolRevision?: number;
 } & ({ kind: "chat"; provider: ChatProvider } | { kind?: undefined });
 
 // Temporary, page-only hold until Google OAuth verification is approved.
@@ -172,6 +176,7 @@ function chatConnectHref(
 
 function connectHrefFor(entry: AppGalleryDisplayEntry): string | null {
   const slug = appDefinitionSlug(entry);
+  if (entry.aiConnectionRouter) return appSourceConnectHref(slug);
   const definition = getAppStoreDefinition(slug);
   return appSupportsToolCatalogSetup(definition)
     ? appSourceConnectHref(slug)
@@ -252,6 +257,7 @@ function connectorAction(
   href: string | null;
   title?: string;
 } {
+  if (row.entry?.aiConnectionRouter) return { label: "Add connection pool", href: row.entry.availability?.available === false ? null : connectHrefFor(row.entry), title: row.entry.availability?.reason };
   if (row.aggregatorApp && isInstalled(row)) return { label: "Manage", href: null };
   const applicationId = row.applications[0]?.id ?? null;
   const chatHref = (row.slug === "agentmail" || chatConnectorsEnabled)
@@ -314,7 +320,7 @@ function accountActionHref(
  * surface. Connected providers sort first and expand in place to show every
  * account; unconnected providers retain the same catalog setup flows.
  */
-export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
+export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" && !aiConnectionRouterPluginKey(connection) ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
   const navigate = useNavigate();
   const preselectedChatAgentId =
     typeof window === "undefined"
@@ -418,6 +424,9 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         } else {
           await chatEndpointsApi.setup(target.id, { action: "remove" });
         }
+      } else if (target.pool) {
+        if (!target.poolRevision) throw new Error("Open the confirmation again before removing this pool.");
+        await aiConnectionPoolsApi.remove(selectedCompanyId!, target.id, target.poolRevision);
       } else {
         await toolsApi.archiveConnection(target.id);
       }
@@ -439,7 +448,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
       pushToast({
         title: "Connection removed",
         body:
-          target.kind === "chat"
+          target.pool ? "The connections in the pool are kept." : target.kind === "chat"
             ? `${target.providerName} is disconnected. Existing Paperclip tasks remain available.`
             : target.remainingConnectionCount > 0
             ? `${target.providerName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
@@ -455,9 +464,18 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
         tone: "error",
       }),
   });
-  function requestConnectionRemoval(target: ConnectionRemovalTarget) {
+  async function requestConnectionRemoval(target: ConnectionRemovalTarget) {
     removeConnection.reset();
-    setConnectionToRemove(target);
+    if (!target.pool) { setConnectionToRemove(target); return; }
+    try {
+      const pool = (await aiConnectionPoolsApi.list(selectedCompanyId!)).find(pool => pool.id === target.id);
+      if (!pool) throw new Error("This connection pool is no longer available.");
+      // Capture the revision when presenting the confirmation. Never replace
+      // it at submission time: concurrent edits must invalidate this consent.
+      setConnectionToRemove({ ...target, accountName: pool.name, poolRevision: pool.revision });
+    } catch (error) {
+      pushToast({ title: "Couldn't open the connection pool", body: error instanceof Error ? error.message : "Please try again.", tone: "error" });
+    }
   }
 
   const gallery = (
@@ -889,7 +907,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               userProfileById={userProfileById}
               connectionById={connectionById}
               onNavigate={navigate}
-              onRequestRemove={requestConnectionRemoval}
+              onRequestRemove={target => void requestConnectionRemoval(target)}
               preselectedAgentId={preselectedChatAgentId}
               chatConnectorsEnabled={chatConnectorsEnabled}
               onConnectAggregator={connectAggregator}
@@ -939,7 +957,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               Remove {connectionToRemove?.accountName ?? "this"} connection?
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {connectionToRemove && Object.values(AGGREGATOR_NAMES).includes(connectionToRemove.providerName as "Composio")
+              {connectionToRemove?.pool ? "The connections in this pool are kept." : connectionToRemove && Object.values(AGGREGATOR_NAMES).includes(connectionToRemove.providerName as "Composio")
                 ? `This removes the saved ${connectionToRemove.providerName} connection from Paperclip and agents lose access through it. Your apps and accounts remain connected in ${connectionToRemove.providerName}.`
                 : connectionToRemove?.kind === "chat"
                 ? `This connection will stop receiving new work from ${connectionToRemove.providerName}. Existing Paperclip tasks and conversation history remain available. This does not delete the app, bot, or account in ${connectionToRemove.providerName}.`
@@ -1106,6 +1124,7 @@ export function ConnectorCard({
                 );
                 onRequestRemove({
                   id: connection.id,
+                  pool: Boolean(aiConnectionRouterPluginKey(connection)),
                   accountName,
                   providerName: row.name,
                   remainingConnectionCount: row.connections.filter(

@@ -6,7 +6,7 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 | Capability | Source and limit |
 | --- | --- |
-| Agent configuration and suggestions | New standard agents receive direct, company-scoped `agents:configure` and `agents:suggest-changes` grants. Migration 0299 adds only `agents:configure` to eligible existing agents. Protected-change and responsible-user checks still apply. |
+| Agent configuration and suggestions | New standard agents receive direct, company-scoped `agents:configure` and `agents:suggest-changes` grants. Migration 0300 adds only `agents:configure` to eligible existing agents. Protected-change and responsible-user checks still apply. |
 | Skill changes | New standard agents receive direct `skills:create` and `skills:suggest-changes` grants. |
 | Tool access and management | New standard agents receive `tools:manage_connections`, `tools:manage_profiles`, `tools:view_audit`, `tools:use`, and `tools:manage_runtime` grants. Tool, connection, profile, and runtime policy checks still apply. |
 | Audit and inbox | New standard agents receive `audit:view_agent_actions` and `inbox:manage` grants. |
@@ -26,6 +26,6 @@ Agent-authenticated callers cannot set process adapter configuration or switch a
 
 ## Exceptions and rollout
 
-The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. Existing pending and terminated agents are not backfilled by migration 0299. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped `agents:configure` grants are preserved by the backfill. A grant removed after migration stays removed; startup does not reapply it.
+The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. Existing pending and terminated agents are not backfilled by migration 0300. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped `agents:configure` grants are preserved by the backfill. A grant removed after migration stays removed; startup does not reapply it.
 
 The standard agent configuration default supports the agent setup in the linked runner task. Enabling a warm runtime can still depend on the target agent's adapter and runtime configuration, provider availability, and any responsible-user or approval checks.
