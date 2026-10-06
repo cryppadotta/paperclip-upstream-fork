@@ -1,3 +1,4 @@
+import { activeIssueInteractionCondition, TASK_QUESTION_GUIDANCE } from "./issue-question-context.js";
 import { createAgentIdentityRedactor } from "./agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "./agent-identity.js";
 import { buildAgentIdentityEnv } from "@paperclipai/adapter-utils/server-utils";
@@ -8842,6 +8843,7 @@ export function buildPaperclipTaskMarkdown(input: {
     }
   };
   if (issue) {
+    lines.push("", "Task question guidance:", TASK_QUESTION_GUIDANCE);
     lines.push(
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
@@ -13637,6 +13639,7 @@ export function heartbeatService(
                 eq(issueThreadInteractions.companyId, issue.companyId),
                 eq(issueThreadInteractions.issueId, issue.id),
                 eq(issueThreadInteractions.status, "pending"),
+                activeIssueInteractionCondition(),
               ),
             )
             .limit(1)
