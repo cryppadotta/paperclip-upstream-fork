@@ -22,9 +22,9 @@ export function newStandardAgentGrantScope(
   permissionKey: PermissionKey,
   agentId: string,
 ): Record<string, unknown> | null {
-  return permissionKey === "tasks:assign_scope"
-    ? { subtreeRootAgentId: agentId }
-    : null;
+  if (permissionKey === "tasks:assign_scope") return { subtreeRootAgentId: agentId };
+  if (permissionKey === "inbox:manage") return { responsibleUserOnly: true };
+  return null;
 }
 
 export type NormalizedAgentPermissions = Record<string, unknown> & {

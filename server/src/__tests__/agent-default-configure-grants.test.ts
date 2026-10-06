@@ -75,6 +75,8 @@ describeDatabase("new agent configuration defaults", () => {
         .map((grant) => grant.permissionKey).sort()).toEqual(expectedNewAgentGrantKeys);
       expect(grants.find((grant) => grant.principalId === agent.id && grant.permissionKey === "tasks:assign_scope")?.scope)
         .toEqual({ subtreeRootAgentId: agent.id });
+      expect(grants.find((grant) => grant.principalId === agent.id && grant.permissionKey === "inbox:manage")?.scope)
+        .toEqual({ responsibleUserOnly: true });
     }
     for (const agent of [lowTrust, bundled]) {
       expect(grants.filter((grant) => grant.principalId === agent.id)).toEqual([]);
@@ -89,7 +91,7 @@ describeDatabase("new agent configuration defaults", () => {
     });
 
     for (const permissionKey of expectedNewAgentGrantKeys) {
-      if (permissionKey === "tasks:assign_scope") continue; // Requires a structured target scope at authorization time.
+      if (permissionKey === "tasks:assign_scope" || permissionKey === "inbox:manage") continue; // These grants require a target scope or the responsible-user inbox path.
       expect(await accessService(db).hasPermission(companyId, "agent", standard.id, permissionKey)).toBe(true);
     }
     expect(await authorizationService(db).decidePrincipalGrant({
