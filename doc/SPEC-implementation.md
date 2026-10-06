@@ -612,7 +612,7 @@ apply the lifecycle change. Pause, clear-error, terminate, approval, and
 key-management routes remain board-only.
 
 An ordinary standard agent receives a direct `agents:configure` grant on
-creation; eligible existing agents receive it through a one-time backfill.
+creation. Existing agents keep their current permissions; no backfill runs.
 Low-trust and managed built-in agents do not receive this default. See
 [agent permission defaults](agent-permission-defaults.md) for the full inventory.
 Agent-authenticated changes cannot set or restore host-executed process adapter

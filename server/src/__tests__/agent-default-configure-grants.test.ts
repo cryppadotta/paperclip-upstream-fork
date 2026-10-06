@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { agents, companies, companyMemberships, createDb, principalPermissionGrants } from "@paperclipai/db";
 import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -141,7 +140,7 @@ describeDatabase("new agent configuration defaults", () => {
     await db.delete(companies).where(eq(companies.id, companyId));
   });
 
-  it("backfills existing standard agents once without widening restricted or scoped grants", async () => {
+  it("keeps existing agents and their scoped grants unchanged during ordinary updates", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -163,13 +162,18 @@ describeDatabase("new agent configuration defaults", () => {
       scope: { agentIds: [rows[0]!.id] },
     });
 
-    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0300_agent_configure_default_grants.sql", import.meta.url), "utf8");
-    await db.execute(sql.raw(migration));
-    await db.execute(sql.raw(migration));
+    for (const row of rows) {
+      if (row.status === "pending_approval") {
+        await expect(agentService(db).update(row.id, { title: "Updated existing agent" }))
+          .rejects.toThrow("Pending approval agent configuration cannot be changed before board approval");
+      } else {
+        await agentService(db).update(row.id, { title: "Updated existing agent" });
+      }
+    }
     const grants = await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.companyId, companyId));
-    expect(grants.map((grant) => grant.principalId).sort()).toEqual([rows[0]!.id, rows[1]!.id].sort());
-    expect(grants.map((grant) => grant.permissionKey)).toEqual(["agents:configure", "agents:configure"]);
+    expect(grants.map((grant) => grant.principalId).sort()).toEqual([rows[1]!.id]);
+    expect(grants.map((grant) => grant.permissionKey)).toEqual(["agents:configure"]);
     expect(grants.find((grant) => grant.principalId === rows[1]!.id)?.scope).toEqual({ agentIds: [rows[0]!.id] });
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
