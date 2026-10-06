@@ -114,10 +114,11 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       const term = query.trim().toLowerCase();
       if (!term) return allOptions;
       return allOptions.filter((option) => {
+        if (noneAtTop && !option.id) return true;
         const haystack = `${option.label} ${option.searchText ?? ""}`.toLowerCase();
         return haystack.includes(term);
       });
-    }, [allOptions, query]);
+    }, [allOptions, noneAtTop, query]);
 
     const currentOption = options.find((option) => option.id === value) ?? null;
 

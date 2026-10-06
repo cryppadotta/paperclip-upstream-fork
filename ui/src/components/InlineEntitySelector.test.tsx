@@ -383,6 +383,24 @@ describe("InlineEntitySelector", () => {
       "Project One",
     ]);
 
+    const searchInput = document.querySelector<HTMLInputElement>('input[placeholder="Search projects..."]');
+    const nativeInputValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    await act(() => {
+      nativeInputValue?.call(searchInput, "Two");
+      searchInput?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const filteredOptions = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("[data-mobile-entity-picker-list] > button"),
+    );
+    expect(filteredOptions.map((option) => option.textContent)).toEqual([
+      "No project",
+      "Project Two",
+    ]);
+
     act(() => root.unmount());
   });
 
