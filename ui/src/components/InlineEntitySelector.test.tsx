@@ -356,12 +356,12 @@ describe("InlineEntitySelector", () => {
     act(() => {
       root.render(
         <InlineEntitySelector
-          value="project-2"
+          value="project-1"
           options={[
             { id: "project-1", label: "Project One" },
             { id: "project-2", label: "Project Two" },
           ]}
-          recentOptionIds={["project-1"]}
+          recentOptionIds={["project-2"]}
           placeholder="Project"
           noneLabel="No project"
           noneAtTop
@@ -380,8 +380,8 @@ describe("InlineEntitySelector", () => {
     );
     expect(options.map((option) => option.textContent)).toEqual([
       "No project",
-      "Project Two",
       "Project One",
+      "Project Two",
     ]);
 
     const searchInput = document.querySelector<HTMLInputElement>('input[placeholder="Search projects..."]');
