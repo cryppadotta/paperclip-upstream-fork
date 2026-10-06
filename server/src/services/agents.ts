@@ -39,7 +39,7 @@ import {
   syncAgentAdapterEnvBindings,
 } from "./agent-secret-bindings.js";
 import { logActivity } from "./activity-log.js";
-import { normalizeAgentPermissions, permissionsImplyLowTrust } from "./agent-permissions.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope, normalizeAgentPermissions, permissionsImplyLowTrust } from "./agent-permissions.js";
 import { recordAgentStatusEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
@@ -945,16 +945,19 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
-        // New standard agents can configure peers and the agents they hire.
+        // New standard agents receive the standard direct grants at activation.
         // Low-trust and bundled agents keep their explicit, narrower grants.
         if (created.status !== "pending_approval" && !permissionsImplyLowTrust(normalizedPermissions) &&
             !readBuiltInAgentMarker(created.metadata)) {
-          await tx.insert(principalPermissionGrants).values({
-            companyId,
-            principalType: "agent",
-            principalId: created.id,
-            permissionKey: "agents:configure",
-          }).onConflictDoNothing();
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId,
+              principalType: "agent" as const,
+              principalId: created.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, created.id),
+            })),
+          ).onConflictDoNothing();
         }
         if (options?.aiConnectionInstall) {
           await tx.insert(toolConnectionInstalls).values({
@@ -1167,12 +1170,15 @@ export function agentService(db: Db) {
         }
         await syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
         if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
-          await tx.insert(principalPermissionGrants).values({
-            companyId: updated.companyId,
-            principalType: "agent",
-            principalId: updated.id,
-            permissionKey: "agents:configure",
-          }).onConflictDoNothing();
+          await tx.insert(principalPermissionGrants).values(
+            NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+              companyId: updated.companyId,
+              principalType: "agent" as const,
+              principalId: updated.id,
+              permissionKey,
+              scope: newStandardAgentGrantScope(permissionKey, updated.id),
+            })),
+          ).onConflictDoNothing();
         }
         await recordResourceCreationEvent(txDb, existing.companyId, "agent", updated.id);
         const agent = await agentService(txDb).getById(updated.id);

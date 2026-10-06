@@ -1,5 +1,6 @@
 import { PERMISSION_KEYS } from "@paperclipai/shared";
 import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "./agent-permissions.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
 
 export function grantsFromDefaults(
@@ -38,19 +39,19 @@ export function grantsFromDefaults(
 }
 
 export function agentJoinGrantsFromDefaults(
-  defaultsPayload: Record<string, unknown> | null | undefined
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  agentId: string,
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
   const grants = grantsFromDefaults(defaultsPayload, "agent");
   // Invitation approval replaces the whole grant set after agent creation.
-  // Retain the creation default, but never widen an explicitly scoped grant.
-  if (!grants.some((grant) => grant.permissionKey === "agents:configure")) {
-    grants.push({ permissionKey: "agents:configure", scope: null });
-  }
-  if (!grants.some((grant) => grant.permissionKey === "tasks:assign")) {
-    grants.push({ permissionKey: "tasks:assign", scope: null });
+  // Retain new-agent defaults, but never widen an explicitly scoped grant.
+  for (const permissionKey of NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS) {
+    if (!grants.some((grant) => grant.permissionKey === permissionKey)) {
+      grants.push({ permissionKey, scope: newStandardAgentGrantScope(permissionKey, agentId) });
+    }
   }
   return grants;
 }

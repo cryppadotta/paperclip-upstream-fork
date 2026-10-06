@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, companies, companyMemberships, createDb, principalPermissionGrants } from "@paperclipai/db";
-import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, type PermissionKey } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
 import { authorizationService } from "../services/authorization.js";
@@ -12,6 +12,22 @@ import { agentJoinGrantsFromDefaults } from "../services/invite-grants.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
+const expectedNewAgentGrantKeys: PermissionKey[] = [
+  "agents:configure",
+  "agents:suggest-changes",
+  "skills:create",
+  "skills:suggest-changes",
+  "tools:manage_connections",
+  "tools:manage_profiles",
+  "tools:view_audit",
+  "audit:view_agent_actions",
+  "tools:use",
+  "tools:manage_runtime",
+  "inbox:manage",
+  "tasks:assign",
+  "tasks:assign_scope",
+  "tasks:manage_active_checkouts",
+].sort();
 
 describeDatabase("new agent configuration defaults", () => {
   let db!: ReturnType<typeof createDb>;
@@ -54,8 +70,15 @@ describeDatabase("new agent configuration defaults", () => {
 
     const grants = await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.companyId, companyId));
-    expect(grants.filter((grant) => grant.permissionKey === "agents:configure")
-      .map((grant) => grant.principalId).sort()).toEqual([standard.id, peer.id].sort());
+    for (const agent of [standard, peer]) {
+      expect(grants.filter((grant) => grant.principalId === agent.id)
+        .map((grant) => grant.permissionKey).sort()).toEqual(expectedNewAgentGrantKeys);
+      expect(grants.find((grant) => grant.principalId === agent.id && grant.permissionKey === "tasks:assign_scope")?.scope)
+        .toEqual({ subtreeRootAgentId: agent.id });
+    }
+    for (const agent of [lowTrust, bundled]) {
+      expect(grants.filter((grant) => grant.principalId === agent.id)).toEqual([]);
+    }
 
     await db.insert(companyMemberships).values({
       companyId,
@@ -64,6 +87,33 @@ describeDatabase("new agent configuration defaults", () => {
       status: "active",
       membershipRole: "member",
     });
+
+    for (const permissionKey of expectedNewAgentGrantKeys) {
+      if (permissionKey === "tasks:assign_scope") continue; // Requires a structured target scope at authorization time.
+      expect(await accessService(db).hasPermission(companyId, "agent", standard.id, permissionKey)).toBe(true);
+    }
+    expect(await authorizationService(db).decidePrincipalGrant({
+      companyId,
+      principalType: "agent",
+      principalId: standard.id,
+      action: "tasks:assign",
+      permissionKey: "tasks:assign_scope",
+      scope: { assigneeAgentId: standard.id },
+    })).toMatchObject({ allowed: true });
+    expect(await authorizationService(db).decidePrincipalGrant({
+      companyId,
+      principalType: "agent",
+      principalId: standard.id,
+      action: "tasks:assign",
+      permissionKey: "tasks:assign_scope",
+      scope: { assigneeAgentId: peer.id },
+    })).toMatchObject({ allowed: false, reason: "deny_scope" });
+    for (const permissionKey of [
+      "agents:create", "environments:manage", "tools:admin", "users:invite",
+      "users:manage_permissions", "pipelines:write", "joins:approve",
+    ] as const) {
+      expect(await accessService(db).hasPermission(companyId, "agent", standard.id, permissionKey)).toBe(false);
+    }
 
     const decision = await authorizationService(db).decide({
       actor: { type: "agent", agentId: standard.id, companyId, source: "agent_key" },
@@ -117,6 +167,7 @@ describeDatabase("new agent configuration defaults", () => {
     const grants = await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.companyId, companyId));
     expect(grants.map((grant) => grant.principalId).sort()).toEqual([rows[0]!.id, rows[1]!.id].sort());
+    expect(grants.map((grant) => grant.permissionKey)).toEqual(["agents:configure", "agents:configure"]);
     expect(grants.find((grant) => grant.principalId === rows[1]!.id)?.scope).toEqual({ agentIds: [rows[0]!.id] });
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
@@ -144,9 +195,9 @@ describeDatabase("new agent configuration defaults", () => {
 
     const result = await agentService(db).activatePendingApproval(pending.id);
     expect(result?.activated).toBe(true);
-    expect(await db.select().from(principalPermissionGrants)
+    expect((await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.companyId, companyId)))
-      .toEqual([expect.objectContaining({ principalId: pending.id, permissionKey: "agents:configure" })]);
+      .map((grant) => grant.permissionKey).sort()).toEqual(expectedNewAgentGrantKeys);
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
@@ -169,11 +220,11 @@ describeDatabase("new agent configuration defaults", () => {
     });
     await accessService(db).ensureMembership(companyId, "agent", invited.id, "member", "active");
     await accessService(db).setPrincipalGrants(
-      companyId, "agent", invited.id, agentJoinGrantsFromDefaults(null), null,
+      companyId, "agent", invited.id, agentJoinGrantsFromDefaults(null, invited.id), null,
     );
     const grants = await db.select().from(principalPermissionGrants)
       .where(eq(principalPermissionGrants.principalId, invited.id));
-    expect(grants.map((grant) => grant.permissionKey).sort()).toEqual(["agents:configure", "tasks:assign"]);
+    expect(grants.map((grant) => grant.permissionKey).sort()).toEqual(expectedNewAgentGrantKeys);
 
     await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
     await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
