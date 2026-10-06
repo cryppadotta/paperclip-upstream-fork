@@ -349,6 +349,43 @@ describe("InlineEntitySelector", () => {
     });
   });
 
+  it("keeps the no-selection action first when requested", async () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <InlineEntitySelector
+          value="project-2"
+          options={[
+            { id: "project-1", label: "Project One" },
+            { id: "project-2", label: "Project Two" },
+          ]}
+          recentOptionIds={["project-1"]}
+          placeholder="Project"
+          noneLabel="No project"
+          noneAtTop
+          searchPlaceholder="Search projects..."
+          emptyMessage="No projects found."
+          onChange={vi.fn()}
+        />,
+      );
+    });
+
+    const trigger = container.querySelector("button") as HTMLButtonElement;
+    await act(() => trigger.click());
+
+    const options = Array.from(
+      document.querySelectorAll<HTMLButtonElement>("[data-mobile-entity-picker-list] > button"),
+    );
+    expect(options.map((option) => option.textContent)).toEqual([
+      "No project",
+      "Project Two",
+      "Project One",
+    ]);
+
+    act(() => root.unmount());
+  });
+
   it("does not open the popover when disabled", async () => {
     const root = createRoot(container);
     const onChange = vi.fn();

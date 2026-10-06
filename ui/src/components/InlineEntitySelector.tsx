@@ -16,6 +16,8 @@ interface InlineEntitySelectorProps {
   options: InlineEntityOption[];
   placeholder: string;
   noneLabel: string;
+  /** Keep the no-selection action before the selected and recent choices. */
+  noneAtTop?: boolean;
   /** Keep the no-selection action after the project choices. */
   noneAtEnd?: boolean;
   searchPlaceholder: string;
@@ -70,6 +72,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
       options,
       placeholder,
       noneLabel,
+      noneAtTop = false,
       noneAtEnd = false,
       searchPlaceholder,
       emptyMessage,
@@ -103,8 +106,9 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
     const allOptions = useMemo<InlineEntityOption[]>(() => {
       const baseOptions = [{ id: "", label: noneLabel, searchText: noneLabel }, ...options];
       const ordered = orderItemsBySelectedAndRecent(baseOptions, value, recentOptionIds);
+      if (noneAtTop) return [baseOptions[0]!, ...ordered.filter((option) => option.id)];
       return noneAtEnd ? [...ordered.filter((option) => option.id), baseOptions[0]!] : ordered;
-    }, [noneAtEnd, noneLabel, options, recentOptionIds, value]);
+    }, [noneAtEnd, noneAtTop, noneLabel, options, recentOptionIds, value]);
 
     const filteredOptions = useMemo(() => {
       const term = query.trim().toLowerCase();
