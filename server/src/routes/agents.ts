@@ -2932,17 +2932,30 @@ export function agentRoutes(
     ...INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS,
     gemini_local: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     kimi_local: ["KIMI_MODEL_API_KEY"],
+    opencode_local: ["PAPERCLIP_OPENCODE_PROVIDERS", "OPENCODE_AUTH_JSON"],
   };
+  const POOL_AUTH_OVERRIDE_ENV_KEYS = [
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PAPERCLIP_OPENCODE_PROVIDERS", "OPENCODE_AUTH_JSON",
+  ] as const;
+
+  async function callerUsesAiConnectionPool(req: Request, companyId: string): Promise<boolean> {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return false;
+    const caller = await svc.getById(req.actor.agentId);
+    if (!caller || caller.companyId !== companyId) return false;
+    return asRecord(asRecord(caller.runtimeConfig)?.aiConnection)?.mode === "router";
+  }
 
   function containsOnlyLocalAdapterCredentialRefs(
     adapterType: string,
     env: unknown,
+    allowPlainCredentials: boolean,
   ): boolean {
     const envRecord = asRecord(env);
     if (!envRecord) return false;
     const allowedKeys = LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS[adapterType] ?? [];
     return Object.entries(envRecord).every(([key, value]) =>
-      allowedKeys.includes(key) && isInheritableCredentialReference(value),
+      (allowedKeys.includes(key) && isInheritableCredentialReference(value)) ||
+      (allowPlainCredentials && POOL_AUTH_OVERRIDE_ENV_KEYS.includes(key as typeof POOL_AUTH_OVERRIDE_ENV_KEYS[number]) && asEnvBindingString(value) !== null),
     );
   }
 
@@ -2950,11 +2963,12 @@ export function agentRoutes(
     req: Request,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
+    allowPlainCredentials = false,
   ) {
     if (req.actor.type !== "agent" || !adapterType.endsWith("_local")) return;
     const changedKeys = LOCAL_ADAPTER_HOST_COMMAND_KEYS.filter((key) =>
       adapterConfig[key] !== undefined &&
-      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(adapterType, adapterConfig.env)),
+      (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(adapterType, adapterConfig.env, allowPlainCredentials)),
     );
     if (changedKeys.length === 0) return;
     throw forbidden(
@@ -4636,7 +4650,7 @@ export function agentRoutes(
       rawHireAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
-    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, hireInput.adapterType, rawHireAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, hireInput.adapterType, Object.keys(rawHireAdapterConfig).length > 0);
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
@@ -4947,7 +4961,7 @@ export function agentRoutes(
       rawCreateAdapterConfig,
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
-    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig);
+    assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType, rawCreateAdapterConfig, await callerUsesAiConnectionPool(req, companyId));
     assertNoAgentProcessAdapterMutation(req, createInput.adapterType, Object.keys(rawCreateAdapterConfig).length > 0);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
