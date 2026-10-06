@@ -1544,8 +1544,10 @@ restores the original form and draft. Approval and permission gates are unchange
 A saved ordinary question becomes historical when a newer human task message
 moves it out of the current composer. Agent context, completion feedback, and
 native finalization apply the same rule. The historical question remains pending
-and answerable; its presence alone does not request another answer or prevent
-completion. Agents continue work that does not need the missing input and withdraw
+and answerable, including after completion; a later human answer records history
+without reopening the task or waking its agent. Its presence alone does not
+request another answer or prevent completion. Cancellation still expires pending
+questions. Agents continue work that does not need the missing input and withdraw
 obsolete questions when later evidence satisfies them. A real current input
 blocker must identify what is still needed. Approval, permission, connection,
 and configured review gates remain active. No server-side UI dismissal record

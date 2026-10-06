@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
-  issueComments, issueThreadInteractions, issueWorkProducts, issues, statusDecisions,
+  agents, agentWakeupRequests, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
+  issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issueWorkProducts, issues, statusDecisions,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
+import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { finalizeNativeRun, pendingNativeGovernance } from "./native-run-finalizer.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
@@ -125,6 +126,20 @@ describe("historical task questions", () => {
       .toEqual([expect.objectContaining({ status: historical ? "done" : "in_review" })]);
     expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, f.issueId)))
       .toEqual([expect.objectContaining({ reasonCode: historical ? "completion_contract_satisfied" : "governed_gate_pending" })]);
+    if (historical) {
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))
+        .toEqual([expect.objectContaining({ status: "pending", result: null, resolvedAt: null })]);
+      const answered = await issueThreadInteractionService(db).answerQuestions(
+        { id: f.issueId, companyId: f.companyId, status: "done" }, f.question.id,
+        { answers: [{ questionId: "configuration", optionIds: ["configured"] }] }, { userId: "board-user" });
+      expect(answered).toMatchObject({ status: "answered", resolvedByUserId: "board-user",
+        result: { answers: [{ questionId: "configuration", optionIds: ["configured"] }] } });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+      expect(await db.select().from(issueQuestionResponseDeliveries).where(eq(issueQuestionResponseDeliveries.issueId, f.issueId)))
+        .toEqual([]);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+        .toEqual([]);
+    }
   });
 
   it("keeps a new input blocker active after the earlier question becomes historical", async () => {
@@ -214,6 +229,35 @@ describe("historical task questions", () => {
     await db.update(issueThreadInteractions).set({ sourceRunId: null }).where(eq(issueThreadInteractions.id, f.question.id));
     expect(await gate(f)).toEqual({ kind: "interaction", id: f.question.id });
     expect((await readTaskQuestionContext(db, f)).questions[0].historical).toBe(false);
+  });
+
+  it.each([false, true])("expires questions on cancellation and rejects answers with stale task state (historical=%s)", async historical => {
+    const f = await fixture();
+    if (historical) await message(f);
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
+    const service = issueThreadInteractionService(db);
+    await expect(service.answerQuestions({ id: f.issueId, companyId: f.companyId, status: "in_progress" },
+      f.question.id, { answers: [{ questionId: "configuration", optionIds: ["configured"] }] },
+      { userId: "board-user" })).rejects.toMatchObject({ status: 409, details: { code: "interaction_issue_closed" } });
+    expect(await service.expirePendingInteractionsForTerminalIssue({ id: f.issueId, companyId: f.companyId, status: "cancelled" }))
+      .toEqual([expect.objectContaining({ id: f.question.id, status: "expired" })]);
+  });
+
+  it("keeps current questions and governed confirmations closed on completion", async () => {
+    const f = await fixture();
+    const [confirmation] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Approve publication?",
+        target: { type: "custom", key: "publish" }, supersedeOnUserComment: false, rejectRequiresReason: false } }).returning();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+    const service = issueThreadInteractionService(db);
+    await expect(service.answerQuestions({ id: f.issueId, companyId: f.companyId, status: "in_progress" },
+      f.question.id, { answers: [{ questionId: "configuration", optionIds: ["configured"] }] },
+      { userId: "board-user" })).rejects.toMatchObject({ status: 409, details: { code: "interaction_issue_closed" } });
+    expect(await service.expirePendingInteractionsForTerminalIssue({ id: f.issueId, companyId: f.companyId, status: "done" }))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: f.question.id, status: "expired" }),
+        expect.objectContaining({ id: confirmation.id, status: "expired" }),
+      ]));
   });
 
   it("keeps Agent Chat's previous-turn exception aligned in context and completion feedback", async () => {

@@ -86,7 +86,9 @@ comments do not establish that direction. The server uses the same question
 classification in task context, completion feedback, governed waits, and native
 status finalization. Browser dismissal remains a local presentation preference.
 
-A historical question stays in the feed and remains answerable. Its pending
+A historical question stays in the feed and remains answerable after completion.
+A later authorized human answer updates history without reopening or resuming
+work. Cancellation still expires the question. Its pending
 state alone does not block completion or require another reminder. Agents must
 continue authorized work that does not need the missing information, withdraw
 obsolete questions when evidence satisfies them, and name any input that still

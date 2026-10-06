@@ -11093,8 +11093,9 @@ export function issueService(db: Db) {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // Every terminal transition funnels through here, including direct
             // service callers (tree control, recovery, pipelines, status cards)
-            // that never touch the HTTP routes, so pending interaction cards
-            // cannot outlive their issue. Dynamic import breaks the module
+            // that never touch the HTTP routes. Governed cards expire; ordinary
+            // historical questions remain answerable after completion.
+            // Dynamic import breaks the module
             // cycle (issue-thread-interactions.js imports issueService).
             const { issueThreadInteractionService } =
               await import("./issue-thread-interactions.js");
