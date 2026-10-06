@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
-  issueComments, issueThreadInteractions, issues, statusDecisions,
+  issueComments, issueThreadInteractions, issueWorkProducts, issues, statusDecisions,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { readTaskQuestionContext } from "../issue-question-context.js";
@@ -107,10 +107,18 @@ describe("historical task questions", () => {
       canonicalSha256: contractSha256, createdByActorType: "system", createdByActorId: "test" });
     await db.update(heartbeatRuns).set({ completionContractId: contractId, completionContractSha256: contractSha256,
       nativeSessionId: sessionId, runnerInstanceId: runnerId }).where(eq(heartbeatRuns.id, f.runId));
+    const [verified] = await db.insert(issueWorkProducts).values({ companyId: f.companyId, issueId: f.issueId,
+      type: "artifact", provider: "test", title: "Configuration verification", status: "completed", reviewState: "approved" }).returning();
+    const evidenceRef = `work_product:${verified.id}`;
+    const verifiedResult: PrpStructuredRunResult = { ...CONTROL_PLANE_CONFORMANCE_RESULT,
+      completionClaim: { ...CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim,
+        criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [evidenceRef] }] },
+      evidence: [{ kind: "work_product", ref: evidenceRef }],
+      verification: [{ commandOrCheck: "Configuration verification", status: "passed", artifactRef: evidenceRef }] };
     const port = new PaperclipControlPlanePort(db, { ...f, sessionId, completionContractId: contractId,
       completionContractSha256: contractSha256, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: randomUUID() });
     await port.openRun({ identity: { ...f, sessionId }, backendKind: "mock", sourceInstanceId: runnerId });
-    await port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
+    await port.completeRun({ result: verifiedResult, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL,
       callerResultId: randomUUID() });
     await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded" });
     expect(await db.select().from(issues).where(eq(issues.id, f.issueId)))
