@@ -29,7 +29,7 @@ describe("historical task questions", () => {
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("historical-task-questions-");
     db = createDb(temporary.connectionString);
-  });
+  }, 90_000);
   afterAll(async () => { await temporary?.cleanup(); });
 
   async function fixture(conversationMode = false) {
