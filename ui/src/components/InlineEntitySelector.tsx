@@ -130,9 +130,14 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
 
     useEffect(() => {
       if (!open) return;
+      const firstSearchResultIndex = noneAtTop && query.trim()
+        ? filteredOptions.findIndex((option) => option.id)
+        : -1;
       const selectedIndex = filteredOptions.findIndex((option) => option.id === value);
-      setHighlightedIndexValue(selectedIndex >= 0 ? selectedIndex : 0);
-    }, [filteredOptions, open, setHighlightedIndexValue, value]);
+      setHighlightedIndexValue(
+        firstSearchResultIndex >= 0 ? firstSearchResultIndex : selectedIndex >= 0 ? selectedIndex : 0,
+      );
+    }, [filteredOptions, noneAtTop, open, query, setHighlightedIndexValue, value]);
 
     const commitSelection = (index: number, moveNext: boolean) => {
       const option = filteredOptions[index] ?? filteredOptions[0];

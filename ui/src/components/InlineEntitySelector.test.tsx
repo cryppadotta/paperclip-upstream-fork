@@ -351,6 +351,7 @@ describe("InlineEntitySelector", () => {
 
   it("keeps the no-selection action first when requested", async () => {
     const root = createRoot(container);
+    const onChange = vi.fn();
 
     act(() => {
       root.render(
@@ -366,7 +367,7 @@ describe("InlineEntitySelector", () => {
           noneAtTop
           searchPlaceholder="Search projects..."
           emptyMessage="No projects found."
-          onChange={vi.fn()}
+          onChange={onChange}
         />,
       );
     });
@@ -400,6 +401,11 @@ describe("InlineEntitySelector", () => {
       "No project",
       "Project Two",
     ]);
+
+    await act(() => {
+      searchInput?.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(onChange).toHaveBeenCalledWith("project-2");
 
     act(() => root.unmount());
   });
