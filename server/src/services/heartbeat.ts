@@ -19258,8 +19258,8 @@ export function heartbeatService(
     );
 
     // A terminal issue transition writes this intent in the same transaction
-    // that expires the native question. Consume it before generic orphan
-    // recovery so a restart preserves the requested cancellation outcome.
+    // that closes the question's task, even when its card is retained. Consume
+    // it before generic orphan recovery so a restart preserves cancellation.
     const cancellationRequests = await db
       .select({
         id: heartbeatRuns.id,
