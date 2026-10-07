@@ -54,6 +54,23 @@ describe("TaskChatBubble attachment chips", () => {
     expect(container.textContent).not.toContain("Sent from iMessage");
   });
 
+  it("places another steering sender's avatar after the human bubble", () => {
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{
+          id: "steered", kind: "message", author: "human", text: "Use the newer build.",
+          steeringSender: { name: "Alex Rivera", image: "/alex.png" },
+        }} />
+      </ThemeProvider>,
+    ));
+
+    const bubble = container.querySelector('[data-testid="task-chat-human-bubble"]');
+    const avatar = container.querySelector('[data-testid="task-chat-steering-sender-avatar"]');
+    expect(avatar?.getAttribute("aria-label")).toBe("Alex Rivera");
+    expect(avatar?.parentElement).toBe(bubble?.parentElement);
+    expect(bubble?.nextElementSibling).toBe(avatar);
+  });
+
   it("opens attachment images in the shared task gallery", () => {
     const openGallery = vi.fn(() => true);
     const contentPath = "/api/attachments/shared-image/content";

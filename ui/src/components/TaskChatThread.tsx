@@ -862,6 +862,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       commentsToTaskChatItems(projectedComments, {
         agentMap,
         userLabelMap,
+        userProfileMap,
         currentUserId,
         issueAssigneeAgentId,
         verificationCaveatsByRunId,
@@ -870,6 +871,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       projectedComments,
       agentMap,
       userLabelMap,
+      userProfileMap,
       currentUserId,
       issueAssigneeAgentId,
       verificationCaveatsByRunId,

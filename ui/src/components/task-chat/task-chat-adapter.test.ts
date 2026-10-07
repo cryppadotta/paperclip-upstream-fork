@@ -165,6 +165,32 @@ describe("commentsToTaskChatItems", () => {
     });
   });
 
+  it("identifies another user's steered message for the right-side avatar", () => {
+    const comment = {
+      id: "steered-by-colleague",
+      body: "Check the latest result.",
+      authorType: "user",
+      authorUserId: "colleague",
+      steeredIntoRunId: "run-1",
+      createdAt: "2026-09-04T14:09:33.000Z",
+    } as unknown as IssueChatComment;
+    const ctx = {
+      currentUserId: "viewer",
+      userLabelMap: new Map([["colleague", "Colleague"]]),
+      userProfileMap: new Map([["colleague", { label: "Alex Rivera", image: "/alex.png" }]]),
+    };
+
+    expect(commentsToTaskChatItems([comment], ctx)[0]).toMatchObject({
+      steeringSender: { name: "Alex Rivera", image: "/alex.png" },
+    });
+    expect(commentsToTaskChatItems([{ ...comment, authorUserId: "viewer" }], ctx)[0]).toMatchObject({
+      steeringSender: undefined,
+    });
+    expect(commentsToTaskChatItems([{ ...comment, steeredIntoRunId: null }], ctx)[0]).toMatchObject({
+      steeringSender: undefined,
+    });
+  });
+
   it("keeps the regular comment time for a successor-run follow-up", () => {
     const createdAt = "2026-09-04T14:09:33.000Z";
     const conversationAnchorAt = "2026-09-04T14:10:35.000Z";

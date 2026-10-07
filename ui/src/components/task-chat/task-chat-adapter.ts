@@ -15,6 +15,7 @@ import type { TaskChatAuthorKind, TaskChatItem, TaskChatMessageItem } from "./ta
 export interface TaskChatAdapterContext {
   agentMap?: Map<string, Agent>;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  userProfileMap?: ReadonlyMap<string, { label: string; image: string | null }> | null;
   currentUserId?: string | null;
   /**
    * Task's current assignee. Agent comments from anyone else are cross-issue
@@ -120,6 +121,15 @@ export function commentsToTaskChatItems(
       kind: "message",
       author: kind,
       authorName,
+      steeringSender:
+        kind === "human" && comment.steeredIntoRunId && comment.authorUserId &&
+        ctx.currentUserId && comment.authorUserId !== ctx.currentUserId
+          ? {
+              name: ctx.userProfileMap?.get(comment.authorUserId)?.label?.trim() ||
+                authorName || "User",
+              image: ctx.userProfileMap?.get(comment.authorUserId)?.image ?? null,
+            }
+          : undefined,
       agent: effectiveAgentId(comment) ? ctx.agentMap?.get(effectiveAgentId(comment)!) ?? { id: effectiveAgentId(comment)! } : undefined,
       text: comment.body,
       sourceChannel: kind === "human" ? comment.metadata?.sourceChannel : undefined,

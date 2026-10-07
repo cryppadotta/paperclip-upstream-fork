@@ -8,6 +8,7 @@ import { useEmailComment } from "@/components/EmailMessageCard";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
@@ -214,6 +215,36 @@ function TaskChatBubbleContent({
     lightboxSrc === null
       ? -1
       : Math.max(0, mediaRefs.findIndex((ref) => ref.url === lightboxSrc));
+  const messageBody = bodyText.length > 0 ? (
+    <div
+      // Keep the stable hook used by the TaskChatLab bubble treatments.
+      data-testid={isHuman ? "task-chat-human-bubble" : "task-chat-agent-bubble"}
+      className={cn(
+        "break-words py-2 text-sm",
+        isHuman
+          ? cn(
+              item.steeringSender ? "min-w-0 max-w-full" : "max-w-(--pct-85)",
+              "rounded-2xl rounded-br-sm bg-(--liveness-blue) px-3.5 text-white",
+            )
+          : "w-full bg-transparent px-1 text-foreground",
+      )}
+    >
+      <MarkdownBody
+        className={isHuman ? "paperclip-markdown-on-accent" : undefined}
+        softBreaks
+        linkIssueReferences
+        onImageClick={openImage}
+      >
+        {bodyText}
+      </MarkdownBody>
+    </div>
+  ) : null;
+  const steeringAvatar = item.steeringSender ? (
+    <Avatar size="sm" aria-label={item.steeringSender.name} data-testid="task-chat-steering-sender-avatar">
+      {item.steeringSender.image ? <AvatarImage src={item.steeringSender.image} alt="" /> : null}
+      <AvatarFallback>{initialsForName(item.steeringSender.name)}</AvatarFallback>
+    </Avatar>
+  ) : null;
   return (
     <div
       className={cn(
@@ -230,37 +261,12 @@ function TaskChatBubbleContent({
           agent={item.agent}
         />
       ) : null}
-      {bodyText.length > 0 ? (
-        <div
-          // Stable hook so the TaskChatLab bubble-treatment explorations
-          // (PAP-501) can scope background/border overrides to the agent
-          // bubble body without touching the live thread.
-          data-testid={
-            isHuman ? "task-chat-human-bubble" : "task-chat-agent-bubble"
-          }
-          className={cn(
-            "break-words py-2 text-sm",
-            isHuman
-              ? "max-w-(--pct-85) rounded-2xl rounded-br-sm bg-(--liveness-blue) px-3.5 text-white"
-              : "w-full bg-transparent px-1 text-foreground",
-          )}
-        >
-          <MarkdownBody
-            // The human bubble sits on the solid --liveness-blue accent, so the
-            // prose body text must follow the bubble's `text-white` rather than
-            // the default light-mode prose color (which reads as black on blue).
-            // `paperclip-markdown-on-accent` flips prose tokens to currentColor
-            // (== inherited white) in both themes; dark mode was already correct
-            // only because `prose-invert` happened to lighten the text.
-            className={isHuman ? "paperclip-markdown-on-accent" : undefined}
-            softBreaks
-            linkIssueReferences
-            onImageClick={openImage}
-          >
-            {bodyText}
-          </MarkdownBody>
+      {messageBody && steeringAvatar ? (
+        <div className="flex max-w-(--pct-85) items-end gap-2">
+          {messageBody}
+          {steeringAvatar}
         </div>
-      ) : null}
+      ) : messageBody}
       {imageRefs.length > 0 ? (
         <div
           className="flex max-w-(--pct-85) flex-col gap-2"
@@ -350,6 +356,7 @@ function TaskChatBubbleContent({
           </AttachmentGroup>
         </div>
       ) : null}
+      {!messageBody ? steeringAvatar : null}
       {!isHuman && item.verificationCaveats?.length ? (
         <div
           className="mx-1 w-(--sz-calc-7) rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs"

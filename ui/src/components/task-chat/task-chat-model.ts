@@ -107,6 +107,8 @@ export interface TaskChatMessageItem {
   kind: "message";
   author: TaskChatAuthorKind;
   authorName?: string;
+  /** Sender identity for a steered human message written by another user. */
+  steeringSender?: { name: string; image: string | null };
   text: string;
   /** Runner-authored output channel. Legacy adapters leave this unset. */
   channel?: "progress" | "final" | "unknown";
