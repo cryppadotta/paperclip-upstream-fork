@@ -75,6 +75,10 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+export function paperclipSteeringAvatarUrl(value: string | null | undefined): string | null {
+  return value && /^\/api\/assets\/[^/?#]+\/content$/.test(value) ? value : null;
+}
+
 export function TaskChatAgentIdentity({
   agentName,
   agentIcon,
@@ -239,9 +243,11 @@ function TaskChatBubbleContent({
       </MarkdownBody>
     </div>
   ) : null;
+  // Profile URLs can point to remote hosts. Task messages load only Paperclip assets.
+  const safeSteeringSenderImage = paperclipSteeringAvatarUrl(item.steeringSender?.image);
   const steeringAvatar = item.steeringSender ? (
     <Avatar size="sm" aria-label={item.steeringSender.name} data-testid="task-chat-steering-sender-avatar">
-      {item.steeringSender.image ? <AvatarImage src={item.steeringSender.image} alt="" /> : null}
+      {safeSteeringSenderImage ? <AvatarImage src={safeSteeringSenderImage} alt="" /> : null}
       <AvatarFallback>{initialsForName(item.steeringSender.name)}</AvatarFallback>
     </Avatar>
   ) : null;

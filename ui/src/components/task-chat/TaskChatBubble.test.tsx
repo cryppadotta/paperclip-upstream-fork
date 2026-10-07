@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
-import { TaskChatBubble } from "./TaskChatBubble";
+import { TaskChatBubble, paperclipSteeringAvatarUrl } from "./TaskChatBubble";
 import type { TaskChatMessageItem } from "./task-chat-model";
 
 describe("TaskChatBubble attachment chips", () => {
@@ -59,7 +59,7 @@ describe("TaskChatBubble attachment chips", () => {
       <ThemeProvider>
         <TaskChatBubble item={{
           id: "steered", kind: "message", author: "human", text: "Use the newer build.",
-          steeringSender: { name: "Alex Rivera", image: "/alex.png" },
+          steeringSender: { name: "Alex Rivera", image: "/api/assets/alex/content" },
         }} />
       </ThemeProvider>,
     ));
@@ -69,6 +69,24 @@ describe("TaskChatBubble attachment chips", () => {
     expect(avatar?.getAttribute("aria-label")).toBe("Alex Rivera");
     expect(avatar?.parentElement).toBe(bubble?.parentElement);
     expect(bubble?.nextElementSibling).toBe(avatar);
+    expect(paperclipSteeringAvatarUrl("/api/assets/alex/content")).toBe("/api/assets/alex/content");
+  });
+
+  it("does not load an external profile image for a steered message", () => {
+    flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatBubble item={{
+          id: "external-avatar", kind: "message", author: "human", text: "Please check this.",
+          steeringSender: { name: "Alex Rivera", image: "https://example.com/track.png" },
+        }} />
+      </ThemeProvider>,
+    ));
+
+    const avatar = container.querySelector('[data-testid="task-chat-steering-sender-avatar"]');
+    expect(avatar?.querySelector("img")).toBeNull();
+    expect(avatar?.textContent).toBe("AR");
+    expect(paperclipSteeringAvatarUrl("https://example.com/track.png")).toBeNull();
+    expect(paperclipSteeringAvatarUrl("//example.com/track.png")).toBeNull();
   });
 
   it("opens attachment images in the shared task gallery", () => {
