@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileImage, AlertTriangle } from 'lucide-react';
-import type { SkillSourceDiscoveryRequest } from '@paperclipai/shared';
+import type { SkillSourceDiscoveryRequest, SkillPackageReference } from '@paperclipai/shared';
 import { skillSourcesApi } from '@/api/skillSources';
 import { queryKeys } from '@/lib/queryKeys';
 import { FileTree, buildFileTree, collectAllPaths } from '@/components/FileTree';
@@ -10,9 +10,29 @@ import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/router';
 import type { SkillTreeCandidate } from './SkillSourceTree';
 
-export function SkillPackagePreview({ companyId, repository, commitSha, skill, initialFile, onClose }: {
+export function SkillReferenceChoices({ references, included, onChange }: {
+  references: SkillPackageReference[]; included: string[]; onChange?: (paths: string[]) => void;
+}) {
+  return <section className="rounded-md border border-border p-3 text-sm" aria-label="Package references">
+    <h3 className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4" />Referenced files</h3>
+    <p className="mt-1 text-xs text-muted-foreground">Include referenced skills and support files with this skill.</p>
+    <ul className="mt-2 space-y-2">
+      {references.map(reference => <li key={`${reference.fromPath}:${reference.resolvedPath}`} className="break-all text-xs">
+        {(reference.import || included.includes(reference.resolvedPath)) && onChange ? <label className="flex cursor-pointer items-start gap-2">
+          <input type="checkbox" className="mt-0.5 size-3.5 shrink-0 accent-foreground" aria-label={`Include ${reference.target}`}
+            checked={included.includes(reference.resolvedPath)} onChange={event => onChange(event.target.checked ? [...new Set([...included, reference.resolvedPath])] : included.filter(value => value !== reference.resolvedPath))} />
+          <span><span className="font-mono">{reference.target}</span><span className="block text-muted-foreground">{reference.import ? <>{reference.import.kind === 'skill' ? 'Whole skill' : reference.import.kind === 'folder' ? 'Whole folder' : 'File'} · <span className="font-mono">{reference.import.path}</span> · {reference.import.fileCount} {reference.import.fileCount === 1 ? 'file' : 'files'}</> : 'No longer available · uncheck to remove'}</span></span>
+        </label> : <><span className="font-mono">{reference.target}</span> · {included.includes(reference.resolvedPath) ? 'Included' : reference.kind === 'missing' ? 'Not found' : 'Unavailable in this repository'}</>}
+        <span className="block text-muted-foreground">Referenced in {reference.fromPath}</span>
+      </li>)}
+    </ul>
+  </section>;
+}
+
+export function SkillPackagePreview({ companyId, repository, commitSha, skill, initialFile, includedReferences, onReferencesChange, onClose }: {
   companyId: string; repository: SkillSourceDiscoveryRequest; commitSha: string | null;
   skill: SkillTreeCandidate; initialFile?: string; onClose: () => void;
+  includedReferences?: string[]; onReferencesChange?: (paths: string[]) => void;
 }) {
   const inspection = skill.inspection;
   const [filePath, setFilePath] = useState(initialFile ?? 'SKILL.md');
@@ -21,12 +41,12 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
   const expanded = new Set([...collectAllPaths(nodes, 'dir')].filter(path => !collapsed.has(path)));
   const file = inspection?.files.find(file => file.path === filePath);
   const preview = useQuery({
-    queryKey: queryKeys.skillSources.preview(companyId, repository.repositoryUrl, repository.connectionId ?? null, commitSha, skill.path, filePath),
-    queryFn: () => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath }),
+    queryKey: [...queryKeys.skillSources.preview(companyId, repository.repositoryUrl, repository.connectionId ?? null, commitSha, skill.path, filePath), ...(inspection?.includedReferences ?? [])],
+    queryFn: () => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath, includedReferences: inspection?.includedReferences }),
     enabled: Boolean(commitSha && file && !skill.error), retry: false, staleTime: 5 * 60_000, refetchOnWindowFocus: false,
   });
   const root = skill.path.includes('/') ? skill.path.slice(0, skill.path.lastIndexOf('/')) : '';
-  const githubPath = filePath === 'SKILL.md' ? skill.path : [root, filePath].filter(Boolean).join('/');
+  const githubPath = file?.repositoryPath ?? (filePath === 'SKILL.md' ? skill.path : [root, filePath].filter(Boolean).join('/'));
   const githubUrl = commitSha ? `${repository.repositoryUrl}/blob/${commitSha}/${githubPath.split('/').map(encodeURIComponent).join('/')}` : repository.repositoryUrl;
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
     <DialogContent className="flex max-h-(--sz-calc-18) flex-col overflow-y-auto p-4 sm:max-w-4xl sm:p-6">
@@ -41,17 +61,7 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
         <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{inspection.requirements}</p>
         <p className="mt-2 text-xs text-muted-foreground">Declared by the skill author. Importing does not install dependencies or run scripts.</p>
       </section>}
-      {Boolean(inspection?.references.length) && <section className="rounded-md border border-border p-3 text-sm" aria-label="Package reference warnings">
-        <h3 className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4" />Check references</h3>
-        <p className="mt-1 text-xs text-muted-foreground">These referenced paths are not included. If the skill needs them, fix the source or leave this skill unchecked.</p>
-        <ul className="mt-2 space-y-2">
-          {inspection!.references.map(reference => <li key={`${reference.fromPath}:${reference.resolvedPath}`} className="break-all text-xs">
-            <span className="font-mono">{reference.target}</span> · {reference.kind === 'outside_package' ? 'Outside this package' : 'Not found'}
-            <span className="text-muted-foreground"> · referenced in {reference.fromPath}</span>
-          </li>)}
-        </ul>
-        <p className="mt-2 text-xs text-muted-foreground">Checks cover Markdown links and explicit relative resource paths. They cannot establish every runtime dependency.</p>
-      </section>}
+      {Boolean(inspection?.references.length) && <SkillReferenceChoices references={inspection!.references} included={includedReferences ?? inspection?.includedReferences ?? []} onChange={onReferencesChange} />}
       {Boolean(inspection?.warnings.length) && <details className="text-xs text-muted-foreground">
         <summary className="cursor-pointer">Content audit · {inspection!.warnings.length} {inspection!.warnings.length === 1 ? 'notice' : 'notices'}</summary>
         <ul className="mt-2 space-y-1">{inspection!.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>

@@ -178,9 +178,11 @@ export function skillSourceService(db: Db) {
     source = leased;
     try {
       const connectionId = selection?.connectionId !== undefined ? selection.connectionId : source.connectionId;
-      const scan = staged ?? await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef }, context.read(connectionId));
-      if (source.repositoryId && source.repositoryId !== scan.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
       const current = await detail(companyId, id);
+      const includedReferences = selection?.includedReferences ?? Object.fromEntries(current.entries.map(entry => [entry.path, entry.inspection?.includedReferences ?? []]));
+      const scan = staged && !Object.values(includedReferences).some(paths => paths.length) ? staged
+        : await scanGitHubSkills({ repositoryUrl: source.repositoryUrl, trackingRef: source.trackingRef, ...(staged ? { commitSha: staged.commitSha } : {}), includedReferences }, context.read(connectionId));
+      if (source.repositoryId && source.repositoryId !== scan.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
       const selectedPaths = selection?.selectedPaths ?? current.entries.filter(entry => entry.selection === 'selected').map(entry => entry.path);
       await authorizeScan(source, scan, selectedPaths, context);
       return await db.transaction(async tx => {
