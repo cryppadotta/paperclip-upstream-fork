@@ -199,6 +199,26 @@ describe("commentsToTaskChatItems", () => {
     });
   });
 
+  it("preserves human identity for steered and ordinary messages", () => {
+    const comment = {
+      id: "steered-by-colleague", body: "Check the latest result.",
+      authorType: "user", authorUserId: "colleague", steeredIntoRunId: "run-1",
+      createdAt: "2026-09-04T14:09:33.000Z",
+    } as unknown as IssueChatComment;
+    const ctx = {
+      currentUserId: "viewer",
+      userProfileMap: new Map([["colleague", { label: "Sam Rivera", image: "/api/assets/sam/content" }]]),
+    };
+    for (const steeredIntoRunId of ["run-1", null]) {
+      expect(commentsToTaskChatItems([{ ...comment, steeredIntoRunId }], ctx)[0]).toMatchObject({
+        authorName: "Sam Rivera", authorAvatarUrl: "/api/assets/sam/content", isCurrentUser: false,
+      });
+    }
+    expect(commentsToTaskChatItems([{ ...comment, authorUserId: "viewer" }], ctx)[0]).toMatchObject({
+      isCurrentUser: true,
+    });
+  });
+
   it("keeps the regular comment time for a successor-run follow-up", () => {
     const createdAt = "2026-09-04T14:09:33.000Z";
     const conversationAnchorAt = "2026-09-04T14:10:35.000Z";
