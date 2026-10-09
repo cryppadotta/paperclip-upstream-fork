@@ -34,6 +34,7 @@ export interface SkillSourcePreviewRequest extends SkillSourceDiscoveryRequest {
   filePath: string;
 }
 export interface SkillSourceFilePreview {
+  inspection?: SkillPackageInspection;
   file: SkillPackageFile;
   content: string | null;
   truncated: boolean;

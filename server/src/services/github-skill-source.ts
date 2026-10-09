@@ -257,6 +257,6 @@ export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, r
   if (!file || !manifest) throw notFound('File is not included in this skill package.');
   const bytes = skillFileBytes(file);
   const limit = 64 * 1024;
-  return { file: manifest, content: manifest.encoding === 'base64' ? null : bytes.subarray(0, limit).toString('utf8'),
+  return { inspection: skill.inspection, file: manifest, content: manifest.encoding === 'base64' ? null : bytes.subarray(0, limit).toString('utf8'),
     truncated: manifest.encoding !== 'base64' && bytes.length > limit, commitSha: scan.commitSha };
 }

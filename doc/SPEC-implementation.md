@@ -2019,7 +2019,10 @@ unavailable. Preserve current ownership and newer-work fences. See
   and declared `compatibility` requirements with source entries. Preview reads reauthorize
   the current caller and audit the requested package at the scanned immutable commit;
   discovery and source metadata contain no file contents. Reference checks are advisory,
-  do not establish complete runtime dependencies. Detected repository-local references
+  do not establish complete runtime dependencies. The preview rechecks draft reference
+  choices and shows included files, rewritten Markdown, and further references before
+  saving. Saved choices remain removable when the upstream link disappears.
+  Detected repository-local references
   offer opt-in checkboxes to include the containing skill or support folder (loose
   repository-root files include only that file). The server derives each scope from
   the pinned tree, audits all added files, preserves bytes/modes, and rewrites detected

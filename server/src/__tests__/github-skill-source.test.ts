@@ -3,10 +3,36 @@ import { describe, expect, it, vi } from 'vitest';
 import { scanGitHubSkills, previewGitHubSkillFile, parseSkillRepository } from '../services/github-skill-source.js';
 import { skillSourceDiscoverySchema, skillSourcePreviewSchema, type SkillSourceScanUpdate } from '@paperclipai/shared';
 import { skillFileBytes } from '../services/skill-snapshot.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const sha = 'a'.repeat(40);
 const md = (name: string) => `---\nname: ${name}\ndescription: A useful skill\n---\nFollow these instructions.\n`;
 describe('GitHub skill repository discovery', () => {
+  it('runs a documented script against its included parent-folder dependency', async () => {
+    const fixture = githubFixture({
+      'a/SKILL.md': md('a') + 'Run `scripts/run.mjs`. Read [data](../shared/data.json).',
+      'a/scripts/run.mjs': 'import fs from "node:fs"; process.stdout.write(fs.readFileSync(new URL("../../shared/data.json", import.meta.url), "utf8"));',
+      'shared/data.json': '{"included":true}',
+    });
+    const skill = (await scanGitHubSkills({ repositoryUrl: 'https://github.com/acme/skills', onlySkillPath: 'a/SKILL.md', includedReferences: { 'a/SKILL.md': ['shared/data.json'] } }, fixture)).skills[0]!;
+    expect(skill.error).toBeNull();
+    expect(skill.files.find(file => file.path === 'scripts/run.mjs')).toBeDefined();
+    expect(skill.files.find(file => file.path === 'SKILL.md')!.content).toContain('`./repository/a/scripts/run.mjs`');
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'skill-reference-script-'));
+    try {
+      for (const file of skill.files) {
+        const destination = path.join(directory, file.path);
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        await fs.writeFile(destination, skillFileBytes(file));
+      }
+      const result = await promisify(execFile)(process.execPath, [path.join(directory, 'repository/a/scripts/run.mjs')]);
+      expect(result.stdout).toBe('{"included":true}');
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
+  });
   it('offers whole skills and support folders, bundles choices and repairs relative Markdown references', async () => {
     const fixture = githubFixture({
       'skills/architect/SKILL.md': md('architect') + '[Runtime](../runtime/SKILL.md#usage)\n`../../scripts/build.py`\n[Guide](references/guide.md)',
@@ -68,6 +94,9 @@ describe('GitHub skill repository discovery', () => {
     expect(skill.files.find(file => file.path === 'repository/a/references/guide.md')!.content).toContain('[Manifest](../SKILL.md)');
     expect(skill.files.find(file => file.path === 'repository/a/SKILL.md')).toBeDefined();
     expect(skill.inspection!.references).toEqual(expect.arrayContaining([expect.objectContaining({ resolvedPath: 'c/SKILL.md', import: { kind: 'skill', path: 'c', fileCount: 1 } })]));
+    const preview = await previewGitHubSkillFile({ repositoryUrl: 'https://github.com/acme/skills', commitSha: sha, skillPath: 'a/SKILL.md', filePath: 'SKILL.md', includedReferences: ['b/SKILL.md'] }, fixture);
+    expect(preview.inspection!.files.some(file => file.path === 'repository/b/SKILL.md')).toBe(true);
+    expect(preview.inspection!.references).toEqual(expect.arrayContaining([expect.objectContaining({ resolvedPath: 'c/SKILL.md', import: { kind: 'skill', path: 'c', fileCount: 1 } })]));
   });
 
   it('audits added support files and rejects unsafe folder contents', async () => {

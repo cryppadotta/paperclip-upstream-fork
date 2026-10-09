@@ -47,10 +47,8 @@ export function relocateSkillFiles(skillPath: string, sourceFiles: Map<string, C
   const destinations = new Map([...sourceFiles.keys()].map(origin => [origin, `${mirrorRoot}/${origin}`]));
   const origins = new Map([...destinations].map(([origin, destination]) => [destination, origin]));
   const files = [...sourceFiles].map(([origin, file]) => ({ ...file, path: destinations.get(origin)! }));
-  const aliases = new Map<string, string>();
   for (const file of originalFiles) {
     const origin = file.path === 'SKILL.md' ? skillPath : path.posix.join(path.posix.dirname(skillPath), file.path);
-    aliases.set(origin, file.path);
     origins.set(file.path, origin);
   }
   files.unshift(...originalFiles);
@@ -68,9 +66,7 @@ export function relocateSkillFiles(skillPath: string, sourceFiles: Map<string, C
       try { decoded = decodeURIComponent(raw!); } catch { return []; }
       const resolved = path.posix.normalize(path.posix.join(reference.rootRelative ? packageRoot : path.posix.dirname(origin), decoded));
       // Directories may be linked too, provided at least one included file lives there.
-      const mirrored = file.path.startsWith(`${mirrorRoot}/`);
-      const ownDirectory = [...aliases.keys()].some(value => value.startsWith(`${resolved}/`)) ? path.posix.relative(path.posix.dirname(skillPath), resolved) : undefined;
-      const destination = (!mirrored ? aliases.get(resolved) ?? ownDirectory : undefined) ?? destinations.get(resolved)
+      const destination = destinations.get(resolved)
         ?? ([...destinations.keys()].some(value => value.startsWith(`${resolved}/`)) ? `${mirrorRoot}/${resolved}` : undefined);
       if (destination === undefined) return [];
       const relative = path.posix.relative(path.posix.dirname(file.path), destination) || '.';
