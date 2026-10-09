@@ -246,8 +246,8 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
 }
 
 /** Reauthorize the caller and re-audit the selected package; never trust a client-supplied manifest. */
-export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead): Promise<SkillSourceFilePreview> {
-  const scan = await scanGitHubSkills({ ...input, onlySkillPath: input.skillPath, includedReferences: { [input.skillPath]: input.includedReferences ?? [] } }, read);
+export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, read: GitHubRead, options?: SkillScanOptions): Promise<SkillSourceFilePreview> {
+  const scan = await scanGitHubSkills({ ...input, onlySkillPath: input.skillPath, includedReferences: { [input.skillPath]: input.includedReferences ?? [] } }, read, options);
   if (scan.commitSha.toLowerCase() !== input.commitSha.toLowerCase()) throw unprocessable('The preview commit did not match the requested snapshot.');
   const skill = scan.skills.find(candidate => candidate.path === input.skillPath);
   if (!skill) throw notFound('Skill package not found at this commit.');
@@ -257,6 +257,6 @@ export async function previewGitHubSkillFile(input: SkillSourcePreviewRequest, r
   if (!file || !manifest) throw notFound('File is not included in this skill package.');
   const bytes = skillFileBytes(file);
   const limit = 64 * 1024;
-  return { inspection: skill.inspection, file: manifest, content: manifest.encoding === 'base64' ? null : bytes.subarray(0, limit).toString('utf8'),
+  return { inspection: skill.inspection ?? undefined, file: manifest, content: manifest.encoding === 'base64' ? null : bytes.subarray(0, limit).toString('utf8'),
     truncated: manifest.encoding !== 'base64' && bytes.length > limit, commitSha: scan.commitSha };
 }

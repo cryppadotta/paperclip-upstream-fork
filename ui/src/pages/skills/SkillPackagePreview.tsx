@@ -3,12 +3,19 @@ import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileImage, AlertTriangle } from 'lucide-react';
 import type { SkillSourceDiscoveryRequest, SkillPackageReference } from '@paperclipai/shared';
 import { skillSourcesApi } from '@/api/skillSources';
+import { ApiError } from '@/api/client';
 import { queryKeys } from '@/lib/queryKeys';
 import { FileTree, buildFileTree, collectAllPaths } from '@/components/FileTree';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/router';
 import type { SkillTreeCandidate } from './SkillSourceTree';
+
+function scanLimitDetails(error: Error) {
+  if (!(error instanceof ApiError) || error.status !== 429) return null;
+  const details = (error.body as { details?: Record<string, unknown> } | null)?.details;
+  return details?.code === 'skill_source_scan_limited' ? details : null;
+}
 
 export function SkillReferenceChoices({ references, included, onChange }: {
   references: SkillPackageReference[]; included: string[]; onChange?: (paths: string[]) => void;
@@ -43,8 +50,11 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
   const [filePath, setFilePath] = useState(initialFile ?? 'SKILL.md');
   const preview = useQuery({
     queryKey: [...queryKeys.skillSources.preview(companyId, repository.repositoryUrl, repository.connectionId ?? null, commitSha, skill.path, filePath), ...included],
-    queryFn: () => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath, includedReferences: included }),
-    enabled: Boolean(commitSha && skill.inspection && (!skill.error || referencesChanged)), retry: false, staleTime: 5 * 60_000, refetchOnWindowFocus: false,
+    queryFn: ({ signal }) => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath, includedReferences: included }, signal),
+    enabled: Boolean(commitSha && skill.inspection && (!skill.error || referencesChanged)),
+    retry: (count, error) => count < 2 && Boolean(scanLimitDetails(error)),
+    retryDelay: (_count, error) => Math.min(60, Math.max(1, Number(scanLimitDetails(error)?.retryAfterSeconds) || 5)) * 1000,
+    staleTime: 5 * 60_000, refetchOnWindowFocus: false,
   });
   const inspection = preview.data?.inspection ?? skill.inspection;
   const packageError = preview.data ? null : skill.error;

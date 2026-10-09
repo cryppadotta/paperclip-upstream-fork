@@ -44,9 +44,9 @@ export function skillSourceService(db: Db) {
     const { skills: _files, defaultBranch: _defaultBranch, ...result } = await scanGitHubSkills(input, context.read(input.connectionId ?? null), { ...options, retainFiles: false });
     return result;
   }
-  async function preview(input: SkillSourcePreviewRequest, context: SkillSourceContext) {
+  async function preview(input: SkillSourcePreviewRequest, context: SkillSourceContext, options?: SkillScanOptions) {
     await context.authorize('skills.import', { sourceType: 'git', sourceLocator: input.repositoryUrl });
-    return previewGitHubSkillFile(input, context.read(input.connectionId ?? null));
+    return previewGitHubSkillFile(input, context.read(input.connectionId ?? null), options);
   }
   async function authorizeScan(source: SourceRow, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
     const previous = await db.select().from(entries).where(and(eq(entries.companyId, source.companyId), eq(entries.sourceId, source.id)));
