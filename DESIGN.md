@@ -67,6 +67,13 @@ already revealed conversation and composer mounted and visible.
 Bound the initial wait to 15 seconds. If a request stalls, reveal the available
 conversation and composer with a notice that some history is still loading.
 
+Only the viewer's own human comments sit on the right in blue bubbles. Agents
+and other humans sit on the left on the page surface, with their own name and
+avatar above the message. Human identity comes from the company directory;
+missing photos use the shared initials fallback. Match ownership by the stored
+author user ID and the authenticated viewer ID, never by display name or the bot
+that relayed a message from another channel.
+
 ## Contextual feedback
 
 Task chat shows execution errors and waits only while they remain relevant.

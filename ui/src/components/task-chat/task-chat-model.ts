@@ -107,6 +107,10 @@ export interface TaskChatMessageItem {
   kind: "message";
   author: TaskChatAuthorKind;
   authorName?: string;
+  /** Human identity comes from the company directory, matched by stored user ID. */
+  authorUserId?: string | null;
+  authorAvatarUrl?: string | null;
+  isCurrentUser?: boolean;
   text: string;
   /** Runner-authored output channel. Legacy adapters leave this unset. */
   channel?: "progress" | "final" | "unknown";
