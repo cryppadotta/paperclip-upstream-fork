@@ -1,0 +1,10 @@
+{
+  "pr": 15494,
+  "sourceHead": "4dcc9b6a249fb22cf066c763e148131b077b09fb",
+  "fixtures": "representative public examples",
+  "verified": "other humans and the agent on the left; only the signed-in viewer on the right",
+  "stories": [
+    "Viewing As Alex",
+    "Viewing As Sam"
+  ]
+}
