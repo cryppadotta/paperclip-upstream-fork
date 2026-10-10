@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   completionContracts,
@@ -24,11 +25,13 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   issueRecoveryActions,
+  issueThreadInteractions,
   projects,
   workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 
 describe("native workspace finalization recovery", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -224,6 +227,65 @@ describe("native workspace finalization recovery", () => {
     // A duplicate confirmation neither clears a newer owner nor writes another audit.
     await expect(resumeNativeWorkspaceAfterOwnerStop(seed)).resolves.toEqual(receipt);
     expect(await db.select().from(activityLog).where(eq(activityLog.runId, seed.runId))).toHaveLength(1);
+  });
+
+  it.each(["monitor", "approval"] as const)("commits the saved yield through reconciliation while preserving its %s wait", async wait => {
+    const seed = await seedAbandonedCopyback();
+    const workspaceId = randomUUID();
+    const cwd = path.join(workspaceRoot, seed.runId);
+    await fs.mkdir(cwd);
+    await fs.writeFile(path.join(cwd, "saved.txt"), "accepted work");
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId,
+      mode: "local", strategyType: "local_directory", name: "Retained workspace", cwd });
+    const nextCheckAt = new Date(Date.now() - 60_000); // Already due, like the staging runs.
+    const policy = { monitor: { nextCheckAt: nextCheckAt.toISOString(), notes: "Check the existing PR." } };
+    await db.update(issues).set({ executionWorkspaceId: workspaceId,
+      ...(wait === "monitor" ? { executionPolicy: policy, monitorNextCheckAt: nextCheckAt } : {}),
+    }).where(eq(issues.id, seed.issueId));
+    const interactionId = randomUUID();
+    if (wait === "approval") await db.insert(issueThreadInteractions).values({
+      id: interactionId, companyId, issueId: seed.issueId, sourceRunId: seed.runId,
+      createdByAgentId: agentId, kind: "request_confirmation", status: "pending",
+      payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document",
+        issueId: seed.issueId, key: "plan", revisionId: randomUUID() } },
+    });
+    const resultJson = {
+      result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "yielded",
+        summary: "Wait for the existing continuation.",
+        completionClaim: { contractRevision: "test", objectiveSatisfied: false, criteria: [],
+          remainingWork: [{ description: "Wait for the check or plan confirmation.", blocksCompletion: true }] },
+        continuation: { kind: wait === "monitor" ? "monitor" : "response_wake",
+          summary: "Wait for the existing continuation.", idempotencyKey: "saved-wait" },
+        evidence: [], verification: [], attentionRequests: [], artifacts: [] },
+      terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed",
+        runTerminalState: "succeeded", reportedWorkDisposition: "yielded" },
+    };
+    await db.update(nativeRunResults).set({ resultJson }).where(eq(nativeRunResults.runId, seed.runId));
+    const [accepted] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, seed.runId));
+
+    // The real reconciler must remain fenced before operator confirmation.
+    await reconcileNativeFinalizations(db, [seed.runId]);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId)))[0].phase).toBe("workspace_finalizing");
+    await resumeNativeWorkspaceAfterOwnerStop(seed);
+    await reconcileNativeFinalizations(db, [seed.runId]);
+
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, seed.runId)))[0]).toMatchObject({ phase: "committed", resultId: accepted.id });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.runId)))[0]).toMatchObject({ status: "succeeded", nativePhase: "committed" });
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, seed.runId))).toEqual([accepted]);
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, seed.actionId)))[0].status).toBe("resolved");
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seed.issueId));
+    expect(issue.status).toBe(wait === "monitor" ? "in_progress" : "in_review");
+    if (wait === "monitor") {
+      expect(issue.monitorNextCheckAt).toEqual(nextCheckAt);
+      expect(issue.executionPolicy).toEqual(policy);
+    } else {
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0].status).toBe("pending");
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.nativeIssueId, seed.issueId))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.payload}->>'issueId' = ${seed.issueId}`)).toHaveLength(0);
+    expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, seed.runId),
+      eq(workspaceOperations.phase, "workspace_finalize"), eq(workspaceOperations.status, "succeeded")))).toHaveLength(1);
+    expect(await fs.readFile(path.join(cwd, "saved.txt"), "utf8")).toBe("accepted work");
   });
 
   it.each(["token", "company", "result", "newer owner", "missing confirmation", "malformed owner"])("rejects stale or unverified copyback recovery: %s", async changed => {

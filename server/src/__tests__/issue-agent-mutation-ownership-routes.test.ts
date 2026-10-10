@@ -2059,6 +2059,24 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403); expect(mockRetryWorkspaceExport).not.toHaveBeenCalled();
   });
 
+  it.each(["done", "in_review"])("does not bypass unverified copyback via false_positive to %s", async sourceIssueStatus => {
+    const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
+    mockIssueService.getById.mockResolvedValue(sourceIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...sourceIssue, ...patch }));
+    mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+      id: recoveryActionId, status: "active", kind: "active_run_watchdog", ownerType: "board",
+      ownerAgentId: null, returnOwnerAgentId: ownerAgentId,
+      cause: "native_workspace_finalization_owner_unverified", evidence: { runId: ownerRunId },
+    });
+    const res = await request(await createApp(boardActor()))
+      .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+      .send({ actionId: recoveryActionId, outcome: "false_positive", sourceIssueStatus });
+    expect(res.status).toBe(409);
+    expect(res.body.details?.code).toBe("workspace_owner_stop_required");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it.each(["todo", "done", "in_review"].flatMap(sourceIssueStatus => ["native_workspace_sync_out_unsafe_archive", "native_workspace_sync_out_retry_exhausted", "native_workspace_finalization_owner_unverified"].map(cause => ({ sourceIssueStatus, cause }))))("does not resolve accepted export recovery through an ordinary $sourceIssueStatus transition: $cause", async ({ sourceIssueStatus, cause }) => {
     const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
     mockIssueService.getById.mockResolvedValue(sourceIssue);

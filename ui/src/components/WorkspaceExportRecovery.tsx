@@ -18,7 +18,7 @@ export function WorkspaceExportRecovery({ issueId, action, canManage, onQueued, 
   const confirmationId = useId();
   const [stopped, setStopped] = useState(false);
   const ownerRecovery = action?.cause === "native_workspace_finalization_owner_unverified";
-  const owner = action?.evidence.owner as { token?: string; hostname?: string; pid?: number; processStartedAt?: string } | undefined;
+  const owner = action?.evidence?.owner as { token?: string; hostname?: string; pid?: number; processStartedAt?: string } | undefined;
   const [repairNote, setRepairNote] = useState("");
   const [queuedActionVersion, setQueuedActionVersion] = useState<string | null>(null);
   const retry = useMutation({

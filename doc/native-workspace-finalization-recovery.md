@@ -82,7 +82,9 @@ lease, task status, monitors, and approval waits are unchanged. The ordinary
 reconciler performs copyback and applies the saved result through the status
 arbiter. No provider wake is enqueued. The recovery action remains visible until
 finalization commits. Repeating the same confirmation before reconciliation is
-idempotent; it cannot release a newer owner.
+idempotent; it cannot release a newer owner. Generic recovery resolution, including
+false-positive dispositions, cannot dismiss this hold or bypass saved-result
+finalization.
 
 Repeated sweeps preserve these copyback-specific instructions, including for
 older actions whose recovery budget was already exhausted. They must never

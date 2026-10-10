@@ -65,6 +65,10 @@ describe("WorkspaceExportRecovery", () => {
     await enterNote(); await submit();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Resume the retained sandbox");
   });
+  it("ignores unrelated recovery notices without evidence", async () => {
+    await mount({ action: { ...action, cause: "no_live_path", evidence: undefined } as unknown as IssueRecoveryAction });
+    expect(container.textContent).toBe("");
+  });
   it("does not offer the action without runtime access", async () => {
     await mount({ canManage: false }); expect(container.querySelector("button")).toBeNull();
   });

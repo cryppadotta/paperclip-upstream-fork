@@ -1067,7 +1067,8 @@ export function IssueRecoveryActionCard({
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
-    if ((isNativeWorkspaceExportRepairCause(action.cause) || action.cause === "native_workspace_finalization_owner_unverified") && ["todo", "done", "in_review"].includes(option.outcome)) return false;
+    if (action.cause === "native_workspace_finalization_owner_unverified") return false;
+    if (isNativeWorkspaceExportRepairCause(action.cause) && ["todo", "done", "in_review"].includes(option.outcome)) return false;
     if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
