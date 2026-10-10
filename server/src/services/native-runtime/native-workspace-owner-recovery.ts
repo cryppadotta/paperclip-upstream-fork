@@ -54,7 +54,10 @@ export async function resumeNativeWorkspaceAfterOwnerStop(input: {
     const receipt = { runId: run.id, resultId: result.id, status: "queued" as const };
     if (run.runnerProfileJson?.[OWNER_KEY] == null && record(stop.owner).token === input.ownerToken
       && stop.resultId === result.id) return { receipt, publication: null };
-    if (prior.token !== input.ownerToken || recordedOwner.token !== input.ownerToken
+    if (typeof prior.hostname !== "string" || !prior.hostname
+      || !Number.isInteger(prior.pid) || Number(prior.pid) <= 0
+      || typeof prior.processStartedAt !== "string" || !Number.isFinite(Date.parse(prior.processStartedAt))
+      || prior.token !== input.ownerToken || recordedOwner.token !== input.ownerToken
       || prior.hostname !== recordedOwner.hostname || prior.pid !== recordedOwner.pid
       || prior.processStartedAt !== recordedOwner.processStartedAt
       || prior.controllerBootId !== recordedOwner.controllerBootId) throw changed();

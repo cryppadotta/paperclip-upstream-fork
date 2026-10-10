@@ -226,8 +226,13 @@ describe("native workspace finalization recovery", () => {
     expect(await db.select().from(activityLog).where(eq(activityLog.runId, seed.runId))).toHaveLength(1);
   });
 
-  it.each(["token", "company", "result", "newer owner", "missing confirmation"])("rejects stale or unverified copyback recovery: %s", async changed => {
+  it.each(["token", "company", "result", "newer owner", "missing confirmation", "malformed owner"])("rejects stale or unverified copyback recovery: %s", async changed => {
     const seed = await seedAbandonedCopyback();
+    if (changed === "malformed owner") {
+      const owner = { token: seed.ownerToken };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner } }).where(eq(heartbeatRuns.id, seed.runId));
+      await db.update(issueRecoveryActions).set({ evidence: { runId: seed.runId, owner } }).where(eq(issueRecoveryActions.id, seed.actionId));
+    }
     if (changed === "token") seed.ownerToken = randomUUID();
     if (changed === "company") seed.companyId = foreignCompanyId;
     if (changed === "result") await db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, seed.runId));
