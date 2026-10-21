@@ -18,7 +18,6 @@ import {
   buildInboxKeyboardNavEntries,
   buildInboxDismissedAtByKey,
   computeInboxBadgeData,
-  filterInboxIssues,
   getArchivedInboxSearchIssues,
   getAvailableInboxIssueColumns,
   getInboxWorkItemKey,
@@ -35,6 +34,7 @@ import {
   loadInboxIssueColumns,
   loadInboxWorkItemGroupBy,
   loadCollapsedInboxGroupKeys,
+  loadCollapsedInboxParentIds,
   loadLastInboxTab,
   matchesInboxIssueSearch,
   normalizeInboxIssueColumns,
@@ -45,6 +45,7 @@ import {
   resolveInboxSelectionIndex,
   saveInboxFilterPreferences,
   saveCollapsedInboxGroupKeys,
+  saveCollapsedInboxParentIds,
   saveInboxIssueColumns,
   saveInboxWorkItemGroupBy,
   saveLastInboxTab,
@@ -133,7 +134,9 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     id,
     companyId: "company-1",
     agentId,
-    responsibleUserId: null,
+    scopeKind: "company",
+    issueId: null,
+    responsibleUserId: "user-1",
     invocationSource: "assignment",
     triggerDetail: null,
     status,
@@ -189,6 +192,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     status: "todo",
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -258,6 +262,7 @@ function makeExecutionWorkspace(overrides: Partial<ExecutionWorkspace> = {}): Ex
     strategyType: "git_worktree",
     name: "PAP-1 branch",
     status: "active",
+    deliveryState: overrides.deliveryState ?? "unknown",
     cwd: "/tmp/project/worktree",
     repoUrl: null,
     baseRef: null,
@@ -310,6 +315,28 @@ const dashboard: DashboardSummary = {
 describe("inbox helpers", () => {
   beforeEach(() => {
     storage.clear();
+  });
+
+  it.each([
+    { currentUserId: "user-1", expected: 1 },
+    { currentUserId: "user-2", expected: 1 },
+    { currentUserId: "local-board", expected: 1 },
+    { currentUserId: null, expected: 0 },
+  ])("counts only personal failed runs for $currentUserId", ({ currentUserId, expected }) => {
+    const result = computeInboxBadgeData({
+      approvals: [], joinRequests: [], dashboard, mineIssues: [],
+      dismissedAlerts: new Set(), dismissedAtByKey: new Map(), currentUserId,
+      heartbeatRuns: [
+        { ...makeRun("own", "failed", "2026-03-11T01:00:00Z"), responsibleUserId: "user-1" },
+        { ...makeRun("other", "timed_out", "2026-03-11T01:00:00Z", "agent-2"), responsibleUserId: "user-2" },
+        { ...makeRun("unowned", "failed", "2026-03-11T01:00:00Z", "agent-3"), responsibleUserId: null },
+        { ...makeRun("old-own", "failed", "2026-03-11T01:00:00Z", "shared-agent"), responsibleUserId: "user-1" },
+        { ...makeRun("new-other", "succeeded", "2026-03-11T02:00:00Z", "shared-agent"), responsibleUserId: "user-2" },
+      ],
+    });
+    expect(result.failedRuns).toBe(expected);
+    expect(result.inbox).toBe(expected);
+    expect(result.alerts).toBe(1); // The budget alert; run failures already describe agent errors in All.
   });
 
   it("counts the same inbox sources the badge uses", () => {
@@ -915,7 +942,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: [],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
       }).map((issue) => issue.id),
     ).toEqual(["remote-match"]);
@@ -936,7 +963,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: [],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
       }),
     ).toEqual([]);
@@ -957,7 +984,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: [],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
       }),
     ).toEqual([]);
@@ -1005,7 +1032,7 @@ describe("inbox helpers", () => {
           workspaces: [],
           liveOnly: false,
           externalObjectStatuses: ["failed"],
-          hideRoutineExecutions: true,
+          showAgentCreatedTasks: false,
         },
         issueFilterContext: {
           externalObjectSummaryByIssueId: summaries,
@@ -1101,7 +1128,7 @@ describe("inbox helpers", () => {
         workspaces: ["workspace-1"],
         liveOnly: true,
         externalObjectStatuses: [],
-        hideRoutineExecutions: false,
+        showAgentCreatedTasks: true,
       },
     });
     saveInboxFilterPreferences("company-2", {
@@ -1117,7 +1144,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
-        hideRoutineExecutions: true,
+        showAgentCreatedTasks: false,
       },
     });
 
@@ -1131,10 +1158,10 @@ describe("inbox helpers", () => {
         creators: ["user:user-1"],
         labels: ["label-1"],
         projects: ["project-1"],
-        workspaces: ["workspace-1"],
+        workspaces: [],
         liveOnly: true,
         externalObjectStatuses: [],
-        hideRoutineExecutions: false,
+        showAgentCreatedTasks: true,
       },
     });
     expect(loadInboxFilterPreferences("company-2")).toEqual({
@@ -1150,7 +1177,7 @@ describe("inbox helpers", () => {
         workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
-        hideRoutineExecutions: true,
+        showAgentCreatedTasks: false,
       },
     });
   });
@@ -1168,7 +1195,7 @@ describe("inbox helpers", () => {
         projects: ["project-1"],
         workspaces: ["workspace-1", false],
         liveOnly: "yes",
-        hideRoutineExecutions: "yes",
+        showAgentCreatedTasks: "yes",
       },
     }));
 
@@ -1182,10 +1209,10 @@ describe("inbox helpers", () => {
         creators: ["user:user-1"],
         labels: [],
         projects: ["project-1"],
-        workspaces: ["workspace-1"],
+        workspaces: [],
         liveOnly: false,
         externalObjectStatuses: [],
-        hideRoutineExecutions: false,
+        showAgentCreatedTasks: false,
       },
     });
   });
@@ -1349,13 +1376,6 @@ describe("inbox helpers", () => {
     expect(getInboxKeyboardSelectionIndex(0, 3, "previous")).toBe(0);
   });
 
-  it("hides routine execution issues when the hide toggle is enabled", () => {
-    const manualIssue = { ...makeIssue("manual", true), originKind: "manual" as const };
-    const routineIssue = { ...makeIssue("routine", true), originKind: "routine_execution" as const };
-
-    expect(filterInboxIssues([manualIssue, routineIssue], false)).toEqual([manualIssue, routineIssue]);
-    expect(filterInboxIssues([manualIssue, routineIssue], true)).toEqual([manualIssue]);
-  });
 
   it("groups mixed inbox items by type while preserving item order within each group", () => {
     const items: InboxWorkItem[] = [
@@ -1556,6 +1576,23 @@ describe("inbox helpers", () => {
     expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set());
     localStorage.setItem("paperclip:inbox:collapsed-groups:company-1", JSON.stringify({ nope: true }));
     expect(loadCollapsedInboxGroupKeys("company-1")).toEqual(new Set());
+  });
+
+  it("persists collapsed inbox parents per company", () => {
+    saveCollapsedInboxParentIds("company-1", new Set(["parent-1", "parent-2"]));
+    saveCollapsedInboxParentIds("company-2", new Set(["parent-3"]));
+
+    expect(loadCollapsedInboxParentIds("company-1")).toEqual(new Set(["parent-1", "parent-2"]));
+    expect(loadCollapsedInboxParentIds("company-2")).toEqual(new Set(["parent-3"]));
+
+    saveCollapsedInboxParentIds("company-1", new Set());
+    expect(loadCollapsedInboxParentIds("company-1")).toEqual(new Set());
+  });
+
+  it("returns empty collapsed inbox parents for missing or invalid storage", () => {
+    expect(loadCollapsedInboxParentIds("company-1")).toEqual(new Set());
+    localStorage.setItem("paperclip:inbox:collapsed-parents:company-1", JSON.stringify({ nope: true }));
+    expect(loadCollapsedInboxParentIds("company-1")).toEqual(new Set());
   });
 
   it("does not reset workspace grouping before experimental settings have loaded", () => {

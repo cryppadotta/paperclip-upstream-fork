@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Settings2, X } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
-import { useNavigate, useParams } from "@/lib/router";
+import { useParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -36,7 +36,6 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
-import { decisionTrainingHref } from "../lib/decisionTraining";
 import { cn } from "../lib/utils";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
@@ -44,7 +43,6 @@ import { DecisionsToolbar } from "../components/DecisionsToolbar";
 import { Curtain, AgingItemRow } from "../components/DecisionShelf";
 import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
-import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
@@ -64,15 +62,13 @@ export function DecisionQueuePage() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const params = useParams<{ key: string }>();
   const queueKey = params.key ?? "";
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { dismiss, snooze } = useInboxDismissals(selectedCompanyId);
 
-  // Decision-training drawer target. `null` when closed.
-  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Toolbar preferences (persisted to localStorage, shared with the desk).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
@@ -165,13 +161,13 @@ export function DecisionQueuePage() {
   // when something carries an explicit due decide-by); any explicit group-by keeps
   // the Inbox-style activity grouping.
   const groups = useMemo<AttentionGroup[]>(() => {
-    const filtered = filterAttentionItems(listItems, filters);
+    const filtered = filterAttentionItems(listItems, filters, searchQuery);
     if (groupBy === "none") {
       return buildDeskShelves(filtered, now);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [listItems, filters, sortOrder, groupBy, now]);
+  }, [listItems, filters, searchQuery, sortOrder, groupBy, now]);
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
 
@@ -200,10 +196,6 @@ export function DecisionQueuePage() {
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setExpandedId((prev) => (prev === item.id ? null : item.id));
   }, []);
-  const handleTrain = useCallback((item: AttentionItem) => {
-    setTrainingItem(item);
-  }, []);
-
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(selectedCompanyId!) });
@@ -222,7 +214,7 @@ export function DecisionQueuePage() {
   });
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
   if (isLoading) {
     return <PageSkeleton variant="approvals" />;
@@ -232,12 +224,14 @@ export function DecisionQueuePage() {
 
   return (
     <div className="max-w-3xl space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="space-y-4">
         <div className="min-w-0">
           <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
           {queue?.description && <p className="mt-0.5 text-sm text-muted-foreground">{queue.description}</p>}
         </div>
         <DecisionsToolbar
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
           visibleCount={visibleCount}
           filterOptions={filterOptions}
           filters={filters}
@@ -246,7 +240,6 @@ export function DecisionQueuePage() {
           onGroupByChange={updateGroupBy}
           sortOrder={sortOrder}
           onSortOrderChange={updateSortOrder}
-          onOpenTraining={() => navigate(decisionTrainingHref())}
         />
       </div>
 
@@ -284,8 +277,8 @@ export function DecisionQueuePage() {
         <div className="space-y-4">
           {visibleCount === 0 ? (
             <div className="rounded-xl border border-dashed border-border py-10 text-center">
-              <p className="text-sm font-medium text-foreground">No decisions match your filters.</p>
-              <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see the rest.</p>
+              <p className="text-sm font-medium text-foreground">No decisions match your search or filters.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
             </div>
           ) : (
             groups.map((group) => {
@@ -319,7 +312,6 @@ export function DecisionQueuePage() {
                           onToggleExpand={handleToggleExpand}
                           onDismiss={(next) => dismiss(next.dismissalKey)}
                           onSnooze={(next, until) => snooze(next.dismissalKey, until)}
-                          onTrain={handleTrain}
                           onExcluded={invalidate}
                         />
                       ))}
@@ -353,23 +345,12 @@ export function DecisionQueuePage() {
                   onToggleExpand={handleToggleExpand}
                   onDismiss={(next) => dismiss(next.dismissalKey)}
                   onSnooze={(next, until) => snooze(next.dismissalKey, until)}
-                  onTrain={handleTrain}
                 />
               ))}
             </Curtain>
           )}
         </div>
       )}
-
-      <DecisionTrainingDrawer
-        open={trainingItem !== null}
-        onOpenChange={(next) => {
-          if (!next) setTrainingItem(null);
-        }}
-        companyId={selectedCompanyId}
-        item={trainingItem}
-        currentUserId={currentUserId}
-      />
     </div>
   );
 }
@@ -438,7 +419,6 @@ function QueueItemRow({
   onToggleExpand,
   onDismiss,
   onSnooze,
-  onTrain,
   onExcluded,
 }: {
   item: AttentionItem;
@@ -451,7 +431,6 @@ function QueueItemRow({
   onToggleExpand: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
-  onTrain: (item: AttentionItem) => void;
   onExcluded: () => void;
 }) {
   const { pushToast } = useToastActions();
@@ -524,7 +503,6 @@ function QueueItemRow({
         onToggleExpand={onToggleExpand}
         onDismiss={onDismiss}
         onSnooze={onSnooze}
-        onTrain={onTrain}
         agentMap={agentMap}
         agents={agents}
         showTriage

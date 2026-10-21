@@ -38,7 +38,6 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
-import { decisionTrainingHref } from "../lib/decisionTraining";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
@@ -47,7 +46,6 @@ import { Curtain, AgingItemRow } from "../components/DecisionShelf";
 import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { DecisionResolver } from "../components/DecisionResolver";
-import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 
 /** Curtain rows never expand; module-level so memoized rows see one identity. */
@@ -100,8 +98,7 @@ export function WhatNeedsMe() {
   // still follows a click, so keyboard actions target the row you just used.
   const [selectionFromKeyboard, setSelectionFromKeyboard] = useState(false);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
-  // Decision-training drawer target. `null` when closed.
-  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
@@ -258,13 +255,13 @@ export function WhatNeedsMe() {
   // carries an explicit, due decide-by. Any explicit
   // group-by keeps the Inbox-style activity grouping.
   const groups = useMemo<AttentionGroup[]>(() => {
-    const filtered = filterAttentionItems(deskItems, filters);
+    const filtered = filterAttentionItems(deskItems, filters, searchQuery);
     if (groupBy === "none") {
       return buildDeskShelves(filtered, now);
     }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [deskItems, filters, sortOrder, groupBy, now]);
+  }, [deskItems, filters, searchQuery, sortOrder, groupBy, now]);
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -466,10 +463,6 @@ export function WhatNeedsMe() {
     setSelectionFromKeyboard(false);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
   }, []);
-  const handleTrain = useCallback((item: AttentionItem) => {
-    setTrainingItem(item);
-  }, []);
-
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const action = resolveAttentionQueueKeyAction({
@@ -516,7 +509,7 @@ export function WhatNeedsMe() {
   }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
 
   if (!selectedCompanyId) {
-    return <p className="text-sm text-muted-foreground">Select a company first.</p>;
+    return <p className="text-sm text-muted-foreground">Select an organization first.</p>;
   }
 
   if (isLoading) {
@@ -527,9 +520,11 @@ export function WhatNeedsMe() {
 
   return (
     <div ref={rootRef} className="max-w-3xl space-y-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="space-y-4">
         <h1 className="text-xl font-bold">Decisions</h1>
         <DecisionsToolbar
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
           visibleCount={visibleCount}
           filterOptions={filterOptions}
           filters={filters}
@@ -538,7 +533,6 @@ export function WhatNeedsMe() {
           onGroupByChange={updateGroupBy}
           sortOrder={sortOrder}
           onSortOrderChange={updateSortOrder}
-          onOpenTraining={() => navigate(decisionTrainingHref())}
         />
       </div>
 
@@ -621,7 +615,6 @@ export function WhatNeedsMe() {
                                   onToggleExpand={handleToggleExpand}
                                   onDismiss={handleDismiss}
                                   onSnooze={handleSnooze}
-                                  onTrain={handleTrain}
                                   agentMap={agentMap}
                                   agents={agents}
                                   showTriage
@@ -712,7 +705,6 @@ export function WhatNeedsMe() {
                   onToggleExpand={handleToggleExpand}
                   onDismiss={handleDismiss}
                   onSnooze={handleSnooze}
-                  onTrain={handleTrain}
                 />
               ))}
             </Curtain>
@@ -768,16 +760,6 @@ export function WhatNeedsMe() {
           )}
         </Curtain>
       </div>
-
-      <DecisionTrainingDrawer
-        open={trainingItem !== null}
-        onOpenChange={(next) => {
-          if (!next) setTrainingItem(null);
-        }}
-        companyId={selectedCompanyId}
-        item={trainingItem}
-        currentUserId={currentUserId}
-      />
     </div>
   );
 }
@@ -826,10 +808,10 @@ function CaughtUpNote({ filtered }: { filtered: boolean }) {
   return (
     <div className="rounded-xl border border-dashed border-border py-10 text-center">
       <p className="text-sm font-medium text-foreground">
-        {filtered ? "No decisions match your filters." : "You're all caught up."}
+        {filtered ? "No decisions match your search or filters." : "You're all caught up."}
       </p>
       {filtered && (
-        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear the filters to see the rest.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Adjust or clear your search and filters to see the rest.</p>
       )}
     </div>
   );

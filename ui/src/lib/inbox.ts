@@ -1,3 +1,4 @@
+import { isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
 import type {
   Approval,
   DashboardSummary,
@@ -26,6 +27,7 @@ export const INBOX_NESTING_KEY = "paperclip:inbox:nesting";
 export const INBOX_GROUP_BY_KEY = "paperclip:inbox:group-by";
 export const INBOX_FILTER_PREFERENCES_KEY_PREFIX = "paperclip:inbox:filters";
 export const INBOX_COLLAPSED_GROUPS_KEY_PREFIX = "paperclip:inbox:collapsed-groups";
+export const INBOX_COLLAPSED_PARENTS_KEY_PREFIX = "paperclip:inbox:collapsed-parents";
 export type InboxTab = "mine" | "recent" | "unread" | "blocked" | "all";
 export type InboxCategoryFilter =
   | "everything"
@@ -187,6 +189,11 @@ function getInboxCollapsedGroupsStorageKey(companyId: string | null | undefined)
   return `${INBOX_COLLAPSED_GROUPS_KEY_PREFIX}:${companyId}`;
 }
 
+function getInboxCollapsedParentsStorageKey(companyId: string | null | undefined): string | null {
+  if (!companyId) return null;
+  return `${INBOX_COLLAPSED_PARENTS_KEY_PREFIX}:${companyId}`;
+}
+
 export function loadInboxFilterPreferences(
   companyId: string | null | undefined,
 ): InboxFilterPreferences {
@@ -210,7 +217,10 @@ export function loadInboxFilterPreferences(
     return {
       allCategoryFilter: normalizeInboxCategoryFilter(parsed.allCategoryFilter),
       allApprovalFilter: normalizeInboxApprovalFilter(parsed.allApprovalFilter),
-      issueFilters: normalizeIssueFilterState(parsed.issueFilters),
+      issueFilters: {
+        ...normalizeIssueFilterState(parsed.issueFilters),
+        workspaces: [],
+      },
     };
   } catch {
     return {
@@ -233,7 +243,10 @@ export function saveInboxFilterPreferences(
       JSON.stringify({
         allCategoryFilter: normalizeInboxCategoryFilter(preferences.allCategoryFilter),
         allApprovalFilter: normalizeInboxApprovalFilter(preferences.allApprovalFilter),
-        issueFilters: normalizeIssueFilterState(preferences.issueFilters),
+        issueFilters: {
+          ...normalizeIssueFilterState(preferences.issueFilters),
+          workspaces: [],
+        },
       }),
     );
   } catch {
@@ -266,6 +279,36 @@ export function saveCollapsedInboxGroupKeys(
 
   try {
     localStorage.setItem(storageKey, JSON.stringify([...groupKeys]));
+  } catch {
+    // Ignore localStorage failures.
+  }
+}
+
+export function loadCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+): Set<string> {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return new Set();
+
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedInboxParentIds(
+  companyId: string | null | undefined,
+  parentIds: ReadonlySet<string>,
+) {
+  const storageKey = getInboxCollapsedParentsStorageKey(companyId);
+  if (!storageKey) return;
+
+  try {
+    localStorage.setItem(storageKey, JSON.stringify([...parentIds]));
   } catch {
     // Ignore localStorage failures.
   }
@@ -382,17 +425,7 @@ export function shouldResetInboxWorkspaceGrouping(
   return experimentalSettingsLoaded && groupBy === "workspace" && !isolatedWorkspacesEnabled;
 }
 
-export function shouldIncludeRoutineExecutionIssue(
-  issue: Pick<Issue, "originKind">,
-  hideRoutineExecutions: boolean,
-): boolean {
-  return !hideRoutineExecutions || issue.originKind !== "routine_execution";
-}
 
-export function filterInboxIssues(issues: Issue[], hideRoutineExecutions: boolean): Issue[] {
-  if (!hideRoutineExecutions) return issues;
-  return issues.filter((issue) => shouldIncludeRoutineExecutionIssue(issue, hideRoutineExecutions));
-}
 
 export function matchesInboxIssueSearch(
   issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
@@ -462,7 +495,7 @@ export function getInboxSearchSupplementIssues({
   remoteIssues,
   issueFilters,
   currentUserId,
-  enableRoutineVisibilityFilter = false,
+  enableAgentCreatedVisibilityFilter = false,
   liveIssueIds,
   issueFilterContext = {},
 }: {
@@ -472,7 +505,7 @@ export function getInboxSearchSupplementIssues({
   remoteIssues: Issue[];
   issueFilters: IssueFilterState;
   currentUserId?: string | null;
-  enableRoutineVisibilityFilter?: boolean;
+  enableAgentCreatedVisibilityFilter?: boolean;
   liveIssueIds?: ReadonlySet<string>;
   issueFilterContext?: IssueFilterWorkspaceContext;
 }): Issue[] {
@@ -488,7 +521,7 @@ export function getInboxSearchSupplementIssues({
     remoteIssues,
     issueFilters,
     currentUserId,
-    enableRoutineVisibilityFilter,
+    enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
   )
@@ -1250,9 +1283,10 @@ export function computeInboxBadgeData({
       ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
       !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
   ).length;
-  const failedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
+  const visibleFailedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
     (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
-  ).length;
+  );
+  const failedRuns = visibleFailedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId)).length;
   const visibleJoinRequests = joinRequests.filter(
     (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
   ).length;
@@ -1262,7 +1296,7 @@ export function computeInboxBadgeData({
   const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
   const showAggregateAgentError =
     agentErrorCount > 0 &&
-    failedRuns === 0 &&
+    visibleFailedRuns.length === 0 &&
     !dismissedAlerts.has("alert:agent-errors");
   const showBudgetAlert =
     monthBudgetCents > 0 &&
