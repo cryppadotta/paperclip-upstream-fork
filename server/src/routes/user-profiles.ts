@@ -65,30 +65,42 @@ async function resolveCompanyUser(db: Db, companyId: string, rawSlug: string): P
   const slug = slugifyUserPart(rawSlug);
   if (!slug) return null;
 
-  const rows = await db
-    .select({
-      id: companyMemberships.id,
-      principalId: companyMemberships.principalId,
-      status: companyMemberships.status,
-      membershipRole: companyMemberships.membershipRole,
-      createdAt: companyMemberships.createdAt,
-      userId: authUsers.id,
-      name: authUsers.name,
-      email: authUsers.email,
-      image: authUsers.image,
-    })
-    .from(companyMemberships)
-    .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
-    .where(
-      and(
-        eq(companyMemberships.companyId, companyId),
-        eq(companyMemberships.principalType, "user"),
-      ),
-    )
-    .orderBy(desc(companyMemberships.updatedAt))
-    .limit(200);
+  let cursor: { updatedAt: string; id: string } | undefined;
+  for (;;) {
+    const rows = await db
+      .select({
+        id: companyMemberships.id,
+        principalId: companyMemberships.principalId,
+        status: companyMemberships.status,
+        membershipRole: companyMemberships.membershipRole,
+        createdAt: companyMemberships.createdAt,
+        userId: authUsers.id,
+        name: authUsers.name,
+        email: authUsers.email,
+        image: authUsers.image,
+        cursorUpdatedAt: sql<string>`${companyMemberships.updatedAt}::text`,
+      })
+      .from(companyMemberships)
+      .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
+      .where(
+        and(
+          eq(companyMemberships.companyId, companyId),
+          eq(companyMemberships.principalType, "user"),
+          cursor
+            ? sql`(${companyMemberships.updatedAt}, ${companyMemberships.id}) < (${cursor.updatedAt}::timestamptz, ${cursor.id}::uuid)`
+            : undefined,
+        ),
+      )
+      .orderBy(desc(companyMemberships.updatedAt), desc(companyMemberships.id))
+      .limit(200);
 
-  return rows.find((row) => userSlugCandidates(row).includes(slug)) ?? null;
+    const match = rows.find((row) => userSlugCandidates(row).includes(slug));
+    if (match) return match;
+    if (rows.length < 200) return null;
+    const last = rows[rows.length - 1]!;
+    // Keep PostgreSQL's full timestamp precision across page boundaries.
+    cursor = { updatedAt: last.cursorUpdatedAt, id: last.id };
+  }
 }
 
 function userIssueInvolvementSql(companyId: string, userId: string) {
