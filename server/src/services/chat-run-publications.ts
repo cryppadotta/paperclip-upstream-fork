@@ -36,6 +36,7 @@ import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitrati
 import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "./heartbeat-run-summary.js";
 import { resolveChatOriginPublicationBindings } from "./issues.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
+import { chatRunMilestoneSource } from "./chat-run-milestone-candidates.js";
 import { authorizeNativeChatReviewPresentation } from "./native-runtime/native-chat-review-presentation.js";
 import {
   SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES,
@@ -826,7 +827,7 @@ export async function enqueueChatRunMilestones(
         conversationId: chatConversations.id,
         agentName: agents.name,
       })
-      .from(heartbeatRuns)
+      .from(chatRunMilestoneSource(since))
       .innerJoin(
         chatConversations,
         and(
