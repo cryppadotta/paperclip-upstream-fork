@@ -20,6 +20,7 @@ Run from the repository root with Docker available:
 ```sh
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-milestones.ts --baseline-ref=db70c5acd92f50fa37fb4f0dea3da0e7685089a2 --docker-postgres=17 --report=/tmp/chat-milestones-report.json
 pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-milestones.ts --baseline-ref=db70c5acd92f50fa37fb4f0dea3da0e7685089a2 --docker-postgres=17 --dense-chat --report=/tmp/chat-milestones-dense-report.json
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-milestones.ts --baseline-ref=db70c5acd92f50fa37fb4f0dea3da0e7685089a2 --docker-postgres=17 --cursor-window --report=/tmp/chat-milestones-large-window-report.json
 ```
 
 Without `--docker-postgres=17`, the harness uses disposable embedded PostgreSQL.
@@ -68,6 +69,41 @@ The gain depends on binding selectivity and the database plan. These
 measurements do not establish a universal speedup, improved request latency or
 deployed database cost. Compare fresh production query-statistics windows after
 any separately authorized rollout.
+
+## Large-window cursor control
+
+The `--cursor-window` control uses the same service implementation with 12,215
+runs, including 12,000 recent native runs with first-class task bindings and
+approximately 8 KiB encoded contexts. It requests a limit of one; the service's
+minimum candidate page size is 25. The fixture adds a second conversation for
+the same task so both late nonempty pages must preserve the other conversation
+on the cursor's own run.
+
+Every statement is captured from `enqueueChatRunMilestones`, including its
+actual second-page cursor. Capture advances the real keyset loop with a
+non-publishable placeholder page and stops before any publication write. The
+finished cursor comes from the last actual candidate on the short final page.
+All statements then run against the real PostgreSQL fixture, with two warmups
+and five alternating measurements.
+
+| Service page | Baseline median, range | Treatment median, range | Complete ordered rows |
+| --- | --- | --- | --- |
+| First page | 762.65 ms, 678.43–807.93 | 800.63 ms, 597.38–838.01 | 25 equal |
+| Cursor at 90% of history | 234.84 ms, 226.42–241.19 | 54.36 ms, 53.39–63.62 | 25 equal |
+| Cursor at 99.99% of history | 352.10 ms, 321.27–377.10 | 12.88 ms, 12.13–29.92 | 7 equal |
+| Cursor after the final candidate | 340.00 ms, 324.40–381.30 | 58.58 ms, 56.55–78.92 | 0 equal |
+
+The first page is neutral/inconclusive; its sample ranges overlap. Later pages
+improved by 4.32×, 27.33× and 5.80× respectively. The unchanged native progress
+control was neutral at 22.79 versus 22.72 ms, with 25 equal rows.
+
+The treatment still materializes 12,101 matching runs before its outer cursor
+filter. The materialization node took 4.6–10.0 ms in these plans, and no measured
+page spilled temporary data. These observations do not measure peak memory or
+prove how every JSON value is stored or decompressed. They do show that this
+bounded, native-heavy fixture did not reproduce the feared large-window cursor
+regression. No identity-only rewrite or additional cursor predicate was needed
+for this change. The dense and first-page performance limits remain disclosed.
 
 ## Correctness and blast radius
 

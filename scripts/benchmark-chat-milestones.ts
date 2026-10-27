@@ -10,6 +10,8 @@ import * as treatment from "../server/src/services/chat-run-publications.js";
 type Query = { sql: string; params: unknown[] };
 const dockerPostgres = process.argv.includes("--docker-postgres=17");
 const correctnessOnly = process.argv.includes("--correctness-only");
+const cursorWindow = process.argv.includes("--cursor-window");
+const historyRuns = cursorWindow ? 12_000 : 2_400;
 const denseChat = process.argv.includes("--dense-chat");
 const baselineRef = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
 assert.ok(baselineRef, "Pass a pinned pre-fix --baseline-ref=<commit>");
@@ -17,7 +19,7 @@ const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const baselineRevision = execFileSync("git", ["rev-parse", "--verify", `${baselineRef}^{commit}`], { encoding: "utf8" }).trim();
 const ANCHOR_MS = Date.parse("2026-10-19T00:00:00.000Z");
 const SINCE_MS = ANCHOR_MS - 24 * 60 * 6e4;
-const PROMPT_KIB = 144;
+const PROMPT_KIB = cursorWindow ? 6 : 144;
 function mulberry32(seed2: number) {
   return () => {
     seed2 |= 0;
@@ -148,7 +150,18 @@ async function seed(db: Db) {
       [runId, companyB, agentB, issue, iso(base), prompt]
     );
   }
-  for (let start = 0; start < 2400; start += 400) {
+  for (let start = 0; start < historyRuns; start += 400) {
+    if (cursorWindow) {
+      await db.$client.unsafe(`insert into heartbeat_runs
+        (company_id, agent_id, scope_kind, issue_id, native_issue_id, runtime_mode, status, created_at, updated_at, context_snapshot)
+        select $1::uuid, $2::uuid, 'issue', $3::uuid, $3::uuid, 'native', 'running',
+          $4::timestamptz - (12001 - n) * interval '50 milliseconds',
+          $4::timestamptz - (12001 - n) * interval '50 milliseconds',
+          jsonb_build_object('issueId', $3::text, 'source', 'chat:slack:fixture', 'fixtureHistory', true, 'prompt', $5::text)
+        from generate_series(${start + 1}, ${start + 400}) n`,
+        [companyA, agentA, conversationIssueIds[0], iso(ANCHOR_MS), prompt]);
+      continue;
+    }
     await db.$client.unsafe(
       `INSERT INTO heartbeat_runs
         (company_id, agent_id, scope_kind, status, error_code, created_at, updated_at, context_snapshot)
@@ -208,7 +221,8 @@ async function seedSourceMessages(db: Db) {
     await db.$client.unsafe(`insert into chat_message_links (company_id, endpoint_id, conversation_id, comment_id, provider_message_id, direction)
       values ($1, $2, $3, $4::uuid, $4::text, 'inbound')`, [conversation.company_id, conversation.endpoint_id, conversation.id, commentId]);
     await db.$client.unsafe(`update heartbeat_runs set context_snapshot = context_snapshot || jsonb_build_object('wakeCommentId', $1::text)
-      where company_id = $2 and (issue_id = $3::uuid or context_snapshot->>'issueId' = $3::text)`, [commentId, conversation.company_id, conversation.issue_id]);
+        || case when $4::boolean then jsonb_build_object('wakeCommentIds', coalesce(context_snapshot->'wakeCommentIds', '[]'::jsonb) || to_jsonb($1::text)) else '{}'::jsonb end
+      where company_id = $2 and (issue_id = $3::uuid or context_snapshot->>'issueId' = $3::text)`, [commentId, conversation.company_id, conversation.issue_id, cursorWindow]);
   }
   await db.$client.unsafe("analyze heartbeat_runs");
   await db.$client.unsafe("analyze chat_message_links");
@@ -257,7 +271,7 @@ async function seedBindingCases(db: Db) {
   } finally { await db.$client.unsafe("alter table heartbeat_runs enable trigger heartbeat_runs_set_scope_kind"); }
   return expected;
 }
-async function capture(db: Db, module: typeof treatment): Promise<{ milestone: Query; native: Query }> {
+async function capture(db: Db, module: typeof treatment): Promise<Record<string, Query>> {
   const queries: Query[] = [];
   const stop = new Error("captured");
   const captureDb = new Proxy(db, { get(target, key) {
@@ -276,10 +290,57 @@ async function capture(db: Db, module: typeof treatment): Promise<{ milestone: Q
       return builder;
     };
   }});
-  try { await module.enqueueChatRunMilestones(captureDb, { since: new Date(SINCE_MS), limit: 200 }); }
+  try { await module.enqueueChatRunMilestones(captureDb, { since: new Date(SINCE_MS), limit: cursorWindow ? 1 : 200 }); }
   catch (error) { if (error !== stop) throw error; }
   assert.equal(queries.length, 2, "capture both real candidate queries before any publication writes");
   return { milestone: queries[0], native: queries[1] };
+}
+type Cursor = { updatedAt: Date; runId: string; conversationId: string };
+async function captureCursor(db: Db, module: typeof treatment, cursor: Cursor): Promise<Query> {
+  let query: Query | undefined;
+  let executions = 0;
+  const stop = new Error("captured cursor statement");
+  const captureDb = new Proxy(db, { get(target, key) {
+    if (key !== "select") return Reflect.get(target, key);
+    return (...fields: Parameters<Db["select"]>) => {
+      const builder = target.select(...fields), from = builder.from.bind(builder);
+      builder.from = ((...args: Parameters<typeof from>) => {
+        const selection = from(...args);
+        selection.execute = async () => {
+          if (++executions === 2) { query = selection.toSQL(); throw stop; }
+          // Advance only the real service's keyset loop. This non-publishable
+          // placeholder page avoids resolving origins or writing publications.
+          return Array.from({ length: 25 }, () => ({ runStatus: "benchmark_skip", runUpdatedAt: cursor.updatedAt,
+            runId: cursor.runId, conversationId: cursor.conversationId }));
+        };
+        return selection;
+      }) as typeof builder.from;
+      return builder;
+    };
+  }});
+  try { await module.enqueueChatRunMilestones(captureDb, { since: new Date(SINCE_MS), limit: 1 }); }
+  catch (error) { if (error !== stop) throw error; }
+  assert.ok(query, "real second-page service statement was not captured");
+  return query;
+}
+async function seedCursorSibling(db: Db) {
+  const [original] = await db.$client.unsafe(`select conversation.* from chat_conversations conversation
+    join heartbeat_runs run on run.company_id = conversation.company_id and run.issue_id = conversation.issue_id
+    where run.context_snapshot->>'fixtureHistory' = 'true' order by conversation.id limit 1`);
+  await db.$client.unsafe(`insert into chat_conversations
+    (id, company_id, endpoint_id, issue_id, external_conversation_id, external_label, state)
+    values ($1, $2, $3, $4, 'cursor-sibling', 'Cursor sibling', 'active')`,
+    [uuid(), original.company_id, original.endpoint_id, original.issue_id]);
+}
+async function selectLateCursor(db: Db, fraction = 0.9): Promise<Cursor> {
+  const [row] = await db.$client.unsafe(`select chosen.updated_at, chosen.id as run_id, conversation.id as conversation_id
+    from (select id, company_id, issue_id, updated_at from heartbeat_runs
+      where context_snapshot->>'fixtureHistory' = 'true'
+      order by updated_at, id offset ${Math.floor(historyRuns * fraction)} limit 1) chosen
+    join chat_conversations conversation on conversation.company_id = chosen.company_id and conversation.issue_id = chosen.issue_id
+    where conversation.state = 'active' order by conversation.id limit 1`);
+  assert.ok(row);
+  return { updatedAt: new Date(row.updated_at), runId: row.run_id, conversationId: row.conversation_id };
 }
 const median = (values: number[]) => values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const keepAlive = setInterval(() => {}, 1000);
@@ -320,11 +381,29 @@ try {
   const baseline = await import(pathToFileURL(baselineFile).href) as typeof treatment;
   await seed(db);
   if (denseChat) await makeDenseNativeChatHistory(db);
+  if (cursorWindow) await seedCursorSibling(db);
   await seedSourceMessages(db);
   const bindingCases = await seedBindingCases(db);
   const queries = { baseline: await capture(db, baseline), treatment: await capture(db, treatment) };
+  const lateCursor = cursorWindow ? await selectLateCursor(db) : undefined;
+  const nearTailCursor = cursorWindow ? await selectLateCursor(db, 0.9999) : undefined;
+  let emptyCursor: Cursor | undefined;
+  if (lateCursor) {
+    queries.baseline.cursor = await captureCursor(db, baseline, lateCursor);
+    queries.treatment.cursor = await captureCursor(db, treatment, lateCursor);
+  }
+  if (nearTailCursor) {
+    queries.baseline.tail = await captureCursor(db, baseline, nearTailCursor);
+    queries.treatment.tail = await captureCursor(db, treatment, nearTailCursor);
+    const finalPage = await db.$client.unsafe(queries.baseline.tail.sql, queries.baseline.tail.params as never[]).values();
+    assert.ok(finalPage.length > 0 && finalPage.length < 25, "tail cursor must produce a short final page");
+    const last = finalPage.at(-1)!;
+    emptyCursor = { updatedAt: new Date(last[3]), runId: last[0], conversationId: last[7] };
+    queries.baseline.empty = await captureCursor(db, baseline, emptyCursor);
+    queries.treatment.empty = await captureCursor(db, treatment, emptyCursor);
+  }
   const results = [];
-  for (const kind of ["milestone", "native"] as const) {
+  for (const kind of cursorWindow ? ["milestone", "cursor", "tail", "empty", "native"] : ["milestone", "native"]) {
     const samples = { baseline: [] as number[], treatment: [] as number[] };
     const rows = { baseline: [] as unknown[], treatment: [] as unknown[] };
     for (let round = 0; round < (correctnessOnly ? 1 : 7); round++) {
@@ -336,11 +415,18 @@ try {
       }
       assert.deepEqual(rows.treatment, rows.baseline, `${kind}: complete ordered positional rows differ`);
     }
-    if (kind === "milestone" && !denseChat) {
+    if (kind === "milestone" && !denseChat && !cursorWindow) {
       const runIds = new Set(rows.treatment.map(row => (row as unknown[])[0]));
       for (const item of bindingCases) assert.equal(runIds.has(item.runId), item.matches, `binding semantics: ${item.name}`);
     }
-    assert.ok(rows.baseline.length > 0, `${kind}: equality must include actual candidates`);
+    const expectedCursor = kind === "cursor" ? lateCursor : kind === "tail" ? nearTailCursor : undefined;
+    if (expectedCursor) {
+      const first = rows.treatment[0] as unknown[];
+      assert.equal(first[0], expectedCursor.runId, "late page must preserve the other conversation for the same run");
+      assert.ok(String(first[7]) > expectedCursor.conversationId);
+    }
+    if (kind === "empty") assert.equal(rows.treatment.length, 0, "finished cursor must produce an empty page");
+    else assert.ok(rows.baseline.length > 0, `${kind}: equality must include actual candidates`);
     const plans: Record<string, unknown> = {};
     for (const side of ["baseline", "treatment"] as const) {
       const query = queries[side][kind];
@@ -357,7 +443,8 @@ try {
     candidateSource: await fs.readFile(new URL("../server/src/services/chat-run-milestone-candidates.ts", import.meta.url), "utf8"),
     treatmentDiff: execFileSync("git", ["-C", repositoryRoot, "diff", "--", "server/src/services/chat-run-publications.ts"], { encoding: "utf8" }),
     postgres: await db.$client.unsafe("select version(), current_setting('shared_buffers') as shared_buffers, current_setting('work_mem') as work_mem"),
-    fixture: { runs: 2615, bindingCases, bindingCasesChecked: !denseChat, denseNativeChat: denseChat,
+    fixture: { runs: historyRuns + 215, bindingCases, bindingCasesChecked: !denseChat && !cursorWindow, denseNativeChat: denseChat,
+      cursorWindow, historyRuns, requestedLimit: cursorWindow ? 1 : 200, lateCursor, nearTailCursor, emptyCursor,
       conversationIssues: 55, promptKiB: PROMPT_KIB, windowHours: 24 }, queries, results };
   const reportPath = path.resolve(process.argv.find(arg => arg.startsWith("--report="))?.slice(9) ?? ".scratch/chat-milestones-report.json");
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
