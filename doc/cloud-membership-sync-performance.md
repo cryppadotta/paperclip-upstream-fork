@@ -60,6 +60,11 @@ compare all four alias fields against the route's own JavaScript canonical
 slug output, including quotes, whitespace, punctuation, Unicode and email edge
 cases. An exhaustive Unicode lowercase check verifies the two non-ASCII
 characters that need explicit ASCII mappings in the SQL predicate, avoiding
-database-locale differences.
+database-locale differences. Whole-character replacements precede an
+ASCII-only `translate`, preserving UTF-8 byte sequences on legacy `SQL_ASCII`
+databases. A disposable `SQL_ASCII` database applies normal migrations and
+exercises all four alias fields with en/em dashes, euro signs, neighboring
+multibyte characters, dotted I and Kelvin signs. It also verifies that a euro
+sign cannot incorrectly match the profile alias `k`.
 
 No schema migration, startup work or deployment is required by this change.

@@ -64,10 +64,11 @@ function userSlugCandidates(row: CompanyUserRow) {
 function userSlugSql(value: SQLWrapper) {
   // Match JavaScript's ASCII slug after Unicode lowercasing, independently of
   // the database locale. Only İ and K lowercase to ASCII from outside ASCII;
-  // İ also leaves a combining dot, which becomes a separator. translate drops
-  // the two quote characters; the final trim also covers JavaScript's trim().
-  return sql<string>`btrim(regexp_replace(translate(replace(${value}, 'İ', 'i-'),
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZK''"', 'abcdefghijklmnopqrstuvwxyzk') collate "C",
+  // İ also leaves a combining dot, which becomes a separator. Replace whole
+  // multibyte strings before ASCII-only translate so SQL_ASCII databases do
+  // not translate individual UTF-8 bytes. translate also drops both quotes.
+  return sql<string>`btrim(regexp_replace(translate(replace(replace(${value}, 'İ', 'i-'), 'K', 'k'),
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ''"', 'abcdefghijklmnopqrstuvwxyz') collate "C",
     '[^a-z0-9]+', '-', 'g'), '-')`;
 }
 

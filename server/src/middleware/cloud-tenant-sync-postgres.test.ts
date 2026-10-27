@@ -4,7 +4,7 @@ import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
-  agents, authUsers, companies, companyMemberships, createDb, instanceSettings,
+  agents, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, instanceSettings,
   instanceUserRoles, principalPermissionGrants, resourceLifecycleEvents, type Db,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -13,6 +13,7 @@ import { errorHandler } from "./error-handler.js";
 import { userProfileRoutes } from "../routes/user-profiles.js";
 
 const support = await getEmbeddedPostgresTestSupport();
+const aliasFields = ["name", "email-local", "email", "principal"] as const;
 (support.supported ? describe : describe.skip)("Cloud membership synchronization with PostgreSQL", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
@@ -62,9 +63,9 @@ const support = await getEmbeddedPostgresTestSupport();
     return resolveCloudTenantActor(client, cloudActorHeaderSourceFromHeaders(value));
   }
 
-  function profileApp(actor: Express.Request["actor"]) {
+  function profileApp(actor: Express.Request["actor"], client: Db = db) {
     const lookups: Array<{ sql: string; params: unknown[]; returnedRows: number }> = [];
-    const observed = new Proxy(db, { get(target, key) {
+    const observed = new Proxy(client, { get(target, key) {
       if (key !== "select") return Reflect.get(target, key);
       return (...fields: Parameters<Db["select"]>) => {
         const builder = target.select(...fields);
@@ -89,6 +90,33 @@ const support = await getEmbeddedPostgresTestSupport();
     app.use("/api", userProfileRoutes(observed));
     app.use(errorHandler);
     return { app, lookups };
+  }
+
+  async function expectProfileAliases(client: Db, field: typeof aliasFields[number], cases: string[]) {
+    const actor = await resolve(client, headers());
+    const companyId = actor!.companyIds![0]!;
+    const { app, lookups } = profileApp(actor!, client);
+    for (const [index, edge] of cases.entries()) {
+      const identity = field === "principal" ? `Case${index}:${edge}` : randomUUID();
+      if (field !== "principal") await client.insert(authUsers).values({
+        id: identity,
+        name: field === "name" ? `Case${index}:${edge}` : "",
+        email: field === "email-local" ? `Case${index}:${edge}@example.test`
+          : field === "email" ? `@Case${index}:${edge}` : `${identity}@example.test`,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+      await client.insert(companyMemberships).values({ companyId, principalType: "user", principalId: identity });
+      const exact = await request(app).get(`/api/companies/${companyId}/users/${encodeURIComponent(identity)}/profile`);
+      expect(exact.status).toBe(200);
+      // The actual response canonical slug is produced by userSlugCandidates;
+      // use it as the oracle instead of duplicating its JavaScript regex here.
+      const canonicalSlug = exact.body.user.slug;
+      lookups.length = 0;
+      const fallback = await request(app).get(`/api/companies/${companyId}/users/${canonicalSlug}/profile`);
+      expect(fallback.status, `${field}: ${JSON.stringify(edge)}`).toBe(200);
+      expect(fallback.body.user.id, `${field}: ${JSON.stringify(edge)}`).toBe(identity);
+      expect(lookups).toHaveLength(2);
+    }
   }
 
   it("does not update unchanged tuples, returns the input role on an empty RETURNING result, and repairs missing grants", async () => {
@@ -258,31 +286,38 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(mappings).toEqual([["İ", "i\u0307"], ["K", "k"]]);
   });
 
-  it.each(["name", "email-local", "email", "principal"] as const)("matches the route's JavaScript slug oracle for %s aliases", async field => {
-    const actor = await resolve(db, headers());
-    const companyId = actor!.companyIds![0]!;
-    const { app, lookups } = profileApp(actor!);
+  it.each(aliasFields)("matches the route's JavaScript slug oracle for %s aliases", async field => {
     const cases = [" A'B\"C ", "İ", "xİy", "K", "xKy", "I\u0307", "İİ", "AİKB", "Å", "ΣΟΣ", "USER_with:ID", "\uFEFF A\u00A0B \t", "o'reilly", "a\"b", "@example.test", "a@@example.test", "---", "", "👩‍💻"];
-    for (const [index, edge] of cases.entries()) {
-      const identity = field === "principal" ? `Case${index}:${edge}` : randomUUID();
-      if (field !== "principal") await db.insert(authUsers).values({
-        id: identity,
-        name: field === "name" ? `Case${index}:${edge}` : "",
-        email: field === "email-local" ? `Case${index}:${edge}@example.test`
-          : field === "email" ? `@Case${index}:${edge}` : `${identity}@example.test`,
-        createdAt: new Date(), updatedAt: new Date(),
-      });
-      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: identity });
-      const exact = await request(app).get(`/api/companies/${companyId}/users/${encodeURIComponent(identity)}/profile`);
-      expect(exact.status).toBe(200);
-      // The actual response canonical slug is produced by userSlugCandidates;
-      // use it as the oracle instead of duplicating its JavaScript regex here.
-      const canonicalSlug = exact.body.user.slug;
-      lookups.length = 0;
-      const fallback = await request(app).get(`/api/companies/${companyId}/users/${canonicalSlug}/profile`);
-      expect(fallback.status, `${field}: ${JSON.stringify(edge)}`).toBe(200);
-      expect(fallback.body.user.id, `${field}: ${JSON.stringify(edge)}`).toBe(identity);
-      expect(lookups).toHaveLength(2);
-    }
+    await expectProfileAliases(db, field, cases);
   });
+
+  it("matches JavaScript aliases on SQL_ASCII without corrupting neighboring UTF-8 byte sequences", async () => {
+    const databaseName = `cloud_slug_ascii_${randomUUID().replace(/-/g, "")}`;
+    const connectionString = new URL(database.connectionString);
+    connectionString.pathname = `/${databaseName}`;
+    let client: Db | undefined;
+    let created = false;
+    try {
+      await db.$client.unsafe(`CREATE DATABASE ${databaseName} TEMPLATE template0 ENCODING 'SQL_ASCII' LC_COLLATE 'C' LC_CTYPE 'C'`);
+      created = true;
+      await applyPendingMigrations(connectionString.toString());
+      client = createDb(connectionString.toString());
+      const [encoding] = await client.$client.unsafe("SHOW server_encoding");
+      expect(encoding.server_encoding).toBe("SQL_ASCII");
+      const cases = ["A–B", "A—B", "A€B", "AÅB", "A℩B", "A\u2AAAB", "AİB", "AKB", "AİKB", " A'K\"İ B "];
+      for (const field of aliasFields) await expectProfileAliases(client, field, cases);
+
+      const actor = await resolve(client, headers());
+      const companyId = actor!.companyIds![0]!;
+      const identity = randomUUID();
+      await client.insert(authUsers).values({ id: identity, name: "€", email: "", createdAt: new Date(), updatedAt: new Date() });
+      await client.insert(companyMemberships).values({ companyId, principalType: "user", principalId: identity });
+      const { app, lookups } = profileApp(actor!, client);
+      expect((await request(app).get(`/api/companies/${companyId}/users/k/profile`)).status).toBe(404);
+      expect(lookups).toHaveLength(2);
+    } finally {
+      await client?.$client.end({ timeout: 0 });
+      if (created) await db.$client.unsafe(`DROP DATABASE ${databaseName} WITH (FORCE)`);
+    }
+  }, 90_000);
 });
