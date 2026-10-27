@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { and, desc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -61,46 +61,56 @@ function userSlugCandidates(row: CompanyUserRow) {
   return [...candidates];
 }
 
+function userSlugSql(value: SQLWrapper) {
+  // Match JavaScript's ASCII slug after Unicode lowercasing, independently of
+  // the database locale. Only İ and K lowercase to ASCII from outside ASCII;
+  // İ also leaves a combining dot, which becomes a separator. translate drops
+  // the two quote characters; the final trim also covers JavaScript's trim().
+  return sql<string>`btrim(regexp_replace(translate(replace(${value}, 'İ', 'i-'),
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZK''"', 'abcdefghijklmnopqrstuvwxyzk') collate "C",
+    '[^a-z0-9]+', '-', 'g'), '-')`;
+}
+
 async function resolveCompanyUser(db: Db, companyId: string, rawSlug: string): Promise<CompanyUserRow | null> {
   const slug = slugifyUserPart(rawSlug);
   if (!slug) return null;
 
-  let cursor: { updatedAt: string; id: string } | undefined;
-  for (;;) {
-    const rows = await db
-      .select({
-        id: companyMemberships.id,
-        principalId: companyMemberships.principalId,
-        status: companyMemberships.status,
-        membershipRole: companyMemberships.membershipRole,
-        createdAt: companyMemberships.createdAt,
-        userId: authUsers.id,
-        name: authUsers.name,
-        email: authUsers.email,
-        image: authUsers.image,
-        cursorUpdatedAt: sql<string>`${companyMemberships.updatedAt}::text`,
-      })
+  const select = () => db.select({
+    id: companyMemberships.id,
+    principalId: companyMemberships.principalId,
+    status: companyMemberships.status,
+    membershipRole: companyMemberships.membershipRole,
+    createdAt: companyMemberships.createdAt,
+    userId: authUsers.id,
+    name: authUsers.name,
+    email: authUsers.email,
+    image: authUsers.image,
+  })
       .from(companyMemberships)
-      .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
-      .where(
-        and(
-          eq(companyMemberships.companyId, companyId),
-          eq(companyMemberships.principalType, "user"),
-          cursor
-            ? sql`(${companyMemberships.updatedAt}, ${companyMemberships.id}) < (${cursor.updatedAt}::timestamptz, ${cursor.id}::uuid)`
-            : undefined,
-        ),
-      )
-      .orderBy(desc(companyMemberships.updatedAt), desc(companyMemberships.id))
-      .limit(200);
+      .leftJoin(authUsers, eq(authUsers.id, companyMemberships.principalId));
+  const scope = and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalType, "user"));
+  const order = [desc(companyMemberships.updatedAt), desc(companyMemberships.id)];
 
-    const match = rows.find((row) => userSlugCandidates(row).includes(slug));
-    if (match) return match;
-    if (rows.length < 200) return null;
-    const last = rows[rows.length - 1]!;
-    // Keep PostgreSQL's full timestamp precision across page boundaries.
-    cursor = { updatedAt: last.cursorUpdatedAt, id: last.id };
-  }
+  // Known-user links use principal IDs. Prefer an indexed exact identity over
+  // a namesake's display slug, including older memberships beyond row 200.
+  const [exact] = await select()
+    .where(and(scope, inArray(companyMemberships.principalId, [...new Set([rawSlug, slug])])))
+    .orderBy(desc(sql`${companyMemberships.principalId} = ${rawSlug}`), ...order)
+    .limit(1);
+  if (exact) return exact;
+
+  // A normalized non-UUID ID cannot be reversed. Search all supported aliases
+  // in one bounded result instead of fetching/sorting successive member pages.
+  const [match] = await select()
+    .where(and(scope, or(
+      eq(userSlugSql(authUsers.name), slug),
+      eq(userSlugSql(sql`split_part(${authUsers.email}, '@', 1)`), slug),
+      eq(userSlugSql(authUsers.email), slug),
+      eq(userSlugSql(companyMemberships.principalId), slug),
+    )))
+    .orderBy(...order)
+    .limit(1);
+  return match ?? null;
 }
 
 function userIssueInvolvementSql(companyId: string, userId: string) {
