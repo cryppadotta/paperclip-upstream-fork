@@ -9,6 +9,18 @@ import { boundRunIssueIdSql } from "./run-task-binding.js";
  * This is a prefilter only: the caller still owns every publication check.
  */
 export function chatRunMilestoneSource(since: Date) {
+  const selectedFields = {
+    id: heartbeatRuns.id,
+    companyId: heartbeatRuns.companyId,
+    agentId: heartbeatRuns.agentId,
+    status: heartbeatRuns.status,
+    errorCode: heartbeatRuns.errorCode,
+    updatedAt: heartbeatRuns.updatedAt,
+    nativeIssueId: heartbeatRuns.nativeIssueId,
+    issueId: heartbeatRuns.issueId,
+    contextSnapshot: heartbeatRuns.contextSnapshot,
+    resultJson: heartbeatRuns.resultJson,
+  };
   return new Subquery(sql`
     with chat_milestone_runs as materialized (
       select ${heartbeatRuns.id}, ${heartbeatRuns.companyId},
@@ -26,5 +38,5 @@ export function chatRunMilestoneSource(since: Date) {
         )
     )
     select * from chat_milestone_runs
-  `, {}, "heartbeat_runs");
+  `, selectedFields, "heartbeat_runs");
 }
